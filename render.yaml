@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: wa-webhook
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node app.js
+    envVars:
+      - key: VERIFY_TOKEN
+        sync: false
