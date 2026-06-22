@@ -36,7 +36,7 @@ function seed() {
   const msgs = [
     { wa_message_id: 'm1', wa_id: T, direction: 'in',  type: 'text', body: 'Hi! I wanted to ask about my order #4471.', status: 'received', wa_timestamp: iso(40), created_at: iso(40) },
     { wa_message_id: 'm2', wa_id: T, direction: 'out', type: 'text', body: 'Hello Ada! Of course — let me pull that up for you.', status: 'read', wa_timestamp: iso(38), created_at: iso(38) },
-    { wa_message_id: 'm3', wa_id: T, direction: 'out', type: 'text', body: 'Your order shipped this morning and should arrive Thursday. 📦', status: 'read', wa_timestamp: iso(37), created_at: iso(37) },
+    { wa_message_id: 'm3', wa_id: T, direction: 'out', type: 'text', body: 'Your order shipped this morning and should arrive Thursday. 📦', status: 'read', reaction: '❤️', wa_timestamp: iso(37), created_at: iso(37) },
     { wa_message_id: 'm4', wa_id: T, direction: 'in',  type: 'text', body: 'Oh wonderful! Is there a tracking number?', status: 'received', wa_timestamp: iso(6), created_at: iso(6) },
     { wa_message_id: 'm5', wa_id: T, direction: 'out', type: 'text', body: 'Yes — it’s 1Z-998-ADA-2026. You’ll get email updates too.', status: 'delivered', wa_timestamp: iso(4), created_at: iso(4) },
     { wa_message_id: 'm6', wa_id: T, direction: 'in',  type: 'image', body: '📷 Image', media_status: 'stored', media_path: 'x/image/m6.png', media_meta: { caption: 'My delivery just arrived 🎉' }, status: 'received', wa_timestamp: iso(3), created_at: iso(3) },
