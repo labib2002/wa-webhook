@@ -23,7 +23,7 @@ process.env.NODE_ENV = 'test';
 process.env.SUPABASE_URL = '';
 process.env.SUPABASE_SERVICE_ROLE_KEY = '';
 
-const { ingestWebhook, __setMediaFetcher } = require('../lib/ingest');
+const { ingestWebhook, describeMessage, __setMediaFetcher } = require('../lib/ingest');
 
 let passed = 0, failed = 0;
 function ok(name) { console.log(`  \x1b[32m✓\x1b[0m ${name}`); passed++; }
@@ -79,6 +79,21 @@ function inboundReaction(targetWamid, emoji) {
         from: '201001234567', id: 'wamid.REACT_' + Math.random().toString(36).slice(2, 7),
         timestamp: '1718000300', type: 'reaction',
         reaction: { message_id: targetWamid, emoji },
+      }],
+    }}]}],
+  };
+}
+
+function inboundRevoke(originalWamid) {
+  return {
+    object: 'whatsapp_business_account',
+    entry: [{ changes: [{ field: 'messages', value: {
+      metadata: { phone_number_id: 'PNID_123' },
+      contacts: [{ profile: { name: 'Ada Lovelace' }, wa_id: '201001234567' }],
+      messages: [{
+        from: '201001234567', id: originalWamid, timestamp: '1718000400',
+        type: 'unsupported',
+        errors: [{ code: 131051, title: 'Unsupported message type' }],
       }],
     }}]}],
   };
@@ -246,6 +261,41 @@ function sign(body) {
   await test('reaction removal clears the emoji', async () => {
     await ingestWebhook(inboundReaction('wamid.REACTABLE', ''), db);
     assert.strictEqual(db._tables.messages.find((m) => m.id === 555).reaction, null);
+  });
+
+  await test('voice note (audio.voice=true) labels as Voice message + flags meta.voice', async () => {
+    const { body, media_meta } = describeMessage({
+      type: 'audio', audio: { id: 'AUD1', mime_type: 'audio/ogg', voice: true },
+    });
+    assert.strictEqual(body, '🎤 Voice message');
+    assert.strictEqual(media_meta.voice, true);
+  });
+
+  await test('plain audio (no voice flag) labels as Audio', async () => {
+    const { body, media_meta } = describeMessage({
+      type: 'audio', audio: { id: 'AUD2', mime_type: 'audio/mpeg' },
+    });
+    assert.strictEqual(body, '🎵 Audio');
+    assert.strictEqual(media_meta.voice, null);
+  });
+
+  await test('customer revoke flags an existing message deleted, keeps content', async () => {
+    db._tables.messages.push({
+      id: 777, wa_message_id: 'wamid.REVOKE', wa_id: '201001234567',
+      direction: 'in', type: 'text', body: 'oops sent by mistake', status: 'received', deleted: false,
+    });
+    await ingestWebhook(inboundRevoke('wamid.REVOKE'), db);
+    const m = db._tables.messages.find((x) => x.id === 777);
+    assert.strictEqual(m.deleted, true);
+    assert.strictEqual(m.deleted_by, 'customer');
+    assert.strictEqual(m.body, 'oops sent by mistake', 'content should be kept for customer deletes');
+  });
+
+  await test('revoke for an unknown message does not crash (no row)', async () => {
+    const before = db._tables.messages.length;
+    await ingestWebhook(inboundRevoke('wamid.NEVER_SEEN'), db);
+    // falls through to placeholder insert path; just must not throw
+    assert.ok(db._tables.messages.length >= before);
   });
 
   await test('status update flips an outgoing message tick to "read"', async () => {
