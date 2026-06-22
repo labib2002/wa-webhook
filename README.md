@@ -121,7 +121,8 @@ curl "http://localhost:3000/?hub.mode=subscribe&hub.verify_token=vibecode123&hub
 ### Set up the database (once)
 1. Create a Supabase project (free, no card).
 2. Open **SQL Editor**, paste the entire contents of `supabase/schema.sql`, run.
-   (If you ran an older schema, also run `supabase/migrations/002_media.sql`.)
+   (If you ran an older schema, also run the deltas in `supabase/migrations/`:
+   `002_media.sql`, `003_reactions.sql`, `004_deletes.sql`, `005_updated_at.sql`.)
 3. Put `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` in `.env` (and Vercel).
 4. Create the media bucket: `node scripts/setup-storage.js` (makes a private
    `wa-media` bucket).

@@ -38,12 +38,29 @@ create table if not exists public.messages (
   status          text,                                  -- out: sent|delivered|read|failed   in: 'received'
   error           text,                                  -- failure reason surfaced to the UI (nullable)
   wa_timestamp    timestamptz,                           -- event time reported by WhatsApp
-  created_at      timestamptz not null default now()
+  created_at      timestamptz not null default now(),
+  updated_at      timestamptz not null default now()     -- bumped on every change (powers the "changed since" poll)
 );
 
--- Fast thread fetch + ordering.
+-- Fast thread fetch + ordering, and the "changed since" poll.
 create index if not exists messages_wa_id_created_idx
   on public.messages (wa_id, created_at);
+create index if not exists messages_wa_id_updated_idx
+  on public.messages (wa_id, updated_at);
+
+-- Bump updated_at on every UPDATE so reactions/status/deletes are detectable.
+create or replace function public.touch_messages_updated_at()
+returns trigger as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists messages_set_updated_at on public.messages;
+create trigger messages_set_updated_at
+  before update on public.messages
+  for each row execute function public.touch_messages_updated_at();
 
 -- ---------------------------------------------------------------------------
 --  Row Level Security.

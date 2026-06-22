@@ -67,13 +67,14 @@ const state = {
 // Get (or create) the cached thread for a wa_id.
 function thread(waId) {
   if (!state.threads[waId]) {
-    state.threads[waId] = { byId: new Map(), order: [], lastMsgId: 0, loaded: false };
+    state.threads[waId] = { byId: new Map(), order: [], maxUpdatedAt: null, loaded: false };
   }
   return state.threads[waId];
 }
 
 // Merge a batch of message rows into a thread, deduping by id. Returns true if
-// anything changed (new message, or an existing one's status/reaction updated).
+// anything visible changed (new message, or an existing one's status/reaction/
+// delete-flag updated). Also advances the thread's updated_at high-water mark.
 function mergeMessages(t, rows) {
   let changed = false;
   for (const m of rows) {
@@ -89,11 +90,17 @@ function mergeMessages(t, rows) {
       t.byId.set(m.id, m);
       t.order.push(m.id);
       changed = true;
-    } else if (existing.status !== m.status || existing.reaction !== m.reaction || existing.media_status !== m.media_status) {
+    } else if (
+      existing.status !== m.status || existing.reaction !== m.reaction ||
+      existing.media_status !== m.media_status || existing.deleted !== m.deleted ||
+      existing.deleted_by !== m.deleted_by || existing.body !== m.body
+    ) {
       t.byId.set(m.id, { ...existing, ...m });
       changed = true;
     }
-    if (typeof m.id === 'number' && m.id > t.lastMsgId) t.lastMsgId = m.id;
+    if (m.updated_at && (!t.maxUpdatedAt || m.updated_at > t.maxUpdatedAt)) {
+      t.maxUpdatedAt = m.updated_at;
+    }
   }
   // order by time, then id — so optimistic (negative-id) sends still land last.
   t.order.sort((a, b) => {
@@ -111,7 +118,9 @@ function threadMessages(t) {
 }
 
 const LIST_POLL_MS = 4000;
-const THREAD_POLL_MS = 2500;
+// Thread poll is cheap now (it fetches only rows changed since the high-water
+// mark — usually nothing), so we can poll faster for snappy reactions/ticks.
+const THREAD_POLL_MS = 1500;
 
 /* ----------------------------- utilities ----------------------------- */
 
@@ -293,7 +302,8 @@ async function refreshConversations(initial = false) {
   renderConversations();
 }
 
-function renderConversations() {
+let _lastConvSig = '';
+function renderConversations(forceRender = false) {
   const q = state.filter.trim().toLowerCase();
   let list = state.conversations;
   if (q) {
@@ -301,6 +311,14 @@ function renderConversations() {
       displayName(c).toLowerCase().includes(q) || (c.wa_id || '').includes(q)
     );
   }
+
+  // Skip the DOM rebuild if nothing the list shows has changed — avoids
+  // flicker, lost hover, and wasted work on every 4s poll.
+  const sig = state.activeWaId + '|' + q + '|' + list.map((c) =>
+    `${c.wa_id}:${c.last_message_at}:${c.unread_count}:${c.last_message_text}:${c.profile_name || ''}:${c.last_message_direction || ''}`
+  ).join(';');
+  if (!forceRender && sig === _lastConvSig) return;
+  _lastConvSig = sig;
 
   if (!list.length) {
     els.convList.innerHTML = '';
@@ -388,9 +406,11 @@ async function loadThread(initial = false) {
   const waId = state.activeWaId;
   if (!waId) return;
   const t = thread(waId);
-  const after = t.lastMsgId || '';
+  // Poll by updated_at high-water mark so we catch edits to existing rows
+  // (reactions, status ticks, deletes) — not just brand-new messages.
+  const since = (!initial && t.maxUpdatedAt) ? `&since=${encodeURIComponent(t.maxUpdatedAt)}` : '';
   const { ok, status, data } = await api(
-    `/api/messages?wa_id=${encodeURIComponent(waId)}${after ? `&after=${after}` : ''}`
+    `/api/messages?wa_id=${encodeURIComponent(waId)}${since}`
   );
   if (waId !== state.activeWaId) return; // user switched chats mid-request
   if (!ok) {
