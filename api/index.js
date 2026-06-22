@@ -76,18 +76,20 @@ app.post('/', async (req, res) => {
 // ---------------------------------------------------------------------------
 app.use('/api', apiRouter);
 
-// Serve the dashboard SPA and its assets from /web.
-// NB: the folder is intentionally NOT named "public" — Vercel auto-serves a
-// top-level public/ as static files, which would shadow the function and break
-// the GET / handshake. Routing everything through Express keeps / on the
-// webhook handler and lets us serve assets ourselves.
-const publicDir = path.join(__dirname, '..', 'web');
-app.use(express.static(publicDir));
+// Serve the dashboard SPA assets under /static.
+// Two Vercel gotchas this avoids:
+//   1) a top-level public/ dir is auto-served as static, shadowing the function;
+//   2) a URL that matches a root file (e.g. /app.js -> the root app.js entry)
+//      is served as that static file, shadowing the function.
+// Mounting assets under /static keeps every path unambiguous and routed through
+// Express, so the GET / handshake and /api/* stay on the function.
+const webDir = path.join(__dirname, '..', 'web');
+app.use('/static', express.static(webDir));
 
-// The dashboard lives at /app (a single HTML file; the gate is the API, the
-// page itself shows a login screen until /api/login succeeds).
+// The dashboard HTML lives at /app (the gate is the API; the page shows a login
+// screen until /api/login succeeds).
 app.get('/app', (_req, res) => {
-  res.sendFile(path.join(publicDir, 'index.html'));
+  res.sendFile(path.join(webDir, 'index.html'));
 });
 
 module.exports = app;
