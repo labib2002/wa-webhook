@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#0f1c1a" />
+  <title>Inbox · WhatsApp Agent</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Inter:wght@400;450;500;600;700&display=swap"
+    rel="stylesheet"
+  />
+  <link rel="stylesheet" href="/styles.css" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='24' fill='%231f6f5c'/%3E%3Cpath d='M50 22a28 28 0 00-24 42L22 78l15-4a28 28 0 1013-52z' fill='%23fff'/%3E%3C/svg%3E" />
+</head>
+<body class="preload">
+  <!-- ===================== LOGIN GATE ===================== -->
+  <div id="login-screen" class="login-screen" hidden>
+    <form id="login-form" class="login-card" autocomplete="off">
+      <div class="login-mark" aria-hidden="true">
+        <svg viewBox="0 0 100 100" width="44" height="44">
+          <rect width="100" height="100" rx="26" fill="#1f6f5c" />
+          <path d="M50 22a28 28 0 00-24 42L22 78l15-4a28 28 0 1013-52z" fill="#fff" />
+        </svg>
+      </div>
+      <h1 class="login-title">Agent Inbox</h1>
+      <p class="login-sub">Enter the team passcode to continue.</p>
+      <label class="field">
+        <span class="field-label">Passcode</span>
+        <input
+          id="passcode"
+          type="password"
+          inputmode="text"
+          autocomplete="current-password"
+          placeholder="••••••••"
+          required
+        />
+      </label>
+      <button id="login-btn" type="submit" class="btn-primary">Unlock</button>
+      <p id="login-error" class="login-error" role="alert" hidden></p>
+    </form>
+    <p class="login-foot">Customer messages are private. Sessions last 7 days.</p>
+  </div>
+
+  <!-- ===================== APP SHELL ===================== -->
+  <div id="app" class="app" hidden data-view="list">
+    <!-- LEFT: conversation list -->
+    <aside class="pane pane-list" aria-label="Conversations">
+      <header class="list-header">
+        <div class="brand">
+          <span class="brand-dot" aria-hidden="true"></span>
+          <span class="brand-name">Inbox</span>
+        </div>
+        <div class="list-header-actions">
+          <span id="conn-status" class="conn-status" title="Live status"><i></i>live</span>
+          <button id="logout-btn" class="icon-btn" title="Log out" aria-label="Log out">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+          </button>
+        </div>
+      </header>
+      <div class="search-wrap">
+        <svg class="search-ico" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input id="search" type="search" placeholder="Search name or number" aria-label="Search conversations" />
+      </div>
+      <div id="conv-list" class="conv-list" role="list" aria-live="polite">
+        <!-- conversation rows injected here -->
+      </div>
+      <div id="conv-empty" class="pane-empty" hidden>
+        <p>No conversations yet.</p>
+        <span>Incoming WhatsApp messages will appear here.</span>
+      </div>
+      <div id="conv-loading" class="pane-empty">
+        <div class="spinner" aria-hidden="true"></div>
+        <span>Loading conversations…</span>
+      </div>
+    </aside>
+
+    <!-- RIGHT: message thread -->
+    <main class="pane pane-thread" aria-label="Conversation">
+      <!-- nothing selected -->
+      <div id="thread-placeholder" class="thread-placeholder">
+        <div class="placeholder-art" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="56" height="56" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        </div>
+        <h2>Select a conversation</h2>
+        <p>Choose a chat from the left to read and reply.</p>
+      </div>
+
+      <!-- active thread -->
+      <section id="thread" class="thread" hidden>
+        <header class="thread-header">
+          <button id="back-btn" class="icon-btn back-btn" title="Back" aria-label="Back to list">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+          </button>
+          <div id="thread-avatar" class="avatar" aria-hidden="true">?</div>
+          <div class="thread-peer">
+            <div id="thread-name" class="thread-name">—</div>
+            <div id="thread-sub" class="thread-sub">—</div>
+          </div>
+        </header>
+
+        <div id="messages" class="messages" tabindex="0" aria-label="Messages">
+          <div id="thread-loading" class="thread-loading" hidden>
+            <div class="spinner" aria-hidden="true"></div>
+          </div>
+          <div id="messages-empty" class="messages-empty" hidden>
+            <span>No messages yet in this conversation.</span>
+          </div>
+          <!-- message bubbles injected here -->
+        </div>
+
+        <footer class="composer">
+          <div id="composer-banner" class="composer-banner" hidden role="alert"></div>
+          <form id="composer-form" class="composer-form">
+            <textarea
+              id="composer-input"
+              class="composer-input"
+              rows="1"
+              placeholder="Type a message"
+              aria-label="Message"
+              autocomplete="off"
+            ></textarea>
+            <button id="send-btn" type="submit" class="send-btn" title="Send" aria-label="Send message" disabled>
+              <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M3.4 20.6l17.45-7.48a1.22 1.22 0 0 0 0-2.24L3.4 3.4a1.2 1.2 0 0 0-1.67 1.35L4.2 11 1.73 17.25A1.2 1.2 0 0 0 3.4 20.6z"/></svg>
+            </button>
+          </form>
+        </footer>
+      </section>
+    </main>
+  </div>
+
+  <!-- toast for transient errors / notices -->
+  <div id="toast" class="toast" role="status" hidden></div>
+
+  <script src="/app.js" type="module"></script>
+</body>
+</html>
