@@ -1,16 +1,25 @@
 {
   "name": "wa-webhook",
   "version": "1.0.0",
-  "description": "",
+  "description": "WhatsApp Business Cloud API webhook + WhatsApp-Web-style agent dashboard",
   "main": "app.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node app.js",
+    "dev": "node app.js",
+    "shots": "node scripts/screenshots.js",
+    "test": "node scripts/test-webhook.js",
+    "live-check": "node scripts/live-check.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@supabase/supabase-js": "^2.108.2",
     "dotenv": "^17.4.2",
-    "express": "^5.2.1"
+    "express": "^5.2.1",
+    "ws": "^8.21.0"
+  },
+  "devDependencies": {
+    "playwright": "^1.61.0"
   }
 }
