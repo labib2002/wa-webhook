@@ -467,7 +467,7 @@ function renderMessages(force = false) {
 // A cheap signature of everything that affects a bubble's rendering, so we
 // only re-render when something visible actually changed.
 function bubbleSig(m, continued) {
-  return [m.id, m.status, m.reaction, m.media_status, m._optimistic ? 1 : 0, continued ? 1 : 0, m.body].join('|');
+  return [m.id, m.status, m.reaction, m.media_status, m.deleted ? m.deleted_by || 'd' : 0, m._optimistic ? 1 : 0, continued ? 1 : 0, m.body].join('|');
 }
 
 function renderBubble(m, continued) {
@@ -482,7 +482,23 @@ function renderBubble(m, continued) {
   if (m.reaction) div.classList.add('has-reaction');
 
   const iso = m.wa_timestamp || m.created_at;
+
+  // Agent tombstone: content is gone, show a "deleted this message" stub.
+  if (m.deleted && m.deleted_by === 'agent') {
+    div.classList.add('tombstone');
+    div.innerHTML =
+      `<span class="tomb-text">🚫 ${dir === 'out' ? 'You deleted this message' : 'This message was deleted'}</span>` +
+      `<span class="meta">${escapeHtml(fmtTime(iso))}</span>`;
+    return div;
+  }
+
   let inner = '';
+
+  // Customer-deleted flag: KEEP the content, but mark it was deleted.
+  if (m.deleted && m.deleted_by === 'customer') {
+    div.classList.add('flagged-deleted');
+    inner += `<span class="delete-flag">🚫 Customer deleted this message</span>`;
+  }
 
   if (m.type && m.type !== 'text') {
     const meta = m.media_meta || {};
@@ -505,8 +521,10 @@ function renderBubble(m, continued) {
       div.classList.add('has-media');
       inner += `<video class="media-frame" controls preload="metadata" src="${src}"></video>`;
     } else if (stored && (m.type === 'audio' || m.type === 'voice')) {
-      inner += `<span class="media-label">${m.type === 'voice' ? '🎤 Voice message' : '🎵 Audio'}</span>
-        <audio class="media-audio" controls preload="none" src="${src}"></audio>`;
+      const isVoice = m.type === 'voice' || meta.voice === true;
+      div.classList.add(isVoice ? 'is-voice' : 'is-audio');
+      inner += `<span class="media-label">${isVoice ? '🎤 Voice message' : '🎵 Audio'}</span>
+        <audio class="media-audio" controls preload="metadata" src="${src}"></audio>`;
     } else if (stored && m.type === 'document') {
       const fname = escapeHtml(meta.filename || 'Document');
       inner += `<a class="media-doc" href="${src}" target="_blank" rel="noopener" download>
@@ -515,7 +533,8 @@ function renderBubble(m, continued) {
       </a>`;
     } else {
       // pending / failed / unsupported / non-downloadable → labeled placeholder
-      const label = escapeHtml(stripCaption(m.body) || labelForType(m.type));
+      const isVoice = m.type === 'voice' || meta.voice === true;
+      const label = escapeHtml(stripCaption(m.body) || (isVoice ? '🎤 Voice message' : labelForType(m.type)));
       const note =
         m.media_status === 'pending' && isDownloadable ? ' <span class="media-pending">· loading…</span>'
         : m.media_status === 'failed' ? ' <span class="media-pending">· unavailable</span>'
@@ -550,7 +569,45 @@ function renderBubble(m, continued) {
     r.textContent = m.reaction;
     div.appendChild(r);
   }
+
+  // Delete control — appears on hover/focus for real (persisted, not-yet-deleted)
+  // messages. Agent deletes attempt a WhatsApp recall + tombstone the row.
+  if (!m._optimistic && !m.deleted && typeof m.id === 'number') {
+    const del = document.createElement('button');
+    del.className = 'bubble-del';
+    del.title = 'Delete message';
+    del.setAttribute('aria-label', 'Delete message');
+    del.innerHTML = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
+    del.addEventListener('click', (e) => { e.stopPropagation(); deleteMessage(m); });
+    div.appendChild(del);
+  }
   return div;
+}
+
+async function deleteMessage(m) {
+  const dir = m.direction === 'out' ? 'out' : 'in';
+  const confirmMsg = dir === 'out'
+    ? 'Delete this message? It will be removed here and an attempt made to recall it on WhatsApp.'
+    : 'Delete this message from your dashboard? (It stays on the customer’s phone.)';
+  if (!window.confirm(confirmMsg)) return;
+
+  const waId = state.activeWaId;
+  const { ok, status, data } = await api(`/api/messages/${m.id}`, { method: 'DELETE' });
+  if (status === 401) return handleAuthLost();
+  if (!ok) { toast(data.error || 'Could not delete message.', true); return; }
+
+  // reflect the tombstone locally
+  const t = thread(waId);
+  const row = t.byId.get(m.id);
+  if (row) {
+    t.byId.set(m.id, { ...row, deleted: true, deleted_by: 'agent', body: null, reaction: null, media_status: null, media_path: null, _localUrl: null });
+    renderMessages();
+  }
+  if (dir === 'out') {
+    toast(data.recalled ? 'Message deleted and recalled on WhatsApp.' : 'Deleted here. WhatsApp couldn’t recall it (Cloud API limitation).');
+  } else {
+    toast('Message removed from your dashboard.');
+  }
 }
 
 function stripCaption(body) {
@@ -578,7 +635,10 @@ function scrollMessagesToBottom() {
 function autoGrow() {
   const ta = els.composerInput;
   ta.style.height = 'auto';
-  ta.style.height = Math.min(ta.scrollHeight, 140) + 'px';
+  const full = ta.scrollHeight;
+  ta.style.height = Math.min(full, 140) + 'px';
+  // only show a scrollbar once we've hit the max height
+  ta.classList.toggle('is-scrolling', full > 140);
 }
 
 function setBanner(msg) {
