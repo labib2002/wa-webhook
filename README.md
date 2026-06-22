@@ -25,7 +25,7 @@ agent's browser ──▶  /app (gated SPA)  ──▶  /api/*  ─────�
 | Concern | Choice | Why |
 |---|---|---|
 | Server | **Express on Vercel** (kept, not migrated) | The verified webhook already runs here; the dashboard is a single view that needs no SSR/framework. |
-| Frontend | **Vanilla SPA** (`public/`), no build step | Easy to audit, zero tooling, served by the function. |
+| Frontend | **Vanilla SPA** (`web/`), no build step | Easy to audit, zero tooling, served by the function. |
 | Database | **Supabase Postgres** (free, no card) | Built-in Postgres; service-role key used server-side only. |
 | Live updates | **Smart polling** (list 4s, open thread 2.5s, incremental) | Robust on serverless, no realtime-auth complexity, keeps all customer PII behind the passcode gate. Supabase Realtime is a documented future upgrade — see below. |
 | Access control | **Shared passcode** → signed httpOnly cookie, enforced on every `/api/*` route | Minimal but real server-side gate, not just hidden UI. |
@@ -40,7 +40,7 @@ single-agent inbox, **smart polling** is simpler and just as usable: it fetches
 incrementally (only new message ids), pauses when the tab is hidden, and
 refreshes instantly on focus. Optimistic send means your own messages appear
 immediately. If you later want sub-second pushes, add a Supabase Realtime
-subscription in `public/app.js` — the data model already supports it.
+subscription in `web/app.js` — the data model already supports it.
 
 ---
 
