@@ -31,6 +31,7 @@ create table if not exists public.messages (
   media_meta      jsonb,                                 -- { id, mime_type, filename, ... } for non-text (nullable)
   media_path      text,                                  -- object path inside the storage bucket (after download)
   media_status    text,                                  -- null | 'pending' | 'stored' | 'failed' | 'unsupported'
+  reaction        text,                                  -- emoji the customer reacted with (on our message), or null
   status          text,                                  -- out: sent|delivered|read|failed   in: 'received'
   error           text,                                  -- failure reason surfaced to the UI (nullable)
   wa_timestamp    timestamptz,                           -- event time reported by WhatsApp

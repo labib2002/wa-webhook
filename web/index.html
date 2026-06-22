@@ -54,6 +54,9 @@
         </div>
         <div class="list-header-actions">
           <span id="conn-status" class="conn-status" title="Live status"><i></i>live</span>
+          <button id="new-chat-btn" class="icon-btn" title="New conversation" aria-label="New conversation">
+            <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+          </button>
           <button id="logout-btn" class="icon-btn" title="Log out" aria-label="Log out">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
           </button>
@@ -112,7 +115,19 @@
 
         <footer class="composer">
           <div id="composer-banner" class="composer-banner" hidden role="alert"></div>
+          <div id="attach-preview" class="attach-preview" hidden>
+            <div class="attach-thumb"><img id="attach-thumb-img" alt="" hidden /><span id="attach-thumb-ico" class="attach-ico">📎</span></div>
+            <div class="attach-info"><span id="attach-name" class="attach-name"></span><span id="attach-size" class="attach-size"></span></div>
+            <button id="attach-remove" type="button" class="icon-btn" title="Remove attachment" aria-label="Remove attachment">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
           <form id="composer-form" class="composer-form">
+            <input id="file-input" type="file" hidden
+              accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.txt,.csv,.ppt,.pptx" />
+            <button id="attach-btn" type="button" class="attach-btn" title="Attach a file" aria-label="Attach a file">
+              <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+            </button>
             <textarea
               id="composer-input"
               class="composer-input"
@@ -128,6 +143,27 @@
         </footer>
       </section>
     </main>
+  </div>
+
+  <!-- new-conversation modal -->
+  <div id="new-chat-modal" class="modal-overlay" hidden>
+    <form id="new-chat-form" class="modal-card" autocomplete="off">
+      <h2 class="modal-title">New conversation</h2>
+      <p class="modal-sub">Start a chat by phone number (with country code). Note: WhatsApp only allows free-form messages within 24h of the customer's last message — otherwise only approved templates send.</p>
+      <label class="field">
+        <span class="field-label">Phone number</span>
+        <input id="new-chat-number" type="tel" inputmode="tel" placeholder="+20 100 000 0000" required />
+      </label>
+      <label class="field">
+        <span class="field-label">Name <span class="field-opt">(optional)</span></span>
+        <input id="new-chat-name" type="text" placeholder="Contact name" />
+      </label>
+      <p id="new-chat-error" class="login-error" role="alert" hidden></p>
+      <div class="modal-actions">
+        <button id="new-chat-cancel" type="button" class="btn-ghost">Cancel</button>
+        <button id="new-chat-submit" type="submit" class="btn-primary btn-inline">Open chat</button>
+      </div>
+    </form>
   </div>
 
   <!-- toast for transient errors / notices -->

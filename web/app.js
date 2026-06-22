@@ -34,6 +34,21 @@ const els = {
   composerInput: $('#composer-input'),
   composerBanner: $('#composer-banner'),
   sendBtn: $('#send-btn'),
+  attachBtn: $('#attach-btn'),
+  fileInput: $('#file-input'),
+  attachPreview: $('#attach-preview'),
+  attachThumbImg: $('#attach-thumb-img'),
+  attachThumbIco: $('#attach-thumb-ico'),
+  attachName: $('#attach-name'),
+  attachSize: $('#attach-size'),
+  attachRemove: $('#attach-remove'),
+  newChatBtn: $('#new-chat-btn'),
+  newChatModal: $('#new-chat-modal'),
+  newChatForm: $('#new-chat-form'),
+  newChatNumber: $('#new-chat-number'),
+  newChatName: $('#new-chat-name'),
+  newChatError: $('#new-chat-error'),
+  newChatCancel: $('#new-chat-cancel'),
   toast: $('#toast'),
 };
 
@@ -41,13 +56,59 @@ const state = {
   conversations: [],      // latest list snapshot
   filter: '',
   activeWaId: null,
-  messages: [],           // messages in the open thread
-  lastMsgId: 0,           // highest message id seen in open thread (for incremental poll)
+  threads: {},            // wa_id -> { byId: Map(id->msg), order: [ids], lastMsgId, loaded }
   sending: false,
   listTimer: null,
   threadTimer: null,
   optimisticSeq: -1,      // negative ids for optimistic bubbles
+  pendingFile: null,      // { name, mime, size, base64, dataUrl } staged to send
 };
+
+// Get (or create) the cached thread for a wa_id.
+function thread(waId) {
+  if (!state.threads[waId]) {
+    state.threads[waId] = { byId: new Map(), order: [], lastMsgId: 0, loaded: false };
+  }
+  return state.threads[waId];
+}
+
+// Merge a batch of message rows into a thread, deduping by id. Returns true if
+// anything changed (new message, or an existing one's status/reaction updated).
+function mergeMessages(t, rows) {
+  let changed = false;
+  for (const m of rows) {
+    const existing = t.byId.get(m.id);
+    if (!existing) {
+      // drop an optimistic twin (same body+direction) the server now confirms
+      for (let i = t.order.length - 1; i >= 0; i--) {
+        const o = t.byId.get(t.order[i]);
+        if (o && o._optimistic && o.direction === m.direction && o.body === m.body && o.type === m.type) {
+          t.byId.delete(o.id); t.order.splice(i, 1); break;
+        }
+      }
+      t.byId.set(m.id, m);
+      t.order.push(m.id);
+      changed = true;
+    } else if (existing.status !== m.status || existing.reaction !== m.reaction || existing.media_status !== m.media_status) {
+      t.byId.set(m.id, { ...existing, ...m });
+      changed = true;
+    }
+    if (typeof m.id === 'number' && m.id > t.lastMsgId) t.lastMsgId = m.id;
+  }
+  // order by time, then id — so optimistic (negative-id) sends still land last.
+  t.order.sort((a, b) => {
+    const ma = t.byId.get(a), mb = t.byId.get(b);
+    const ta = new Date(ma.wa_timestamp || ma.created_at || 0).getTime();
+    const tb = new Date(mb.wa_timestamp || mb.created_at || 0).getTime();
+    if (ta !== tb) return ta - tb;
+    return a - b;
+  });
+  return changed;
+}
+
+function threadMessages(t) {
+  return t.order.map((id) => t.byId.get(id)).filter(Boolean);
+}
 
 const LIST_POLL_MS = 4000;
 const THREAD_POLL_MS = 2500;
@@ -289,8 +350,7 @@ async function openConversation(waId) {
   if (!waId) return;
   const conv = state.conversations.find((c) => c.wa_id === waId);
   state.activeWaId = waId;
-  state.messages = [];
-  state.lastMsgId = 0;
+  const t = thread(waId);
 
   // header
   els.threadName.textContent = conv ? displayName(conv) : formatPhone(waId);
@@ -302,9 +362,14 @@ async function openConversation(waId) {
   els.thread.hidden = false;
   els.app.dataset.view = 'thread';
   els.messagesEmpty.hidden = true;
-  els.messages.querySelectorAll('.bubble, .day-sep').forEach((n) => n.remove());
-  els.threadLoading.hidden = false;
   clearBanner();
+  resetComposer();
+
+  // Render whatever we already have cached (instant — no flash, no reload),
+  // then only show the spinner if we have nothing yet.
+  els.messages.querySelectorAll('.bubble, .day-sep').forEach((n) => n.remove());
+  renderMessages(true);
+  els.threadLoading.hidden = t.loaded || t.order.length > 0;
 
   renderConversations(); // reflect active highlight
 
@@ -313,85 +378,117 @@ async function openConversation(waId) {
   startThreadPolling();
   els.composerInput.focus();
 
-  // mark read (reset badge locally + server, optional blue ticks)
-  if (conv && conv.unread_count > 0) {
-    conv.unread_count = 0;
-    renderConversations();
-    api('/api/mark-read', { method: 'POST', body: JSON.stringify({ wa_id: waId }) })
-      .catch(() => {});
-  }
+  // Always mark read on open (reset badge + blue ticks), regardless of the
+  // client-side unread count — polling may already have zeroed it locally.
+  if (conv) { conv.unread_count = 0; renderConversations(); }
+  api('/api/mark-read', { method: 'POST', body: JSON.stringify({ wa_id: waId }) }).catch(() => {});
 }
 
 async function loadThread(initial = false) {
   const waId = state.activeWaId;
   if (!waId) return;
-  const after = state.lastMsgId || '';
+  const t = thread(waId);
+  const after = t.lastMsgId || '';
   const { ok, status, data } = await api(
     `/api/messages?wa_id=${encodeURIComponent(waId)}${after ? `&after=${after}` : ''}`
   );
+  if (waId !== state.activeWaId) return; // user switched chats mid-request
   if (!ok) {
     if (status === 401) return handleAuthLost();
-    if (initial) toast(data.error || 'Could not load messages.', true);
+    if (initial && !t.order.length) toast(data.error || 'Could not load messages.', true);
     return;
   }
-  const incoming = data.messages || [];
-  if (incoming.length) {
-    // merge (incremental fetch only returns new ones)
-    for (const m of incoming) {
-      // replace optimistic twin if the persisted row matches
-      state.messages = state.messages.filter(
-        (x) => !(x._optimistic && x.body === m.body && x.direction === m.direction)
-      );
-      state.messages.push(m);
-      if (m.id > state.lastMsgId) state.lastMsgId = m.id;
-    }
+  t.loaded = true;
+  const changed = mergeMessages(t, data.messages || []);
+  if (changed || initial) {
+    const atBottom = isNearBottom();
     renderMessages();
-    scrollMessagesToBottom();
-  } else if (initial && !state.messages.length) {
-    els.messagesEmpty.hidden = false;
+    if (atBottom || initial) scrollMessagesToBottom();
   }
 }
 
-function renderMessages() {
-  els.messagesEmpty.hidden = state.messages.length > 0;
-  // wipe existing bubbles/separators (keep loading + empty nodes)
-  els.messages.querySelectorAll('.bubble, .day-sep').forEach((n) => n.remove());
+// Incremental render: reconcile DOM bubbles against the cached thread by id.
+// Existing bubbles (and their <img>/<video>) are reused, so media never
+// re-fetches and there's no flicker; only new/changed bubbles touch the DOM.
+function renderMessages(force = false) {
+  const t = thread(state.activeWaId);
+  const msgs = threadMessages(t);
+  els.messagesEmpty.hidden = msgs.length > 0;
 
-  const frag = document.createDocumentFragment();
+  const container = els.messages;
+  // Build the desired sequence of [type,key,node-spec].
+  const desiredIds = msgs.map((m) => String(m.id));
+  const existingNodes = new Map(
+    [...container.querySelectorAll('.bubble')].map((n) => [n.dataset.mid, n])
+  );
+
+  // If forced (chat switch), clear day separators; we rebuild them inline.
+  container.querySelectorAll('.day-sep').forEach((n) => n.remove());
+
   let lastDay = '';
   let lastDir = '';
-  for (const m of state.messages) {
+  let anchor = els.threadLoading; // insert after the loading/empty sentinels
+  // Ensure sentinels stay at the top.
+  for (const m of msgs) {
     const iso = m.wa_timestamp || m.created_at;
     const day = iso ? new Date(iso).toDateString() : '';
     if (day && day !== lastDay) {
       const sep = document.createElement('div');
       sep.className = 'day-sep';
       sep.textContent = dayLabel(iso);
-      frag.appendChild(sep);
+      container.insertBefore(sep, anchor.nextSibling);
+      anchor = sep;
       lastDay = day;
       lastDir = '';
     }
-    frag.appendChild(renderBubble(m, m.direction === lastDir));
+    const continued = m.direction === lastDir;
+    let node = existingNodes.get(String(m.id));
+    if (node) {
+      // update in place only if the rendered signature changed
+      const sig = bubbleSig(m, continued);
+      if (node.dataset.sig !== sig) {
+        const fresh = renderBubble(m, continued);
+        node.replaceWith(fresh);
+        node = fresh;
+      }
+      existingNodes.delete(String(m.id));
+    } else {
+      node = renderBubble(m, continued);
+    }
+    // place node right after anchor (keeps order without full rebuild)
+    if (node.previousSibling !== anchor) container.insertBefore(node, anchor.nextSibling);
+    anchor = node;
     lastDir = m.direction;
   }
-  els.messages.appendChild(frag);
+  // remove stale bubbles no longer present
+  for (const [, node] of existingNodes) node.remove();
+}
+
+// A cheap signature of everything that affects a bubble's rendering, so we
+// only re-render when something visible actually changed.
+function bubbleSig(m, continued) {
+  return [m.id, m.status, m.reaction, m.media_status, m._optimistic ? 1 : 0, continued ? 1 : 0, m.body].join('|');
 }
 
 function renderBubble(m, continued) {
   const div = document.createElement('div');
   const dir = m.direction === 'out' ? 'out' : 'in';
   div.className = `bubble ${dir}`;
+  div.dataset.mid = String(m.id);
+  div.dataset.sig = bubbleSig(m, continued);
   if (continued) div.classList.add(dir === 'out' ? 'cont-out' : 'cont-in');
   if (m.status === 'failed') div.classList.add('failed');
   if (m._optimistic) div.classList.add('pending');
+  if (m.reaction) div.classList.add('has-reaction');
 
   const iso = m.wa_timestamp || m.created_at;
   let inner = '';
 
   if (m.type && m.type !== 'text') {
     const meta = m.media_meta || {};
-    const src = `/api/media/${m.id}`;
-    const stored = m.media_status === 'stored';
+    // Prefer the local data-URL for an optimistic image so it shows instantly.
+    const src = m._localUrl || `/api/media/${m.id}`;
+    const stored = m.media_status === 'stored' || Boolean(m._localUrl);
     const isDownloadable = ['image', 'video', 'audio', 'voice', 'sticker', 'document'].includes(m.type);
 
     if (m.type === 'location' && meta.latitude != null) {
@@ -444,6 +541,15 @@ function renderBubble(m, continued) {
     reason.textContent = '⚠ ' + m.error;
     div.appendChild(reason);
   }
+
+  // Reaction emoji (customer reacted to one of our messages) — a small pill
+  // pinned to the bubble's bottom edge, WhatsApp-style.
+  if (m.reaction) {
+    const r = document.createElement('span');
+    r.className = 'reaction-pill';
+    r.textContent = m.reaction;
+    div.appendChild(r);
+  }
   return div;
 }
 
@@ -483,9 +589,20 @@ function clearBanner() {
   els.composerBanner.hidden = true;
 }
 
+function refreshSendEnabled() {
+  els.sendBtn.disabled = state.sending || (!els.composerInput.value.trim() && !state.pendingFile);
+}
+
+function resetComposer() {
+  clearPendingFile();
+  els.composerInput.value = '';
+  autoGrow();
+  refreshSendEnabled();
+}
+
 els.composerInput.addEventListener('input', () => {
   autoGrow();
-  els.sendBtn.disabled = !els.composerInput.value.trim() || state.sending;
+  refreshSendEnabled();
 });
 
 els.composerInput.addEventListener('keydown', (e) => {
@@ -495,28 +612,147 @@ els.composerInput.addEventListener('keydown', (e) => {
   }
 });
 
-els.composerForm.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const text = els.composerInput.value.trim();
-  if (!text || state.sending || !state.activeWaId) return;
-  const waId = state.activeWaId;
+/* ----------------------------- attachments ----------------------------- */
 
-  // optimistic bubble
-  const optimistic = {
+els.attachBtn.addEventListener('click', () => els.fileInput.click());
+
+els.fileInput.addEventListener('change', () => {
+  const file = els.fileInput.files && els.fileInput.files[0];
+  els.fileInput.value = ''; // allow re-selecting the same file later
+  if (!file) return;
+  if (file.size > 25 * 1024 * 1024) {
+    setBanner('File too large (max 25 MB).');
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    const dataUrl = reader.result; // data:<mime>;base64,XXXX
+    const base64 = String(dataUrl).split(',')[1] || '';
+    state.pendingFile = { name: file.name, mime: file.type || 'application/octet-stream', size: file.size, base64, dataUrl };
+    showPendingFile();
+    refreshSendEnabled();
+    els.composerInput.focus();
+  };
+  reader.readAsDataURL(file);
+});
+
+els.attachRemove.addEventListener('click', clearPendingFile);
+
+function showPendingFile() {
+  const f = state.pendingFile;
+  if (!f) return;
+  els.attachName.textContent = f.name;
+  els.attachSize.textContent = humanSize(f.size);
+  const isImg = f.mime.startsWith('image/');
+  els.attachThumbImg.hidden = !isImg;
+  els.attachThumbIco.hidden = isImg;
+  if (isImg) els.attachThumbImg.src = f.dataUrl;
+  else els.attachThumbIco.textContent = f.mime.startsWith('video/') ? '🎬' : f.mime.startsWith('audio/') ? '🎵' : '📄';
+  els.attachPreview.hidden = false;
+}
+
+function clearPendingFile() {
+  state.pendingFile = null;
+  els.attachPreview.hidden = true;
+  els.attachThumbImg.removeAttribute('src');
+  refreshSendEnabled();
+}
+
+function humanSize(n) {
+  if (n < 1024) return n + ' B';
+  if (n < 1048576) return (n / 1024).toFixed(0) + ' KB';
+  return (n / 1048576).toFixed(1) + ' MB';
+}
+
+async function sendPendingFile() {
+  const waId = state.activeWaId;
+  const f = state.pendingFile;
+  if (!f || !waId) return;
+  const caption = els.composerInput.value.trim();
+  const kind = f.mime.startsWith('image/') ? 'image'
+    : f.mime.startsWith('video/') ? 'video'
+    : f.mime.startsWith('audio/') ? 'audio' : 'document';
+  const label = { image: '📷 Image', video: '🎬 Video', audio: '🎵 Audio', document: '📄 Document' }[kind];
+
+  // optimistic bubble — show the local preview immediately for images
+  const opt = addOptimistic(waId, {
+    type: kind,
+    body: caption ? `${label} · ${caption}` : label,
+    media_status: kind === 'image' ? 'stored' : null,
+    media_meta: { filename: f.name, mime_type: f.mime, caption: caption || null },
+    _localUrl: kind === 'image' ? f.dataUrl : null,
+  });
+
+  const payload = { wa_id: waId, file_base64: f.base64, mime: f.mime, filename: f.name, caption };
+  resetComposer();
+  state.sending = true;
+  els.sendBtn.disabled = true;
+  clearBanner();
+
+  const { ok, status, data } = await api('/api/send-media', { method: 'POST', body: JSON.stringify(payload) });
+  state.sending = false;
+  refreshSendEnabled();
+  if (status === 401) return handleAuthLost();
+
+  if (ok && data.message) {
+    settleOptimistic(waId, opt, null, data.message);
+    scrollMessagesToBottom();
+    bumpConversationPreview(waId, opt.body, 'out');
+  } else if (status === 207) {
+    settleOptimistic(waId, opt, { _optimistic: false, status: 'sent' });
+    toast(data.warning || 'Sent, but not saved.');
+  } else {
+    settleOptimistic(waId, opt, { _optimistic: false, status: 'failed', error: data.error || 'Failed to send.' });
+    setBanner(data.error || 'Failed to send attachment.');
+  }
+}
+
+// Add an optimistic outgoing bubble to the active thread and render it.
+function addOptimistic(waId, fields) {
+  const t = thread(waId);
+  const opt = {
     id: state.optimisticSeq--,
     _optimistic: true,
     wa_id: waId,
     direction: 'out',
-    type: 'text',
-    body: text,
     status: 'pending',
     created_at: new Date().toISOString(),
     wa_timestamp: new Date().toISOString(),
+    ...fields,
   };
-  state.messages.push(optimistic);
+  t.byId.set(opt.id, opt);
+  t.order.push(opt.id);
   renderMessages();
   scrollMessagesToBottom();
+  return opt;
+}
 
+// Replace an optimistic bubble with the server's persisted row (or mutate it).
+function settleOptimistic(waId, opt, patch, persisted) {
+  const t = thread(waId);
+  t.byId.delete(opt.id);
+  const idx = t.order.indexOf(opt.id);
+  if (idx > -1) t.order.splice(idx, 1);
+  const row = persisted || { ...opt, ...patch };
+  t.byId.set(row.id, row);
+  t.order.push(row.id);
+  if (typeof row.id === 'number' && row.id > t.lastMsgId) t.lastMsgId = row.id;
+  mergeMessages(t, []); // re-sort
+  renderMessages();
+}
+
+els.composerForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  if (state.sending || !state.activeWaId) return;
+  const waId = state.activeWaId;
+
+  // If a file is staged, send media; otherwise send text.
+  if (state.pendingFile) return sendPendingFile();
+
+  const text = els.composerInput.value.trim();
+  if (!text) return;
+
+  const opt = addOptimistic(waId, { type: 'text', body: text });
   els.composerInput.value = '';
   autoGrow();
   state.sending = true;
@@ -530,45 +766,38 @@ els.composerForm.addEventListener('submit', async (e) => {
 
   state.sending = false;
   els.sendBtn.disabled = !els.composerInput.value.trim();
-
   if (status === 401) return handleAuthLost();
 
   if (ok && data.message) {
-    // replace optimistic with the real persisted row
-    const i = state.messages.indexOf(optimistic);
-    if (i > -1) state.messages[i] = data.message;
-    if (data.message.id > state.lastMsgId) state.lastMsgId = data.message.id;
-    renderMessages();
+    settleOptimistic(waId, opt, null, data.message);
     scrollMessagesToBottom();
-    bumpConversationPreview(waId, text);
+    bumpConversationPreview(waId, text, 'out');
   } else if (status === 207) {
-    // sent but not saved — keep bubble, mark as sent, warn
-    optimistic._optimistic = false;
-    optimistic.status = 'sent';
-    renderMessages();
+    settleOptimistic(waId, opt, { _optimistic: false, status: 'sent' });
     toast(data.warning || 'Sent, but not saved.');
   } else {
-    // failed — mark the bubble failed with the reason
-    optimistic._optimistic = false;
-    optimistic.status = 'failed';
-    optimistic.error = data.error || 'Failed to send.';
-    renderMessages();
+    settleOptimistic(waId, opt, { _optimistic: false, status: 'failed', error: data.error || 'Failed to send.' });
     setBanner(data.error || 'Failed to send. Check the connection and try again.');
   }
 });
 
-function bumpConversationPreview(waId, text) {
+function bumpConversationPreview(waId, text, direction) {
   const conv = state.conversations.find((c) => c.wa_id === waId);
   if (conv) {
     conv.last_message_text = text;
     conv.last_message_at = new Date().toISOString();
-    conv.last_message_direction = 'out';
+    conv.last_message_direction = direction || 'out';
     // re-sort: most recent first
     state.conversations.sort((a, b) =>
       new Date(b.last_message_at || 0) - new Date(a.last_message_at || 0)
     );
     renderConversations();
   }
+}
+
+function isNearBottom() {
+  const el = els.messages;
+  return el.scrollHeight - el.scrollTop - el.clientHeight < 120;
 }
 
 /* --------------------------- back (mobile) --------------------------- */
@@ -624,6 +853,62 @@ function handleAuthLost() {
   toast('Session expired — please log in again.', true);
   showLogin();
 }
+
+/* ----------------------- new conversation ----------------------- */
+
+function openNewChatModal() {
+  els.newChatError.hidden = true;
+  els.newChatNumber.value = '';
+  els.newChatName.value = '';
+  els.newChatModal.hidden = false;
+  setTimeout(() => els.newChatNumber.focus(), 50);
+}
+function closeNewChatModal() { els.newChatModal.hidden = true; }
+
+els.newChatBtn.addEventListener('click', openNewChatModal);
+els.newChatCancel.addEventListener('click', closeNewChatModal);
+els.newChatModal.addEventListener('click', (e) => {
+  if (e.target === els.newChatModal) closeNewChatModal();
+});
+
+els.newChatForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  els.newChatError.hidden = true;
+  const raw = els.newChatNumber.value;
+  const digits = (raw || '').replace(/[^0-9]/g, '');
+  if (digits.length < 8) {
+    els.newChatError.textContent = 'Enter a valid phone number with country code.';
+    els.newChatError.hidden = false;
+    return;
+  }
+  const { ok, status, data } = await api('/api/start-conversation', {
+    method: 'POST',
+    body: JSON.stringify({ wa_id: digits, name: els.newChatName.value }),
+  });
+  if (status === 401) return handleAuthLost();
+  if (!ok) {
+    els.newChatError.textContent = data.error || 'Could not start the conversation.';
+    els.newChatError.hidden = false;
+    return;
+  }
+  closeNewChatModal();
+  // make sure it's in our list, then open it
+  await refreshConversations();
+  if (!state.conversations.find((c) => c.wa_id === data.wa_id)) {
+    state.conversations.unshift({
+      wa_id: data.wa_id,
+      profile_name: els.newChatName.value.trim() || null,
+      last_message_text: '', last_message_at: new Date().toISOString(),
+      last_message_direction: 'out', unread_count: 0,
+    });
+  }
+  openConversation(data.wa_id);
+});
+
+// Escape closes the modal.
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !els.newChatModal.hidden) closeNewChatModal();
+});
 
 /* ----------------------------- start ----------------------------- */
 boot();
