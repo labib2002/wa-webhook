@@ -69,6 +69,21 @@ function inboundImage(id = 'wamid.IMG1') {
   };
 }
 
+function inboundReaction(targetWamid, emoji) {
+  return {
+    object: 'whatsapp_business_account',
+    entry: [{ changes: [{ field: 'messages', value: {
+      metadata: { phone_number_id: 'PNID_123' },
+      contacts: [{ profile: { name: 'Ada Lovelace' }, wa_id: '201001234567' }],
+      messages: [{
+        from: '201001234567', id: 'wamid.REACT_' + Math.random().toString(36).slice(2, 7),
+        timestamp: '1718000300', type: 'reaction',
+        reaction: { message_id: targetWamid, emoji },
+      }],
+    }}]}],
+  };
+}
+
 function statusUpdate(id, status) {
   return {
     object: 'whatsapp_business_account',
@@ -214,6 +229,23 @@ function sign(body) {
     assert.strictEqual(msg.media_status, 'failed');
     // restore the working stub for any later tests
     __setMediaFetcher(async (mediaId, waId, kind) => ({ path: `${waId}/${kind}/${mediaId}.jpg`, mime: 'image/jpeg', size: 1 }));
+  });
+
+  await test('reaction attaches emoji to the target message (no new bubble)', async () => {
+    // seed an outgoing message the customer will react to
+    db._tables.messages.push({
+      id: 555, wa_message_id: 'wamid.REACTABLE', wa_id: '201001234567',
+      direction: 'out', type: 'text', body: 'thanks!', status: 'delivered',
+    });
+    const before = db._tables.messages.length;
+    await ingestWebhook(inboundReaction('wamid.REACTABLE', '❤️'), db);
+    assert.strictEqual(db._tables.messages.length, before, 'reaction created an extra row');
+    assert.strictEqual(db._tables.messages.find((m) => m.id === 555).reaction, '❤️');
+  });
+
+  await test('reaction removal clears the emoji', async () => {
+    await ingestWebhook(inboundReaction('wamid.REACTABLE', ''), db);
+    assert.strictEqual(db._tables.messages.find((m) => m.id === 555).reaction, null);
   });
 
   await test('status update flips an outgoing message tick to "read"', async () => {

@@ -12,6 +12,8 @@ const app = express();
 // (Meta signs the exact bytes it sent; we must hash those, not a re-encode.)
 app.use(
   express.json({
+    // base64-encoded media uploads from the composer can be several MB.
+    limit: '30mb',
     verify: (req, _res, buf) => {
       req.rawBody = buf;
     },
