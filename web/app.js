@@ -172,6 +172,24 @@ function displayName(c) {
   return (c.profile_name && c.profile_name.trim()) || formatPhone(c.wa_id);
 }
 
+// Does a conversation match a search query? Matches on the contact name AND on
+// the phone number. For numbers we compare digits-to-digits, so a query with a
+// leading "+", spaces, dashes, or parens (e.g. "+20 120-645 7557") still finds
+// the digit-only wa_id ("201206457557"). A non-numeric query just does a
+// case-insensitive name substring match.
+function matchesQuery(c, rawQuery) {
+  const q = (rawQuery || '').trim();
+  if (!q) return true;
+  const ql = q.toLowerCase();
+  if (displayName(c).toLowerCase().includes(ql)) return true;
+  const qDigits = q.replace(/\D/g, '');
+  if (qDigits) {
+    const idDigits = (c.wa_id || '').replace(/\D/g, '');
+    if (idDigits.includes(qDigits)) return true;
+  }
+  return false;
+}
+
 function formatPhone(waId) {
   if (!waId) return 'Unknown';
   // light formatting: prefix with + (WhatsApp ids are E.164 without +)
@@ -328,9 +346,7 @@ function renderConversations(forceRender = false) {
   // Filter first, then search WITHIN the active filter.
   if (onlyUnread) list = list.filter((c) => c.unread_count > 0);
   if (q) {
-    list = list.filter((c) =>
-      displayName(c).toLowerCase().includes(q) || (c.wa_id || '').includes(q)
-    );
+    list = list.filter((c) => matchesQuery(c, state.filter));
   }
 
   // Skip the DOM rebuild if nothing the list shows has changed — avoids
@@ -1350,14 +1366,11 @@ function closeForwardModal() {
 function renderForwardList() {
   const f = state.forward;
   if (!f) return;
-  const q = (f.search || '').trim().toLowerCase();
   // All existing conversations except the source chat (forwarding to itself is
   // pointless). New numbers are handled by the existing New-conversation flow.
   let list = state.conversations.filter((c) => c.wa_id !== f.srcWaId);
-  if (q) {
-    list = list.filter((c) =>
-      displayName(c).toLowerCase().includes(q) || (c.wa_id || '').includes(q)
-    );
+  if ((f.search || '').trim()) {
+    list = list.filter((c) => matchesQuery(c, f.search));
   }
   els.forwardEmpty.hidden = list.length > 0;
   els.forwardList.innerHTML = list.map((c) => {
