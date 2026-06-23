@@ -1,3 +1,9 @@
 {
+  "functions": {
+    "api/index.js": {
+      "includeFiles": "node_modules/ffmpeg-static/ffmpeg*",
+      "maxDuration": 60
+    }
+  },
   "rewrites": [{ "source": "/(.*)", "destination": "/api/index" }]
 }
