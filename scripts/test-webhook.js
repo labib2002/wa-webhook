@@ -255,9 +255,23 @@ function sign(body) {
     assert.strictEqual(db._tables.messages.find((m) => m.id === 555).reaction, '❤️');
   });
 
-  await test('reaction removal clears the emoji', async () => {
+  await test('reaction bumps the conversation (preview + unread) so the inbox surfaces it', async () => {
+    const conv = db._tables.conversations.find((c) => c.wa_id === '201001234567');
+    const beforeUnread = conv.unread_count;
+    await ingestWebhook(inboundReaction('wamid.REACTABLE', '👍'), db);
+    const after = db._tables.conversations.find((c) => c.wa_id === '201001234567');
+    assert.strictEqual(after.last_message_text, '👍 Reacted to your message');
+    assert.strictEqual(after.last_message_direction, 'in');
+    assert.strictEqual(after.unread_count, beforeUnread + 1, 'reaction did not increment unread');
+  });
+
+  await test('reaction removal clears the emoji and does NOT bump unread', async () => {
+    const conv = db._tables.conversations.find((c) => c.wa_id === '201001234567');
+    const beforeUnread = conv.unread_count;
     await ingestWebhook(inboundReaction('wamid.REACTABLE', ''), db);
+    const after = db._tables.conversations.find((c) => c.wa_id === '201001234567');
     assert.strictEqual(db._tables.messages.find((m) => m.id === 555).reaction, null);
+    assert.strictEqual(after.unread_count, beforeUnread, 'un-reacting should not bump unread');
   });
 
   await test('voice note (audio.voice=true) labels as Voice message + flags meta.voice', async () => {
