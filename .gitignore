@@ -8,3 +8,6 @@ node_modules
 # generated verification artifacts
 screenshots/
 .env*
+
+# Claude Code personal/local settings (not shared)
+.claude/settings.local.json
