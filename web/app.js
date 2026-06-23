@@ -16,7 +16,6 @@ const els = {
   passcode: $('#passcode'),
   app: $('#app'),
   logoutBtn: $('#logout-btn'),
-  connStatus: $('#conn-status'),
   search: $('#search'),
   convList: $('#conv-list'),
   convEmpty: $('#conv-empty'),
@@ -249,15 +248,6 @@ function toast(msg, danger = false) {
   }, 3200);
 }
 
-function setConn(stateName) {
-  // stateName: 'live' | 'stale' | 'error'
-  els.connStatus.classList.remove('stale', 'error');
-  if (stateName === 'stale') els.connStatus.classList.add('stale');
-  if (stateName === 'error') els.connStatus.classList.add('error');
-  const labels = { live: 'live', stale: 'paused', error: 'offline' };
-  els.connStatus.lastChild.textContent = labels[stateName] || 'live';
-}
-
 /* ----------------------------- auth flow ----------------------------- */
 
 async function boot() {
@@ -325,14 +315,11 @@ async function refreshConversations(initial = false) {
       els.convEmpty.querySelector('p').textContent = 'Database not connected';
       els.convEmpty.querySelector('span').textContent =
         'Set the Supabase env vars to start receiving messages.';
-      setConn('error');
       return;
     }
-    setConn('error');
     if (initial) { els.convLoading.hidden = true; }
     return;
   }
-  setConn(document.hidden ? 'stale' : 'live');
   state.conversations = data.conversations || [];
   els.convLoading.hidden = true;
   renderConversations();
@@ -1266,12 +1253,9 @@ function stopThreadPolling() {
   state.threadTimer = null;
 }
 
-// Pause/refresh on tab visibility for efficiency + instant freshness.
+// Refresh on tab visibility so returning to the tab pulls fresh data instantly.
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) {
-    setConn('stale');
-  } else if (!els.app.hidden) {
-    setConn('live');
+  if (!document.hidden && !els.app.hidden) {
     refreshConversations();
     if (state.activeWaId) loadThread(false);
   }
