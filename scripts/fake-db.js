@@ -64,14 +64,6 @@ function makeFakeDb() {
           },
         };
       },
-      delete() {
-        return {
-          eq(col, val) {
-            for (let i = rows.length - 1; i >= 0; i--) if (rows[i][col] === val) rows.splice(i, 1);
-            return Promise.resolve({ data: null, error: null });
-          },
-        };
-      },
 
       // ---- read chain ----
       select() { return builder; },

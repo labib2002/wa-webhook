@@ -546,39 +546,8 @@ a.media-frame:focus-visible { outline: 2px solid var(--pine); outline-offset: 2p
 .attach-name { font-weight: 600; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .attach-size { font-size: 12px; color: var(--ink-3); }
 
-/* deleted-message tombstone (agent deleted) */
-.bubble.tombstone { font-style: italic; opacity: 0.85; }
-.bubble.tombstone .tomb-text { color: var(--ink-2); display: inline-flex; align-items: center; gap: 6px; }
-.bubble.in.tombstone { background: var(--bubble-in); }
-.bubble.out.tombstone { background: var(--pine-soft); }
-
-/* customer-deleted flag (content kept, marked) */
-.bubble.flagged-deleted { box-shadow: var(--sh-1), inset 0 0 0 1.5px var(--danger-soft); }
-.delete-flag {
-  display: block; font-size: 11.5px; font-weight: 600; color: var(--danger);
-  margin-bottom: 4px; font-style: italic;
-}
-
 /* voice note: a touch tighter, distinct from a music file */
 .bubble.is-voice .media-audio, .bubble.is-audio .media-audio { margin-top: 6px; }
-
-/* delete control on a bubble (hover/focus reveal) */
-.bubble-del {
-  position: absolute; top: 4px; right: 4px;
-  width: 24px; height: 24px; border-radius: 7px;
-  border: none; background: rgba(255,255,255,0.85); color: var(--ink-3);
-  display: grid; place-content: center;
-  opacity: 0; pointer-events: none;
-  transition: opacity 0.12s, color 0.12s, background 0.12s;
-}
-.bubble.out .bubble-del { background: rgba(255,255,255,0.7); }
-.bubble:hover .bubble-del, .bubble:focus-within .bubble-del { opacity: 1; pointer-events: auto; }
-.bubble-del:hover { color: var(--danger); background: #fff; }
-.bubble-del:focus-visible { outline: 2px solid var(--danger); outline-offset: 1px; opacity: 1; pointer-events: auto; }
-/* on touch screens (no hover), keep the control visible but subtle */
-@media (hover: none) {
-  .bubble-del { opacity: 0.5; pointer-events: auto; }
-}
 
 /* reaction pill on a bubble */
 .bubble.has-reaction { margin-bottom: 14px; }
