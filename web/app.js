@@ -380,7 +380,7 @@ function renderConversations(forceRender = false) {
         <span class="row-time">${escapeHtml(fmtListTime(c.last_message_at))}</span>
         <span class="row-preview">${outTick}${escapeHtml(c.last_message_text || '')}</span>
         <span class="row-badge">${badge}</span>
-        <button type="button" class="row-readtoggle" data-read="${hasUnread ? 'read' : 'unread'}" title="${toggleTitle}" aria-label="${toggleTitle}">${toggleIco}</button>
+        <span class="row-readtoggle" role="button" tabindex="0" data-read="${hasUnread ? 'read' : 'unread'}" title="${toggleTitle}" aria-label="${toggleTitle}">${toggleIco}</span>
       </button>`;
   }).join('');
 }
@@ -396,6 +396,18 @@ els.convList.addEventListener('click', (e) => {
   const row = e.target.closest('.conv-row');
   if (!row) return;
   openConversation(row.dataset.wa);
+});
+
+// Keyboard activation for the read/unread toggle (it's a role="button" span so
+// it can live inside the .conv-row button without invalid nested buttons).
+els.convList.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  const toggle = e.target.closest('.row-readtoggle');
+  if (!toggle) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const row = toggle.closest('.conv-row');
+  if (row) setConversationRead(row.dataset.wa, toggle.dataset.read === 'read');
 });
 
 els.search.addEventListener('input', () => {
