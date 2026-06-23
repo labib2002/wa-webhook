@@ -156,6 +156,14 @@ function sign(body) {
     const r = await req(srv, 'POST', '/api/retry/1');
     assert.strictEqual(r.status, 401);
   });
+  await test('POST /api/forward without cookie → 401 (gated, not 404)', async () => {
+    const r = await req(srv, 'POST', '/api/forward', { body: { message_id: 1, wa_ids: ['201001234567'] } });
+    assert.strictEqual(r.status, 401);
+  });
+  await test('POST /api/conversations/:wa_id/read without cookie → 401 (gated)', async () => {
+    const r = await req(srv, 'POST', '/api/conversations/201001234567/read', { body: { read: false } });
+    assert.strictEqual(r.status, 401);
+  });
   await test('POST /api/login wrong passcode → 401', async () => {
     const r = await req(srv, 'POST', '/api/login', { body: { passcode: 'wrong' } });
     assert.strictEqual(r.status, 401);
@@ -295,6 +303,101 @@ function sign(body) {
     await ingestWebhook({ entry: [] }, db);
     await ingestWebhook({}, db);
   });
+
+  // --- forward + read/unread routes against an injected fake DB ---
+  // These DB-backed routes return 503 under the blanked-Supabase HTTP suite, so
+  // we inject a fake DB (like the screenshots harness) and stub the WhatsApp
+  // send helpers so no real network is touched.
+  console.log('\n\x1b[1mFORWARD + READ/UNREAD ROUTES (fake DB)\x1b[0m');
+  const dbmod = require('../lib/db');
+  const wa = require('../lib/whatsapp');
+  const fdb = makeFakeDb();
+  dbmod.__setDbForTesting(fdb);
+  // Stub the send side so forwarding "succeeds" without a live token.
+  wa.sendText = async () => ({ ok: true, waMessageId: 'wamid.FWD_TXT' });
+  wa.sendMedia = async () => ({ ok: true, waMessageId: 'wamid.FWD_MEDIA' });
+  wa.uploadMedia = async () => ({ ok: true, mediaId: 'MEDIA_FWD' });
+
+  const srv2 = await startServer();
+  // log in to get a session cookie for the gated routes
+  const loginRes = await req(srv2, 'POST', '/api/login', { body: { passcode: 'letmein' } });
+  const cookie = (loginRes.headers.get('set-cookie') || '').split(';')[0];
+  const authed = (method, path, body) => req(srv2, method, path, { body, headers: { cookie } });
+
+  await test('read endpoint: mark unread sets unread_count = 1', async () => {
+    fdb._tables.conversations.push({ wa_id: '201000000001', unread_count: 0 });
+    const r = await authed('POST', '/api/conversations/201000000001/read', { read: false });
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(fdb._tables.conversations.find((c) => c.wa_id === '201000000001').unread_count, 1);
+  });
+
+  await test('read endpoint: mark read sets unread_count = 0', async () => {
+    const r = await authed('POST', '/api/conversations/201000000001/read', { read: true });
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(fdb._tables.conversations.find((c) => c.wa_id === '201000000001').unread_count, 0);
+  });
+
+  await test('manually-unread chat that gets a new inbound still reads as unread', async () => {
+    // mark unread (=1), then an inbound arrives → increments to 2 (still > 0)
+    await authed('POST', '/api/conversations/201000000001/read', { read: false });
+    await ingestWebhook(inboundText('ping', 'wamid.AFTER_UNREAD'), fdb); // bumps a DIFFERENT wa_id
+    const c = fdb._tables.conversations.find((x) => x.wa_id === '201000000001');
+    assert.ok(c.unread_count > 0, 'manually-unread chat lost its unread state');
+  });
+
+  await test('forward text: persists a forwarded outgoing row in the destination', async () => {
+    // seed a source message + a destination conversation
+    fdb._tables.conversations.push({ wa_id: '201000000002', unread_count: 0 });
+    fdb._tables.messages.push({
+      id: 7001, wa_message_id: 'wamid.SRC', wa_id: '201000000003',
+      direction: 'in', type: 'text', body: 'forward me', status: 'received',
+    });
+    const r = await authed('POST', '/api/forward', { message_id: 7001, wa_ids: ['201000000002'] });
+    assert.strictEqual(r.status, 200);
+    const out = JSON.parse(r.text);
+    assert.strictEqual(out.sent, 1);
+    const row = fdb._tables.messages.find((m) => m.wa_id === '201000000002' && m.body === 'forward me');
+    assert.ok(row, 'forwarded row not persisted');
+    assert.strictEqual(row.direction, 'out');
+    assert.strictEqual(row.forwarded, true, `forwarded flag = ${row.forwarded}`);
+  });
+
+  await test('forward to two chats reports sent=2', async () => {
+    fdb._tables.conversations.push({ wa_id: '201000000004', unread_count: 0 });
+    fdb._tables.conversations.push({ wa_id: '201000000005', unread_count: 0 });
+    const r = await authed('POST', '/api/forward', { message_id: 7001, wa_ids: ['201000000004', '201000000005'] });
+    const out = JSON.parse(r.text);
+    assert.strictEqual(out.sent, 2);
+    assert.strictEqual(out.total, 2);
+  });
+
+  await test('forward unstored media → 409 with a clear message', async () => {
+    fdb._tables.messages.push({
+      id: 7002, wa_message_id: 'wamid.SRC2', wa_id: '201000000003',
+      direction: 'in', type: 'image', body: '📷 Image', media_status: 'pending', media_path: null,
+    });
+    const r = await authed('POST', '/api/forward', { message_id: 7002, wa_ids: ['201000000002'] });
+    assert.strictEqual(r.status, 409);
+  });
+
+  await test('forward voice note carries media_meta.voice so it renders as voice', async () => {
+    fdb._tables.messages.push({
+      id: 7003, wa_message_id: 'wamid.SRCVOICE', wa_id: '201000000003',
+      direction: 'in', type: 'audio', body: '🎤 Voice message',
+      media_status: 'stored', media_path: '201000000003/audio/v.ogg',
+      media_meta: { voice: true, mime_type: 'audio/ogg', caption: null },
+    });
+    const r = await authed('POST', '/api/forward', { message_id: 7003, wa_ids: ['201000000002'] });
+    assert.strictEqual(r.status, 200);
+    const row = fdb._tables.messages.find((m) => m.wa_id === '201000000002' && m.wa_message_id === 'wamid.FWD_MEDIA');
+    assert.ok(row, 'forwarded voice row missing');
+    assert.strictEqual(row.type, 'audio');
+    assert.strictEqual(row.forwarded, true);
+    assert.strictEqual(row.media_meta && row.media_meta.voice, true);
+  });
+
+  srv2.close();
+  dbmod.__setDbForTesting(null);
 
   // ---- summary ----
   console.log(`\n\x1b[1mRESULT:\x1b[0m ${passed} passed, ${failed} failed\n`);
