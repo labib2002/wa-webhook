@@ -489,6 +489,9 @@ async function openConversation(waId) {
   els.threadLoading.hidden = true;
   startThreadPolling();
   els.composerInput.focus();
+  // Place the caret at the END of a restored draft (focus alone leaves it at 0).
+  const end = els.composerInput.value.length;
+  els.composerInput.setSelectionRange(end, end);
 
   // Always mark read on open (reset badge + blue ticks), regardless of the
   // client-side unread count — polling may already have zeroed it locally.
