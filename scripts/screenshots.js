@@ -43,9 +43,10 @@ function seed() {
     { wa_message_id: 'm7', wa_id: T, direction: 'in',  type: 'document', body: '📄 Document', media_status: 'stored', media_path: 'x/document/m7.pdf', media_meta: { filename: 'warranty-card.pdf' }, status: 'received', wa_timestamp: iso(2.5), created_at: iso(2.5) },
     { wa_message_id: 'm7b', wa_id: T, direction: 'in', type: 'audio', body: '🎤 Voice message', media_status: 'stored', media_path: 'x/out/m7b.ogg', media_meta: { voice: true, mime_type: 'audio/ogg' }, status: 'received', wa_timestamp: iso(2.3), created_at: iso(2.3) },
     { wa_message_id: 'm8', wa_id: T, direction: 'in',  type: 'text', body: 'Perfect, thank you! 🙏', status: 'received', wa_timestamp: iso(2), created_at: iso(2) },
+    { wa_message_id: 'm8f', wa_id: T, direction: 'out', type: 'text', body: 'Here’s the policy doc the other customer asked about earlier.', forwarded: true, status: 'read', wa_timestamp: iso(1.6), created_at: iso(1.6) },
     { wa_message_id: 'm9', wa_id: T, direction: 'out', type: 'text', body: 'Glad to help! Anything else?', status: 'failed', error: 'Outside the 24-hour reply window — only approved templates can be sent now.', wa_timestamp: iso(1), created_at: iso(1) },
   ];
-  msgs.forEach((m, i) => fake._tables.messages.push({ id: i + 1, media_meta: null, error: null, ...m }));
+  msgs.forEach((m, i) => fake._tables.messages.push({ id: i + 1, media_meta: null, error: null, forwarded: false, ...m }));
 }
 seed();
 
@@ -105,6 +106,24 @@ seed();
   await shot('desktop-thread.png', 1280, 832, async (p) => {
     await p.click('.conv-row');
     await p.waitForSelector('.bubble');
+    // scroll to the bottom so the "↪ Forwarded" tag + failed bubble are in frame
+    await p.$eval('#messages', (el) => { el.scrollTop = el.scrollHeight; });
+    await p.waitForTimeout(200);
+  });
+  // Unread filter active: only badged conversations should remain.
+  await shot('desktop-unread-filter.png', 1280, 832, async (p) => {
+    await p.click('.filter-chip[data-filter="unread"]');
+    await p.waitForTimeout(150);
+  });
+  // Forward picker open over a thread.
+  await shot('desktop-forward-picker.png', 1280, 832, async (p) => {
+    await p.click('.conv-row');
+    await p.waitForSelector('.bubble');
+    // The forward control only shows on :hover; fire its click handler directly
+    // (a CSS-hidden element can't be clicked via the pointer), then wait for the
+    // picker to populate.
+    await p.$eval('.bubble .bubble-forward', (el) => el.click());
+    await p.waitForSelector('#forward-modal .forward-opt');
   });
   // Mobile: list view, then the open thread (single-pane + back arrow).
   await shot('mobile-list.png', 390, 780, null);

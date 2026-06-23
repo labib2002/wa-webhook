@@ -318,6 +318,37 @@ input, textarea, button { font-family: inherit; }
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* ---- list filter chips (compose with search) ---- */
+.list-filters { display: flex; gap: 6px; padding: 0 14px 10px; }
+.filter-chip {
+  border: 1px solid var(--card-edge);
+  background: var(--paper-2); color: var(--ink-2);
+  font-size: 12.5px; font-weight: 600;
+  padding: 5px 13px; border-radius: 999px;
+  transition: background 0.13s, color 0.13s, border-color 0.13s;
+}
+.filter-chip:hover { background: #fff; color: var(--ink); }
+.filter-chip.active {
+  background: var(--pine); color: #fff; border-color: var(--pine);
+}
+.filter-chip:focus-visible { outline: 2px solid var(--pine); outline-offset: 2px; }
+
+/* ---- per-row read/unread control (hover desktop, always-tappable mobile) ---- */
+.conv-row { position: relative; }
+.row-readtoggle {
+  position: absolute; top: 8px; right: 8px;
+  width: 26px; height: 26px; border-radius: 8px;
+  border: none; background: var(--card); color: var(--ink-2);
+  display: none; place-content: center;
+  box-shadow: var(--sh-1);
+  transition: background 0.13s, color 0.13s;
+}
+.row-readtoggle:hover { background: var(--paper-2); color: var(--pine-deep); }
+.row-readtoggle:focus-visible { outline: 2px solid var(--pine); outline-offset: 1px; display: grid; }
+.conv-row:hover .row-readtoggle { display: grid; }
+/* the toggle sits where the time/badge are; lift them clear on hover */
+.conv-row:hover .row-time { visibility: hidden; }
+
 /* ============================== THREAD ============================== */
 .pane-thread { background: var(--paper); position: relative; }
 
@@ -598,6 +629,67 @@ a.media-frame:focus-visible { outline: 2px solid var(--pine); outline-offset: 2p
 }
 .bubble.in .reaction-pill { right: auto; left: 8px; }
 
+/* ---- "Forwarded" tag (dashboard-only label) ---- */
+.bubble .forwarded-tag {
+  display: flex; align-items: center; gap: 4px;
+  font-size: 11.5px; font-weight: 600; font-style: italic;
+  color: var(--ink-3); margin-bottom: 2px;
+}
+.bubble.out .forwarded-tag { color: #4d7a6d; }
+
+/* ---- forward control on a bubble (hover desktop, tappable mobile) ---- */
+.bubble-forward {
+  position: absolute; top: 50%; transform: translateY(-50%);
+  width: 30px; height: 30px; border-radius: 50%;
+  border: none; background: var(--card); color: var(--ink-2);
+  display: none; place-content: center;
+  box-shadow: var(--sh-1);
+  transition: background 0.13s, color 0.13s;
+}
+.bubble.out .bubble-forward { left: -38px; }
+.bubble.in  .bubble-forward { right: -38px; }
+.bubble-forward:hover { background: var(--paper-2); color: var(--pine-deep); }
+.bubble-forward:focus-visible { outline: 2px solid var(--pine); outline-offset: 1px; display: grid; }
+.bubble:hover .bubble-forward { display: grid; }
+
+/* ---- forward destination picker ---- */
+.forward-card { display: flex; flex-direction: column; max-height: min(80vh, 620px); }
+.forward-search-wrap { padding: 0 0 12px; }
+.forward-search-wrap .search-ico { left: 12px; }
+.forward-search-wrap #forward-search {
+  width: 100%; border: 1px solid var(--card-edge); background: var(--paper-2);
+  border-radius: 999px; padding: 9px 14px 9px 36px; font-size: 14px; color: var(--ink);
+  transition: background 0.14s, border-color 0.14s, box-shadow 0.14s;
+}
+.forward-search-wrap #forward-search:focus {
+  outline: none; background: #fff; border-color: var(--pine); box-shadow: 0 0 0 3px var(--pine-ring);
+}
+.forward-list {
+  flex: 1; min-height: 80px; overflow-y: auto;
+  border: 1px solid var(--card-edge); border-radius: var(--r-md);
+  background: var(--paper-2); padding: 4px;
+}
+.forward-opt {
+  display: flex; align-items: center; gap: 11px;
+  width: 100%; text-align: left; border: none; background: transparent;
+  padding: 9px 10px; border-radius: var(--r-sm);
+  transition: background 0.12s;
+}
+.forward-opt:hover { background: #fff; }
+.forward-opt.selected { background: var(--pine-soft); }
+.forward-opt .avatar { width: 38px; height: 38px; font-size: 15px; }
+.forward-opt .fo-name {
+  flex: 1; min-width: 0; font-weight: 600; font-size: 14px; color: var(--ink);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.forward-opt .fo-check {
+  width: 20px; height: 20px; border-radius: 50%; flex: none;
+  border: 2px solid var(--card-edge); display: grid; place-content: center;
+  color: #fff; font-size: 12px;
+}
+.forward-opt.selected .fo-check { background: var(--pine); border-color: var(--pine); }
+.forward-empty { color: var(--ink-3); font-size: 13.5px; text-align: center; padding: 16px 0 4px; margin: 0; }
+
 /* ============================== MODAL ============================== */
 .modal-overlay {
   position: fixed; inset: 0; z-index: 60;
@@ -661,6 +753,14 @@ a.media-frame:focus-visible { outline: 2px solid var(--pine); outline-offset: 2p
   .back-btn { display: inline-grid; }
   .bubble { max-width: 82%; }
   .messages { padding-left: 14px; padding-right: 14px; }
+
+  /* On touch screens there's no hover, so keep the inline controls reachable. */
+  .conv-row .row-readtoggle { display: grid; }
+  .conv-row:hover .row-time { visibility: visible; }
+  .row-readtoggle { top: auto; bottom: 8px; }
+  .bubble-forward { display: grid; width: 28px; height: 28px; }
+  .bubble.out .bubble-forward { left: -34px; }
+  .bubble.in  .bubble-forward { right: -34px; }
 }
 
 /* Reduced motion: drop the flourishes. */

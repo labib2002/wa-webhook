@@ -57,13 +57,22 @@ const els = {
   newChatName: $('#new-chat-name'),
   newChatError: $('#new-chat-error'),
   newChatCancel: $('#new-chat-cancel'),
+  forwardModal: $('#forward-modal'),
+  forwardSearch: $('#forward-search'),
+  forwardList: $('#forward-list'),
+  forwardEmpty: $('#forward-empty'),
+  forwardError: $('#forward-error'),
+  forwardCancel: $('#forward-cancel'),
+  forwardSubmit: $('#forward-submit'),
   toast: $('#toast'),
 };
 
 const state = {
   conversations: [],      // latest list snapshot
   filter: '',
+  listFilter: 'all',      // 'all' | 'unread' — composes WITH the search term
   activeWaId: null,
+  forward: null,          // { msgId, selected: Set(wa_id), search } while the picker is open
   threads: {},            // wa_id -> { byId: Map(id->msg), order: [ids], lastMsgId, loaded }
   drafts: {},             // wa_id -> unsent composer text (preserved across chat switches)
   sending: false,
@@ -314,7 +323,10 @@ async function refreshConversations(initial = false) {
 let _lastConvSig = '';
 function renderConversations(forceRender = false) {
   const q = state.filter.trim().toLowerCase();
+  const onlyUnread = state.listFilter === 'unread';
   let list = state.conversations;
+  // Filter first, then search WITHIN the active filter.
+  if (onlyUnread) list = list.filter((c) => c.unread_count > 0);
   if (q) {
     list = list.filter((c) =>
       displayName(c).toLowerCase().includes(q) || (c.wa_id || '').includes(q)
@@ -322,8 +334,10 @@ function renderConversations(forceRender = false) {
   }
 
   // Skip the DOM rebuild if nothing the list shows has changed — avoids
-  // flicker, lost hover, and wasted work on every 4s poll.
-  const sig = state.activeWaId + '|' + q + '|' + list.map((c) =>
+  // flicker, lost hover, and wasted work on every 4s poll. The active filter +
+  // search term are part of the signature so a row correctly appears/disappears
+  // as its unread state changes.
+  const sig = state.activeWaId + '|' + state.listFilter + '|' + q + '|' + list.map((c) =>
     `${c.wa_id}:${c.last_message_at}:${c.unread_count}:${c.last_message_text}:${c.profile_name || ''}:${c.last_message_direction || ''}`
   ).join(';');
   if (!forceRender && sig === _lastConvSig) return;
@@ -332,7 +346,10 @@ function renderConversations(forceRender = false) {
   if (!list.length) {
     els.convList.innerHTML = '';
     els.convEmpty.hidden = false;
-    if (q) {
+    if (onlyUnread && !q) {
+      els.convEmpty.querySelector('p').textContent = 'No unread chats';
+      els.convEmpty.querySelector('span').textContent = 'You’re all caught up.';
+    } else if (q) {
       els.convEmpty.querySelector('p').textContent = 'No matches';
       els.convEmpty.querySelector('span').textContent = 'Try a different name or number.';
     }
@@ -343,12 +360,19 @@ function renderConversations(forceRender = false) {
   els.convList.innerHTML = list.map((c) => {
     const name = escapeHtml(displayName(c));
     const active = c.wa_id === state.activeWaId ? ' active' : '';
-    const unread = c.unread_count > 0 ? ' has-unread' : '';
+    const hasUnread = c.unread_count > 0;
+    const unread = hasUnread ? ' has-unread' : '';
     const badge = c.unread_count > 99 ? '99+' : c.unread_count;
     const outTick =
       c.last_message_direction === 'out'
         ? '<span class="tick">✓</span> '
         : '';
+    // Per-row read/unread control: a hovered chat with unread can be cleared;
+    // a read chat can be re-flagged unread.
+    const toggleTitle = hasUnread ? 'Mark as read' : 'Mark as unread';
+    const toggleIco = hasUnread
+      ? '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>'
+      : '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3" fill="currentColor" stroke="none"/></svg>';
     return `
       <button class="conv-row${active}${unread}" role="listitem" data-wa="${escapeHtml(c.wa_id)}">
         <span class="avatar">${escapeHtml(initials(c.profile_name, c.wa_id))}</span>
@@ -356,11 +380,19 @@ function renderConversations(forceRender = false) {
         <span class="row-time">${escapeHtml(fmtListTime(c.last_message_at))}</span>
         <span class="row-preview">${outTick}${escapeHtml(c.last_message_text || '')}</span>
         <span class="row-badge">${badge}</span>
+        <button type="button" class="row-readtoggle" data-read="${hasUnread ? 'read' : 'unread'}" title="${toggleTitle}" aria-label="${toggleTitle}">${toggleIco}</button>
       </button>`;
   }).join('');
 }
 
 els.convList.addEventListener('click', (e) => {
+  const toggle = e.target.closest('.row-readtoggle');
+  if (toggle) {
+    e.stopPropagation();
+    const row = toggle.closest('.conv-row');
+    if (row) setConversationRead(row.dataset.wa, toggle.dataset.read === 'read');
+    return;
+  }
   const row = e.target.closest('.conv-row');
   if (!row) return;
   openConversation(row.dataset.wa);
@@ -370,6 +402,38 @@ els.search.addEventListener('input', () => {
   state.filter = els.search.value;
   renderConversations();
 });
+
+// Filter chips (All / Unread) — compose with the search term.
+document.querySelectorAll('.filter-chip').forEach((chip) => {
+  chip.addEventListener('click', () => {
+    state.listFilter = chip.dataset.filter;
+    document.querySelectorAll('.filter-chip').forEach((c) => {
+      const on = c === chip;
+      c.classList.toggle('active', on);
+      c.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    renderConversations();
+  });
+});
+
+// Manual read/unread flag (dashboard-local; does NOT touch WhatsApp blue ticks).
+// Optimistic: flip the local count, re-render, then persist; the list poll keeps
+// it in sync afterwards. Marking unread sets the count to 1 so the badge shows.
+async function setConversationRead(waId, read) {
+  const conv = state.conversations.find((c) => c.wa_id === waId);
+  if (conv) {
+    conv.unread_count = read ? 0 : 1;
+    renderConversations();
+  }
+  const { ok, status, data } = await api(`/api/conversations/${encodeURIComponent(waId)}/read`, {
+    method: 'POST', body: JSON.stringify({ read }),
+  });
+  if (status === 401) return handleAuthLost();
+  if (!ok) {
+    toast((data && data.error) || 'Could not update the chat.', true);
+    refreshConversations(); // resync from the server
+  }
+}
 
 /* --------------------------- open a thread --------------------------- */
 
@@ -505,7 +569,7 @@ function renderMessages(force = false) {
 // A cheap signature of everything that affects a bubble's rendering, so we
 // only re-render when something visible actually changed.
 function bubbleSig(m, continued) {
-  return [m.id, m.status, m.error || '', m.reaction, m.media_status, m._optimistic ? 1 : 0, continued ? 1 : 0, m.body].join('|');
+  return [m.id, m.status, m.error || '', m.reaction, m.media_status, m.forwarded ? 1 : 0, m._optimistic ? 1 : 0, continued ? 1 : 0, m.body].join('|');
 }
 
 function renderBubble(m, continued) {
@@ -522,6 +586,12 @@ function renderBubble(m, continued) {
   const iso = m.wa_timestamp || m.created_at;
 
   let inner = '';
+
+  // Dashboard-only "Forwarded" tag (the Cloud API can't set WhatsApp's native
+  // forwarded label, so this shows only here).
+  if (m.forwarded) {
+    inner += `<span class="forwarded-tag"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 17 20 12 15 7"/><path d="M4 18v-2a4 4 0 0 1 4-4h12"/></svg>Forwarded</span>`;
+  }
 
   if (m.type && m.type !== 'text') {
     const meta = m.media_meta || {};
@@ -602,6 +672,19 @@ function renderBubble(m, continued) {
     r.className = 'reaction-pill';
     r.textContent = m.reaction;
     div.appendChild(r);
+  }
+
+  // Forward control — on every persisted message (in/out, any type). Not shown
+  // on optimistic bubbles (no real id yet to forward).
+  if (!m._optimistic && typeof m.id === 'number') {
+    const fwd = document.createElement('button');
+    fwd.type = 'button';
+    fwd.className = 'bubble-forward';
+    fwd.title = 'Forward';
+    fwd.setAttribute('aria-label', 'Forward message');
+    fwd.innerHTML = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 17 20 12 15 7"/><path d="M4 18v-2a4 4 0 0 1 4-4h12"/></svg>';
+    fwd.addEventListener('click', (e) => { e.stopPropagation(); openForwardModal(m); });
+    div.appendChild(fwd);
   }
   return div;
 }
@@ -1224,6 +1307,134 @@ els.newChatForm.addEventListener('submit', async (e) => {
 // Escape closes the modal.
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && !els.newChatModal.hidden) closeNewChatModal();
+});
+
+/* ----------------------- forward message ----------------------- */
+
+// Open the destination picker for a message. Media must be stored to forward;
+// if it isn't (pending/failed), show a clear inline message instead.
+function openForwardModal(m) {
+  if (m.type && m.type !== 'text' && (m.media_status !== 'stored' || (!m.media_path && !m._localUrl))) {
+    // _localUrl alone (optimistic) has no server-stored copy yet either.
+    toast('This media isn’t stored yet, so it can’t be forwarded.', true);
+    return;
+  }
+  state.forward = { msgId: m.id, srcWaId: m.wa_id || state.activeWaId, selected: new Set(), search: '' };
+  els.forwardError.hidden = true;
+  els.forwardSearch.value = '';
+  els.forwardModal.hidden = false;
+  renderForwardList();
+  updateForwardSubmit();
+  setTimeout(() => els.forwardSearch.focus(), 50);
+}
+function closeForwardModal() {
+  els.forwardModal.hidden = true;
+  state.forward = null;
+}
+
+function renderForwardList() {
+  const f = state.forward;
+  if (!f) return;
+  const q = (f.search || '').trim().toLowerCase();
+  // All existing conversations except the source chat (forwarding to itself is
+  // pointless). New numbers are handled by the existing New-conversation flow.
+  let list = state.conversations.filter((c) => c.wa_id !== f.srcWaId);
+  if (q) {
+    list = list.filter((c) =>
+      displayName(c).toLowerCase().includes(q) || (c.wa_id || '').includes(q)
+    );
+  }
+  els.forwardEmpty.hidden = list.length > 0;
+  els.forwardList.innerHTML = list.map((c) => {
+    const sel = f.selected.has(c.wa_id) ? ' selected' : '';
+    return `
+      <button type="button" class="forward-opt${sel}" data-wa="${escapeHtml(c.wa_id)}">
+        <span class="avatar">${escapeHtml(initials(c.profile_name, c.wa_id))}</span>
+        <span class="fo-name">${escapeHtml(displayName(c))}</span>
+        <span class="fo-check">${f.selected.has(c.wa_id) ? '✓' : ''}</span>
+      </button>`;
+  }).join('');
+}
+
+function updateForwardSubmit() {
+  const f = state.forward;
+  const n = f ? f.selected.size : 0;
+  els.forwardSubmit.disabled = n === 0;
+  els.forwardSubmit.textContent = n > 1 ? `Forward (${n})` : 'Forward';
+}
+
+els.forwardList.addEventListener('click', (e) => {
+  const opt = e.target.closest('.forward-opt');
+  if (!opt || !state.forward) return;
+  const wa = opt.dataset.wa;
+  if (state.forward.selected.has(wa)) state.forward.selected.delete(wa);
+  else state.forward.selected.add(wa);
+  renderForwardList();
+  updateForwardSubmit();
+});
+
+els.forwardSearch.addEventListener('input', () => {
+  if (!state.forward) return;
+  state.forward.search = els.forwardSearch.value;
+  renderForwardList();
+});
+
+els.forwardCancel.addEventListener('click', closeForwardModal);
+els.forwardModal.addEventListener('click', (e) => {
+  if (e.target === els.forwardModal) closeForwardModal();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !els.forwardModal.hidden) closeForwardModal();
+});
+
+els.forwardSubmit.addEventListener('click', async () => {
+  const f = state.forward;
+  if (!f || !f.selected.size) return;
+  const dests = [...f.selected];
+  els.forwardError.hidden = true;
+  els.forwardSubmit.disabled = true;
+  els.forwardSubmit.textContent = 'Forwarding…';
+
+  const { ok, status, data } = await api('/api/forward', {
+    method: 'POST', body: JSON.stringify({ message_id: f.msgId, wa_ids: dests }),
+  });
+  if (status === 401) return handleAuthLost();
+
+  if (!ok) {
+    els.forwardError.textContent = (data && data.error) || 'Could not forward the message.';
+    els.forwardError.hidden = false;
+    updateForwardSubmit();
+    return;
+  }
+
+  // Add an optimistic forwarded bubble to each destination thread (so a chat the
+  // agent later opens shows it instantly; the ?since= poll reconciles with the
+  // persisted row). Bump each destination's list preview so it rises.
+  const results = (data && data.results) || [];
+  for (const r of results) {
+    if (!r.ok || !r.message) continue;
+    const t = thread(r.wa_id);
+    // Seed the persisted row directly into the cached thread.
+    if (!t.byId.has(r.message.id)) {
+      t.byId.set(r.message.id, r.message);
+      t.order.push(r.message.id);
+      mergeMessages(t, []);
+    }
+    bumpConversationPreview(r.wa_id, r.message.body || '', 'out');
+  }
+
+  const sent = (data && data.sent) || 0;
+  const total = (data && data.total) || dests.length;
+  closeForwardModal();
+  if (sent === total) {
+    toast(`Forwarded to ${sent} chat${sent === 1 ? '' : 's'}.`);
+  } else if (sent > 0) {
+    toast(`Forwarded to ${sent} of ${total} chats — some couldn’t be sent.`, true);
+  } else {
+    toast('Could not forward — likely outside the 24-hour window.', true);
+  }
+  // If the agent is currently viewing one of the destinations, refresh it.
+  if (state.activeWaId && dests.includes(state.activeWaId)) renderMessages();
 });
 
 /* ----------------------------- start ----------------------------- */

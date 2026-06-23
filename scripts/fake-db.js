@@ -109,6 +109,7 @@ function makeFakeDb() {
       return {
         upload: async () => ({ data: { path: 'x' }, error: null }),
         remove: async () => ({ data: null, error: null }),
+        download: async () => ({ data: { arrayBuffer: async () => new ArrayBuffer(4) }, error: null }),
         createSignedUrl: async () => ({ data: { signedUrl: '/_sample.svg' }, error: null }),
       };
     },

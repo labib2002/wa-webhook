@@ -66,6 +66,10 @@
         <svg class="search-ico" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
         <input id="search" type="search" placeholder="Search name or number" aria-label="Search conversations" />
       </div>
+      <div class="list-filters" role="tablist" aria-label="Filter conversations">
+        <button class="filter-chip active" data-filter="all" role="tab" aria-selected="true">All</button>
+        <button class="filter-chip" data-filter="unread" role="tab" aria-selected="false">Unread</button>
+      </div>
       <div id="conv-list" class="conv-list" role="list" aria-live="polite">
         <!-- conversation rows injected here -->
       </div>
@@ -183,6 +187,25 @@
         <button id="new-chat-submit" type="submit" class="btn-primary btn-inline">Open chat</button>
       </div>
     </form>
+  </div>
+
+  <!-- forward-to-chats modal (reuses the modal styling) -->
+  <div id="forward-modal" class="modal-overlay" hidden>
+    <div class="modal-card forward-card" role="dialog" aria-modal="true" aria-labelledby="forward-title">
+      <h2 id="forward-title" class="modal-title">Forward to…</h2>
+      <p class="modal-sub">Choose one or more chats to forward this message to. It’s sent as a new message from your number.</p>
+      <div class="search-wrap forward-search-wrap">
+        <svg class="search-ico" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input id="forward-search" type="search" placeholder="Search name or number" aria-label="Search chats to forward to" />
+      </div>
+      <div id="forward-list" class="forward-list" role="group" aria-label="Destination chats"></div>
+      <p id="forward-empty" class="forward-empty" hidden>No matching chats.</p>
+      <p id="forward-error" class="login-error" role="alert" hidden></p>
+      <div class="modal-actions">
+        <button id="forward-cancel" type="button" class="btn-ghost">Cancel</button>
+        <button id="forward-submit" type="button" class="btn-primary btn-inline" disabled>Forward</button>
+      </div>
+    </div>
   </div>
 
   <!-- toast for transient errors / notices -->
