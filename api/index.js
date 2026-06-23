@@ -73,48 +73,6 @@ app.post('/', async (req, res) => {
   res.sendStatus(200);
 });
 
-// TEMP PROBE — verify ffmpeg executes on the deployed Vercel runtime. Remove
-// before final. Tries: locate binary, run -version, list encoders for libopus,
-// and do a real synthetic transcode to ogg/opus in /tmp.
-app.get('/__ffprobe', async (_req, res) => {
-  const out = {};
-  try {
-    const ffmpegPath = require('ffmpeg-static');
-    const fs = require('fs');
-    const os = require('os');
-    const { execFile } = require('child_process');
-    const { promisify } = require('util');
-    const run = promisify(execFile);
-    out.ffmpegPath = ffmpegPath;
-    out.exists = ffmpegPath ? fs.existsSync(ffmpegPath) : false;
-    if (out.exists) {
-      try { fs.chmodSync(ffmpegPath, 0o755); } catch (e) { out.chmodErr = e.message; }
-      try { out.size = fs.statSync(ffmpegPath).size; } catch (_) {}
-      try {
-        const v = await run(ffmpegPath, ['-version'], { timeout: 10000 });
-        out.version = (v.stdout || '').split('\n')[0];
-      } catch (e) { out.versionErr = e.message; }
-      try {
-        const enc = await run(ffmpegPath, ['-hide_banner', '-encoders'], { timeout: 10000 });
-        out.hasLibopus = /libopus/.test(enc.stdout || '');
-        out.hasOpus = /\bopus\b/.test(enc.stdout || '');
-      } catch (e) { out.encErr = e.message; }
-      // real transcode: synth 0.5s tone -> ogg/opus in /tmp
-      try {
-        const tmp = path.join(os.tmpdir(), `probe-${Date.now()}.ogg`);
-        const codec = out.hasLibopus ? 'libopus' : 'opus';
-        await run(ffmpegPath, ['-f', 'lavfi', '-i', 'sine=frequency=440:duration=0.5', '-c:a', codec, '-y', tmp], { timeout: 15000 });
-        out.transcodeBytes = fs.statSync(tmp).size;
-        fs.unlinkSync(tmp);
-        out.transcodeOk = out.transcodeBytes > 0;
-      } catch (e) { out.transcodeErr = e.message; }
-    }
-  } catch (e) {
-    out.fatal = e.message;
-  }
-  res.json(out);
-});
-
 // ---------------------------------------------------------------------------
 //  Dashboard API (passcode-gated inside the router) + static SPA.
 // ---------------------------------------------------------------------------
