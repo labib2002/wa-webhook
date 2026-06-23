@@ -152,6 +152,10 @@ function sign(body) {
     const r = await req(srv, 'GET', '/api/conversations');
     assert.strictEqual(r.status, 401);
   });
+  await test('POST /api/retry/:id without cookie → 401 (gated)', async () => {
+    const r = await req(srv, 'POST', '/api/retry/1');
+    assert.strictEqual(r.status, 401);
+  });
   await test('POST /api/login wrong passcode → 401', async () => {
     const r = await req(srv, 'POST', '/api/login', { body: { passcode: 'wrong' } });
     assert.strictEqual(r.status, 401);

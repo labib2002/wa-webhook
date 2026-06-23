@@ -43,6 +43,7 @@ function seed() {
     { wa_message_id: 'm7', wa_id: T, direction: 'in',  type: 'document', body: '📄 Document', media_status: 'stored', media_path: 'x/document/m7.pdf', media_meta: { filename: 'warranty-card.pdf' }, status: 'received', wa_timestamp: iso(2.5), created_at: iso(2.5) },
     { wa_message_id: 'm7b', wa_id: T, direction: 'in', type: 'audio', body: '🎤 Voice message', media_status: 'stored', media_path: 'x/out/m7b.ogg', media_meta: { voice: true, mime_type: 'audio/ogg' }, status: 'received', wa_timestamp: iso(2.3), created_at: iso(2.3) },
     { wa_message_id: 'm8', wa_id: T, direction: 'in',  type: 'text', body: 'Perfect, thank you! 🙏', status: 'received', wa_timestamp: iso(2), created_at: iso(2) },
+    { wa_message_id: 'm9', wa_id: T, direction: 'out', type: 'text', body: 'Glad to help! Anything else?', status: 'failed', error: 'Outside the 24-hour reply window — only approved templates can be sent now.', wa_timestamp: iso(1), created_at: iso(1) },
   ];
   msgs.forEach((m, i) => fake._tables.messages.push({ id: i + 1, media_meta: null, error: null, ...m }));
 }

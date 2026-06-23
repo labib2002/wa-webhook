@@ -47,6 +47,9 @@ const els = {
   recTime: $('#rec-time'),
   recCancel: $('#rec-cancel'),
   recSend: $('#rec-send'),
+  recPause: $('#rec-pause'),
+  recDot: $('#rec-dot'),
+  recHint: $('#rec-hint'),
   newChatBtn: $('#new-chat-btn'),
   newChatModal: $('#new-chat-modal'),
   newChatForm: $('#new-chat-form'),
@@ -492,7 +495,7 @@ function renderMessages(force = false) {
 // A cheap signature of everything that affects a bubble's rendering, so we
 // only re-render when something visible actually changed.
 function bubbleSig(m, continued) {
-  return [m.id, m.status, m.reaction, m.media_status, m._optimistic ? 1 : 0, continued ? 1 : 0, m.body].join('|');
+  return [m.id, m.status, m.error || '', m.reaction, m.media_status, m._optimistic ? 1 : 0, continued ? 1 : 0, m.body].join('|');
 }
 
 function renderBubble(m, continued) {
@@ -564,11 +567,22 @@ function renderBubble(m, continued) {
 
   div.innerHTML = inner + metaHtml;
 
-  if (m.status === 'failed' && m.error) {
+  if (m.status === 'failed') {
     const reason = document.createElement('span');
     reason.className = 'fail-reason';
-    reason.textContent = '⚠ ' + m.error;
+    reason.textContent = '⚠ ' + (m.error || 'Failed to send.');
     div.appendChild(reason);
+
+    // Retry control — only on genuinely failed outgoing messages.
+    if (dir === 'out' && !m._optimistic) {
+      const retry = document.createElement('button');
+      retry.className = 'bubble-retry';
+      retry.title = 'Retry sending';
+      retry.setAttribute('aria-label', 'Retry sending');
+      retry.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg><span>Retry</span>';
+      retry.addEventListener('click', (e) => { e.stopPropagation(); retrySend(m); });
+      div.appendChild(retry);
+    }
   }
 
   // Reaction emoji (customer reacted to one of our messages) — a small pill
@@ -600,6 +614,57 @@ function labelForType(type) {
 
 function scrollMessagesToBottom() {
   els.messages.scrollTop = els.messages.scrollHeight;
+}
+
+// Re-attempt a failed outgoing message. Two cases:
+//  - client-drop (negative id + _retry payload): re-POST the original request.
+//  - server/WhatsApp failure (real id): POST /api/retry/:id (resend from stored).
+// On success the SAME bubble flips to sent — no duplicate.
+async function retrySend(m) {
+  const waId = m.wa_id || state.activeWaId;
+  const t = thread(waId);
+  const cur = t.byId.get(m.id);
+  if (!cur || cur._retrying) return;
+
+  // optimistic: show "sending" on the same bubble, hide retry/error
+  t.byId.set(m.id, { ...cur, _retrying: true, status: 'pending', error: null });
+  renderMessages();
+
+  let resp;
+  if (cur._retry) {
+    // client-drop: re-POST the exact original request
+    resp = await api(cur._retry.endpoint, { method: 'POST', body: JSON.stringify(cur._retry.payload) });
+  } else if (typeof m.id === 'number') {
+    // server row: ask the server to resend from the stored copy
+    resp = await api(`/api/retry/${m.id}`, { method: 'POST' });
+  } else {
+    resp = { ok: false, status: 0, data: { error: 'Nothing to retry.' } };
+  }
+
+  const { ok, status, data } = resp;
+  if (status === 401) return handleAuthLost();
+
+  const t2 = thread(waId);
+  const stillThere = t2.byId.get(m.id);
+  if (!stillThere) return; // bubble vanished (chat switched / replaced) — nothing to do
+
+  if (ok && data.message) {
+    // replace the failed bubble with the now-sent persisted row (no dup)
+    t2.byId.delete(m.id);
+    const idx = t2.order.indexOf(m.id);
+    if (idx > -1) t2.order.splice(idx, 1);
+    t2.byId.set(data.message.id, data.message);
+    t2.order.push(data.message.id);
+    mergeMessages(t2, []); // re-sort + advance maxUpdatedAt
+    renderMessages();
+    bumpConversationPreview(waId, data.message.body || stripCaption(stillThere.body) || '', 'out');
+    toast('Message sent.');
+  } else {
+    // still failing — restore the failed state (and keep _retry for another go)
+    t2.byId.set(m.id, { ...stillThere, _retrying: false, status: 'failed', error: (data && data.error) || 'Failed to send.' });
+    renderMessages();
+    setBanner((data && data.error) || 'Still couldn’t send. Check the connection or the 24-hour window.');
+  }
 }
 
 /* ----------------------------- composer ----------------------------- */
@@ -737,7 +802,11 @@ async function sendPendingFile() {
     settleOptimistic(waId, opt, { _optimistic: false, status: 'sent' });
     toast(data.warning || 'Sent, but not saved.');
   } else {
-    settleOptimistic(waId, opt, { _optimistic: false, status: 'failed', error: data.error || 'Failed to send.' });
+    // keep the failed bubble retryable: re-POST the same media (base64 retained)
+    settleOptimistic(waId, opt, {
+      _optimistic: false, status: 'failed', error: data.error || 'Failed to send.',
+      _retry: { endpoint: '/api/send-media', payload },
+    });
     setBanner(data.error || 'Failed to send attachment.');
   }
 }
@@ -812,22 +881,66 @@ async function startRecording() {
   const chunks = [];
   mediaRecorder.addEventListener('dataavailable', (e) => { if (e.data && e.data.size) chunks.push(e.data); });
 
+  // Timing fields support pause/resume: elapsed = (now - startedAt) - pausedMs,
+  // and while paused we freeze using pauseStartedAt.
   const startedAt = performance.now();
-  const rec = { mediaRecorder, stream, chunks, startedAt, timer: null, canceled: false, requestedMime: mime };
+  const rec = {
+    mediaRecorder, stream, chunks, startedAt, timer: null, canceled: false,
+    requestedMime: mime, paused: false, pausedMs: 0, pauseStartedAt: 0,
+  };
   state.rec = rec;
 
   mediaRecorder.addEventListener('stop', () => finishRecording(rec));
 
-  // live timer; auto-stop at 5 min as a safety cap
+  // live timer; auto-stop at 5 min of ACTUAL recorded time
+  setRecPausedUI(false);
   els.recTime.textContent = '0:00';
   rec.timer = setInterval(() => {
-    const elapsed = performance.now() - startedAt;
+    if (rec.paused) return; // freeze the displayed time while paused
+    const elapsed = recElapsedMs(rec);
     els.recTime.textContent = fmtRecTime(elapsed);
     if (elapsed > 5 * 60 * 1000) stopRecording();
   }, 200);
 
   showRecBar(true);
   mediaRecorder.start();
+}
+
+// True recorded time, excluding any paused spans.
+function recElapsedMs(rec) {
+  const raw = performance.now() - rec.startedAt;
+  const pausedSoFar = rec.pausedMs + (rec.paused ? (performance.now() - rec.pauseStartedAt) : 0);
+  return Math.max(0, raw - pausedSoFar);
+}
+
+function setRecPausedUI(paused) {
+  els.recBar.classList.toggle('paused', paused);
+  els.recHint.textContent = paused ? 'Paused — tap ▶ to resume' : 'Recording… tap send to finish';
+  els.recPause.title = paused ? 'Resume' : 'Pause';
+  els.recPause.setAttribute('aria-label', paused ? 'Resume recording' : 'Pause recording');
+  const pauseIco = els.recPause.querySelector('.ico-pause');
+  const resumeIco = els.recPause.querySelector('.ico-resume');
+  if (pauseIco) pauseIco.hidden = paused;
+  if (resumeIco) resumeIco.hidden = !paused;
+}
+
+function togglePause() {
+  const rec = state.rec;
+  if (!rec || rec.mediaRecorder.state === 'inactive') return;
+  if (!rec.paused) {
+    // pause: MediaRecorder.pause() stops emitting data but KEEPS the session,
+    // so chunks resume accumulating into the same recording on resume.
+    if (rec.mediaRecorder.state === 'recording') rec.mediaRecorder.pause();
+    rec.paused = true;
+    rec.pauseStartedAt = performance.now();
+    setRecPausedUI(true);
+  } else {
+    if (rec.mediaRecorder.state === 'paused') rec.mediaRecorder.resume();
+    rec.pausedMs += performance.now() - rec.pauseStartedAt;
+    rec.paused = false;
+    rec.pauseStartedAt = 0;
+    setRecPausedUI(false);
+  }
 }
 
 function stopRecording() {
@@ -878,6 +991,7 @@ function finishRecording(rec) {
 els.micBtn.addEventListener('click', startRecording);
 els.recSend.addEventListener('click', stopRecording);
 els.recCancel.addEventListener('click', cancelRecording);
+els.recPause.addEventListener('click', togglePause);
 
 // Add an optimistic outgoing bubble to the active thread and render it.
 function addOptimistic(waId, fields) {
@@ -948,7 +1062,11 @@ els.composerForm.addEventListener('submit', async (e) => {
     settleOptimistic(waId, opt, { _optimistic: false, status: 'sent' });
     toast(data.warning || 'Sent, but not saved.');
   } else {
-    settleOptimistic(waId, opt, { _optimistic: false, status: 'failed', error: data.error || 'Failed to send.' });
+    // keep the failed bubble retryable: re-POST the same text on retry
+    settleOptimistic(waId, opt, {
+      _optimistic: false, status: 'failed', error: data.error || 'Failed to send.',
+      _retry: { endpoint: '/api/send', payload: { wa_id: waId, text } },
+    });
     setBanner(data.error || 'Failed to send. Check the connection and try again.');
   }
 });
