@@ -42,8 +42,6 @@ function seed() {
     { wa_message_id: 'm6', wa_id: T, direction: 'in',  type: 'image', body: '📷 Image', media_status: 'stored', media_path: 'x/image/m6.png', media_meta: { caption: 'My delivery just arrived 🎉' }, status: 'received', wa_timestamp: iso(3), created_at: iso(3) },
     { wa_message_id: 'm7', wa_id: T, direction: 'in',  type: 'document', body: '📄 Document', media_status: 'stored', media_path: 'x/document/m7.pdf', media_meta: { filename: 'warranty-card.pdf' }, status: 'received', wa_timestamp: iso(2.5), created_at: iso(2.5) },
     { wa_message_id: 'm7b', wa_id: T, direction: 'in', type: 'audio', body: '🎤 Voice message', media_status: 'stored', media_path: 'x/out/m7b.ogg', media_meta: { voice: true, mime_type: 'audio/ogg' }, status: 'received', wa_timestamp: iso(2.3), created_at: iso(2.3) },
-    { wa_message_id: 'm7c', wa_id: T, direction: 'in', type: 'text', body: 'Wait, ignore that last bit 😅', status: 'received', deleted: true, deleted_by: 'customer', wa_timestamp: iso(2.2), created_at: iso(2.2) },
-    { wa_message_id: 'm7d', wa_id: T, direction: 'out', type: 'text', body: null, status: 'read', deleted: true, deleted_by: 'agent', wa_timestamp: iso(2.15), created_at: iso(2.15) },
     { wa_message_id: 'm8', wa_id: T, direction: 'in',  type: 'text', body: 'Perfect, thank you! 🙏', status: 'received', wa_timestamp: iso(2), created_at: iso(2) },
   ];
   msgs.forEach((m, i) => fake._tables.messages.push({ id: i + 1, media_meta: null, error: null, ...m }));

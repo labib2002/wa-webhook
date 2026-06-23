@@ -84,21 +84,6 @@ function inboundReaction(targetWamid, emoji) {
   };
 }
 
-function inboundRevoke(originalWamid) {
-  return {
-    object: 'whatsapp_business_account',
-    entry: [{ changes: [{ field: 'messages', value: {
-      metadata: { phone_number_id: 'PNID_123' },
-      contacts: [{ profile: { name: 'Ada Lovelace' }, wa_id: '201001234567' }],
-      messages: [{
-        from: '201001234567', id: originalWamid, timestamp: '1718000400',
-        type: 'unsupported',
-        errors: [{ code: 131051, title: 'Unsupported message type' }],
-      }],
-    }}]}],
-  };
-}
-
 function statusUpdate(id, status) {
   return {
     object: 'whatsapp_business_account',
@@ -277,25 +262,6 @@ function sign(body) {
     });
     assert.strictEqual(body, '🎵 Audio');
     assert.strictEqual(media_meta.voice, null);
-  });
-
-  await test('customer revoke flags an existing message deleted, keeps content', async () => {
-    db._tables.messages.push({
-      id: 777, wa_message_id: 'wamid.REVOKE', wa_id: '201001234567',
-      direction: 'in', type: 'text', body: 'oops sent by mistake', status: 'received', deleted: false,
-    });
-    await ingestWebhook(inboundRevoke('wamid.REVOKE'), db);
-    const m = db._tables.messages.find((x) => x.id === 777);
-    assert.strictEqual(m.deleted, true);
-    assert.strictEqual(m.deleted_by, 'customer');
-    assert.strictEqual(m.body, 'oops sent by mistake', 'content should be kept for customer deletes');
-  });
-
-  await test('revoke for an unknown message does not crash (no row)', async () => {
-    const before = db._tables.messages.length;
-    await ingestWebhook(inboundRevoke('wamid.NEVER_SEEN'), db);
-    // falls through to placeholder insert path; just must not throw
-    assert.ok(db._tables.messages.length >= before);
   });
 
   await test('status update flips an outgoing message tick to "read"', async () => {
