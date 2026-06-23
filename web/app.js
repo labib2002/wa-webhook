@@ -42,6 +42,11 @@ const els = {
   attachName: $('#attach-name'),
   attachSize: $('#attach-size'),
   attachRemove: $('#attach-remove'),
+  micBtn: $('#mic-btn'),
+  recBar: $('#rec-bar'),
+  recTime: $('#rec-time'),
+  recCancel: $('#rec-cancel'),
+  recSend: $('#rec-send'),
   newChatBtn: $('#new-chat-btn'),
   newChatModal: $('#new-chat-modal'),
   newChatForm: $('#new-chat-form'),
@@ -62,6 +67,7 @@ const state = {
   threadTimer: null,
   optimisticSeq: -1,      // negative ids for optimistic bubbles
   pendingFile: null,      // { name, mime, size, base64, dataUrl } staged to send
+  rec: null,              // active voice recorder { mediaRecorder, stream, chunks, timer, startedAt }
 };
 
 // Get (or create) the cached thread for a wa_id.
@@ -695,21 +701,24 @@ async function sendPendingFile() {
   const f = state.pendingFile;
   if (!f || !waId) return;
   const caption = els.composerInput.value.trim();
+  const isVoice = Boolean(f.voice);
   const kind = f.mime.startsWith('image/') ? 'image'
     : f.mime.startsWith('video/') ? 'video'
     : f.mime.startsWith('audio/') ? 'audio' : 'document';
-  const label = { image: '📷 Image', video: '🎬 Video', audio: '🎵 Audio', document: '📄 Document' }[kind];
+  const label = isVoice ? '🎤 Voice message'
+    : { image: '📷 Image', video: '🎬 Video', audio: '🎵 Audio', document: '📄 Document' }[kind];
 
-  // optimistic bubble — show the local preview immediately for images
+  // optimistic bubble — show the local preview immediately for images + voice
+  const localPlayable = kind === 'image' || kind === 'audio';
   const opt = addOptimistic(waId, {
     type: kind,
     body: caption ? `${label} · ${caption}` : label,
-    media_status: kind === 'image' ? 'stored' : null,
-    media_meta: { filename: f.name, mime_type: f.mime, caption: caption || null },
-    _localUrl: kind === 'image' ? f.dataUrl : null,
+    media_status: localPlayable ? 'stored' : null,
+    media_meta: { filename: f.name, mime_type: f.mime, caption: caption || null, voice: isVoice || null },
+    _localUrl: localPlayable ? f.dataUrl : null,
   });
 
-  const payload = { wa_id: waId, file_base64: f.base64, mime: f.mime, filename: f.name, caption };
+  const payload = { wa_id: waId, file_base64: f.base64, mime: f.mime, filename: f.name, caption, voice: isVoice };
   resetComposer();
   state.sending = true;
   els.sendBtn.disabled = true;
@@ -732,6 +741,121 @@ async function sendPendingFile() {
     setBanner(data.error || 'Failed to send attachment.');
   }
 }
+
+/* --------------------- voice note recording --------------------- */
+// Record audio in the browser via MediaRecorder, then send it through the
+// existing media path. Heads-up: WhatsApp renders uploaded audio as a regular
+// audio message on the customer's phone (not its native push-to-talk bubble) —
+// a Cloud API limitation. In our dashboard it shows with the voice player.
+
+// Pick a mime the browser can actually record (Chrome: webm/opus; Safari: mp4).
+function pickRecorderMime() {
+  if (typeof MediaRecorder === 'undefined') return null;
+  const candidates = ['audio/ogg;codecs=opus', 'audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'];
+  for (const m of candidates) {
+    try { if (MediaRecorder.isTypeSupported(m)) return m; } catch (_) {}
+  }
+  return ''; // let the browser choose its default
+}
+
+function fmtRecTime(ms) {
+  const s = Math.floor(ms / 1000);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+
+function showRecBar(on) {
+  els.recBar.hidden = !on;
+  els.composerForm.style.display = on ? 'none' : '';
+}
+
+async function startRecording() {
+  if (state.rec || !state.activeWaId) return;
+  if (typeof MediaRecorder === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+    setBanner('Voice recording is not supported in this browser.');
+    return;
+  }
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (e) {
+    setBanner(e && e.name === 'NotAllowedError'
+      ? 'Microphone permission denied. Allow mic access to record.'
+      : 'Could not access the microphone.');
+    return;
+  }
+  clearBanner();
+  const mime = pickRecorderMime();
+  let mediaRecorder;
+  try {
+    mediaRecorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+  } catch (_) {
+    mediaRecorder = new MediaRecorder(stream);
+  }
+  const chunks = [];
+  mediaRecorder.addEventListener('dataavailable', (e) => { if (e.data && e.data.size) chunks.push(e.data); });
+
+  const startedAt = performance.now();
+  const rec = { mediaRecorder, stream, chunks, startedAt, timer: null, canceled: false };
+  state.rec = rec;
+
+  mediaRecorder.addEventListener('stop', () => finishRecording(rec));
+
+  // live timer; auto-stop at 5 min as a safety cap
+  els.recTime.textContent = '0:00';
+  rec.timer = setInterval(() => {
+    const elapsed = performance.now() - startedAt;
+    els.recTime.textContent = fmtRecTime(elapsed);
+    if (elapsed > 5 * 60 * 1000) stopRecording();
+  }, 200);
+
+  showRecBar(true);
+  mediaRecorder.start();
+}
+
+function stopRecording() {
+  const rec = state.rec;
+  if (!rec) return;
+  if (rec.timer) { clearInterval(rec.timer); rec.timer = null; }
+  if (rec.mediaRecorder.state !== 'inactive') rec.mediaRecorder.stop(); // triggers 'stop' -> finishRecording
+}
+
+function cancelRecording() {
+  const rec = state.rec;
+  if (!rec) return;
+  rec.canceled = true;
+  if (rec.timer) { clearInterval(rec.timer); rec.timer = null; }
+  if (rec.mediaRecorder.state !== 'inactive') rec.mediaRecorder.stop();
+}
+
+function finishRecording(rec) {
+  // release the mic
+  rec.stream.getTracks().forEach((t) => t.stop());
+  showRecBar(false);
+  state.rec = null;
+  if (rec.canceled) return;
+
+  const mime = rec.mediaRecorder.mimeType || 'audio/webm';
+  const blob = new Blob(rec.chunks, { type: mime });
+  if (!blob.size) { setBanner('Nothing was recorded.'); return; }
+  if (blob.size > 25 * 1024 * 1024) { setBanner('Recording too large (max 25 MB).'); return; }
+
+  const reader = new FileReader();
+  reader.onload = () => {
+    const dataUrl = reader.result;
+    const base64 = String(dataUrl).split(',')[1] || '';
+    const ext = mime.includes('ogg') ? 'ogg' : mime.includes('mp4') ? 'm4a' : 'webm';
+    state.pendingFile = {
+      name: `voice-note.${ext}`, mime, size: blob.size, base64, dataUrl, voice: true,
+    };
+    // Voice notes send immediately on stop (WhatsApp-style) — no staging preview.
+    sendPendingFile();
+  };
+  reader.readAsDataURL(blob);
+}
+
+els.micBtn.addEventListener('click', startRecording);
+els.recSend.addEventListener('click', stopRecording);
+els.recCancel.addEventListener('click', cancelRecording);
 
 // Add an optimistic outgoing bubble to the active thread and render it.
 function addOptimistic(waId, fields) {
