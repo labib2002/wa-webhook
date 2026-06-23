@@ -648,9 +648,21 @@ a.media-frame:focus-visible { outline: 2px solid var(--pine); outline-offset: 2p
 }
 .bubble.out .bubble-forward { left: -38px; }
 .bubble.in  .bubble-forward { right: -38px; }
+/* Invisible bridge spanning the gap between the bubble and the button, so the
+   pointer never crosses an un-hoverable strip on its way to the control (which
+   would drop :hover and hide it). Sits behind the button, transparent. */
+.bubble-forward::before {
+  content: ''; position: absolute; top: -6px; bottom: -6px; width: 44px;
+}
+.bubble.out .bubble-forward::before { left: 0; }   /* extend toward the bubble (to the right) */
+.bubble.in  .bubble-forward::before { right: 0; }
 .bubble-forward:hover { background: var(--paper-2); color: var(--pine-deep); }
 .bubble-forward:focus-visible { outline: 2px solid var(--pine); outline-offset: 1px; display: grid; }
-.bubble:hover .bubble-forward { display: grid; }
+/* Show the control whenever the bubble OR the control itself is hovered/focused
+   — the latter keeps it up while the pointer is over the gap bridge. */
+.bubble:hover .bubble-forward,
+.bubble-forward:hover,
+.bubble-forward:focus { display: grid; }
 
 /* ---- forward destination picker ---- */
 .forward-card { display: flex; flex-direction: column; max-height: min(80vh, 620px); }
