@@ -748,24 +748,22 @@ async function sendPendingFile() {
 // audio message on the customer's phone (not its native push-to-talk bubble) —
 // a Cloud API limitation. In our dashboard it shows with the voice player.
 
-// Pick a recording mime that WhatsApp will ACCEPT. WhatsApp's audio allow-list
-// is aac/mp4/mpeg/amr/ogg/opus — NOT webm. Browsers differ: Chrome/Edge/Safari
-// can record audio/mp4; Firefox records audio/ogg;codecs=opus. We deliberately
-// never fall back to webm (WhatsApp rejects it). Returns null if the browser
-// can only do webm, so the caller can decline gracefully.
+// Pick whatever the browser records best. The SERVER transcodes voice notes to
+// OGG/Opus before sending to WhatsApp, so the client format no longer has to be
+// WhatsApp-valid — we just need something MediaRecorder can produce. Prefer
+// opus-in-ogg/webm (small, good for speech), then mp4, else the browser default.
 function pickRecorderMime() {
   if (typeof MediaRecorder === 'undefined') return null;
   const candidates = [
-    'audio/mp4',                 // Chrome (Win/Android), Edge, Safari -> accepted as audio/mp4
-    'audio/mp4;codecs=mp4a.40.2',
-    'audio/ogg;codecs=opus',     // Firefox -> accepted as audio/ogg
-    'audio/ogg',
-    'audio/aac',
+    'audio/ogg;codecs=opus',
+    'audio/webm;codecs=opus',
+    'audio/webm',
+    'audio/mp4',
   ];
   for (const m of candidates) {
     try { if (MediaRecorder.isTypeSupported(m)) return m; } catch (_) {}
   }
-  return null; // only webm available -> not acceptable to WhatsApp
+  return ''; // empty -> let MediaRecorder choose its own default
 }
 
 function fmtRecTime(ms) {
@@ -794,21 +792,22 @@ async function startRecording() {
     return;
   }
   clearBanner();
-  const mime = pickRecorderMime();
-  if (!mime) {
-    // Only webm is available here, which WhatsApp won't accept. Decline cleanly
-    // rather than record something that will fail to send.
+  const mime = pickRecorderMime(); // '' = use browser default; null = unsupported
+  if (mime === null) {
     stream.getTracks().forEach((t) => t.stop());
-    setBanner('Voice notes aren’t supported in this browser. Try Chrome, Edge, or Safari, or attach an audio file.');
+    setBanner('Voice recording is not supported in this browser.');
     return;
   }
   let mediaRecorder;
   try {
-    mediaRecorder = new MediaRecorder(stream, { mimeType: mime });
+    mediaRecorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
   } catch (_) {
-    stream.getTracks().forEach((t) => t.stop());
-    setBanner('Could not start recording in a supported format.');
-    return;
+    try { mediaRecorder = new MediaRecorder(stream); }
+    catch (e2) {
+      stream.getTracks().forEach((t) => t.stop());
+      setBanner('Could not start recording.');
+      return;
+    }
   }
   const chunks = [];
   mediaRecorder.addEventListener('dataavailable', (e) => { if (e.data && e.data.size) chunks.push(e.data); });
@@ -853,11 +852,10 @@ function finishRecording(rec) {
   state.rec = null;
   if (rec.canceled) return;
 
-  const fullMime = rec.mediaRecorder.mimeType || rec.requestedMime || 'audio/mp4';
-  // Send WhatsApp the bare type (no ";codecs=..."), and map ogg/opus -> audio/ogg
-  // which is the value on their allow-list.
-  let mime = fullMime.split(';')[0].trim().toLowerCase();
-  if (mime === 'audio/opus') mime = 'audio/ogg';
+  // Whatever the browser recorded — the server transcodes it to OGG/Opus before
+  // sending to WhatsApp, so the client format doesn't need to be WhatsApp-valid.
+  const fullMime = rec.mediaRecorder.mimeType || rec.requestedMime || 'audio/webm';
+  const bareMime = fullMime.split(';')[0].trim().toLowerCase();
   const blob = new Blob(rec.chunks, { type: fullMime });
   if (!blob.size) { setBanner('Nothing was recorded.'); return; }
   if (blob.size > 25 * 1024 * 1024) { setBanner('Recording too large (max 25 MB).'); return; }
@@ -866,9 +864,10 @@ function finishRecording(rec) {
   reader.onload = () => {
     const dataUrl = reader.result;
     const base64 = String(dataUrl).split(',')[1] || '';
-    const ext = mime.includes('ogg') ? 'ogg' : mime.includes('mp4') ? 'm4a' : mime.includes('aac') ? 'aac' : 'm4a';
+    const ext = bareMime.includes('ogg') ? 'ogg' : bareMime.includes('webm') ? 'webm'
+      : bareMime.includes('mp4') ? 'm4a' : bareMime.includes('aac') ? 'aac' : 'webm';
     state.pendingFile = {
-      name: `voice-note.${ext}`, mime, size: blob.size, base64, dataUrl, voice: true,
+      name: `voice-note.${ext}`, mime: bareMime, size: blob.size, base64, dataUrl, voice: true,
     };
     // Voice notes send immediately on stop (WhatsApp-style) — no staging preview.
     sendPendingFile();
