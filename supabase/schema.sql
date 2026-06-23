@@ -32,9 +32,6 @@ create table if not exists public.messages (
   media_path      text,                                  -- object path inside the storage bucket (after download)
   media_status    text,                                  -- null | 'pending' | 'stored' | 'failed' | 'unsupported'
   reaction        text,                                  -- emoji the customer reacted with (on our message), or null
-  deleted         boolean not null default false,        -- flagged deleted (by customer) or tombstoned (by agent)
-  deleted_by      text,                                  -- 'customer' (flag, keep content) | 'agent' (tombstone, purge media)
-  deleted_at      timestamptz,                           -- when it was deleted
   status          text,                                  -- out: sent|delivered|read|failed   in: 'received'
   error           text,                                  -- failure reason surfaced to the UI (nullable)
   wa_timestamp    timestamptz,                           -- event time reported by WhatsApp
