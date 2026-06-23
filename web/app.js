@@ -65,6 +65,7 @@ const state = {
   filter: '',
   activeWaId: null,
   threads: {},            // wa_id -> { byId: Map(id->msg), order: [ids], lastMsgId, loaded }
+  drafts: {},             // wa_id -> unsent composer text (preserved across chat switches)
   sending: false,
   listTimer: null,
   threadTimer: null,
@@ -375,6 +376,10 @@ els.search.addEventListener('input', () => {
 async function openConversation(waId) {
   if (!waId) return;
   const conv = state.conversations.find((c) => c.wa_id === waId);
+
+  // Preserve the previous chat's unsent text as a per-chat draft before switching.
+  saveDraft();
+
   state.activeWaId = waId;
   const t = thread(waId);
 
@@ -389,7 +394,12 @@ async function openConversation(waId) {
   els.app.dataset.view = 'thread';
   els.messagesEmpty.hidden = true;
   clearBanner();
-  resetComposer();
+  // Restore this chat's draft (don't blow away unsent text). Clears any staged
+  // file from the prior chat but keeps the typed draft.
+  clearPendingFile();
+  els.composerInput.value = state.drafts[waId] || '';
+  autoGrow();
+  refreshSendEnabled();
 
   // Render whatever we already have cached (instant — no flash, no reload),
   // then only show the spinner if we have nothing yet.
@@ -693,13 +703,24 @@ function refreshSendEnabled() {
 function resetComposer() {
   clearPendingFile();
   els.composerInput.value = '';
+  if (state.activeWaId) delete state.drafts[state.activeWaId]; // content was sent
   autoGrow();
   refreshSendEnabled();
+}
+
+// Persist the active chat's unsent composer text so it survives switching chats
+// (and the mobile back button), WhatsApp-style.
+function saveDraft() {
+  if (!state.activeWaId) return;
+  const text = els.composerInput.value;
+  if (text && text.trim()) state.drafts[state.activeWaId] = text;
+  else delete state.drafts[state.activeWaId];
 }
 
 els.composerInput.addEventListener('input', () => {
   autoGrow();
   refreshSendEnabled();
+  saveDraft(); // keep the per-chat draft current as the user types
 });
 
 els.composerInput.addEventListener('keydown', (e) => {
@@ -918,10 +939,13 @@ function setRecPausedUI(paused) {
   els.recHint.textContent = paused ? 'Paused — tap ▶ to resume' : 'Recording… tap send to finish';
   els.recPause.title = paused ? 'Resume' : 'Pause';
   els.recPause.setAttribute('aria-label', paused ? 'Resume recording' : 'Pause recording');
+  // NB: SVGElement doesn't reliably reflect the `.hidden` IDL property to the
+  // `hidden` attribute, so toggle the attribute explicitly (which the global
+  // `[hidden]{display:none!important}` rule matches).
   const pauseIco = els.recPause.querySelector('.ico-pause');
   const resumeIco = els.recPause.querySelector('.ico-resume');
-  if (pauseIco) pauseIco.hidden = paused;
-  if (resumeIco) resumeIco.hidden = !paused;
+  if (pauseIco) pauseIco.toggleAttribute('hidden', paused);
+  if (resumeIco) resumeIco.toggleAttribute('hidden', !paused);
 }
 
 function togglePause() {
@@ -1040,6 +1064,7 @@ els.composerForm.addEventListener('submit', async (e) => {
 
   const opt = addOptimistic(waId, { type: 'text', body: text });
   els.composerInput.value = '';
+  delete state.drafts[waId]; // sent → no lingering draft
   autoGrow();
   state.sending = true;
   els.sendBtn.disabled = true;
@@ -1093,6 +1118,7 @@ function isNearBottom() {
 /* --------------------------- back (mobile) --------------------------- */
 
 els.backBtn.addEventListener('click', () => {
+  saveDraft(); // keep the unsent text for when this chat is reopened
   els.app.dataset.view = 'list';
   state.activeWaId = null;
   stopThreadPolling();
