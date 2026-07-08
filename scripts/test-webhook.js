@@ -410,6 +410,85 @@ function sign(body) {
     assert.strictEqual(row.media_meta && row.media_meta.voice, true);
   });
 
+  // --- service send API (token gate + template allow-list) ---
+  console.log('\n\x1b[1mSERVICE SEND API (fake DB, stubbed Graph)\x1b[0m');
+
+  await test('service send: 503 while SERVICE_SEND_TOKEN is unset', async () => {
+    const r = await req(srv2, 'POST', '/api/service/send-template', {
+      body: { to: '201000000009', template: 'ops_group_invite' },
+      headers: { 'x-service-token': 'anything' },
+    });
+    assert.strictEqual(r.status, 503);
+  });
+
+  process.env.SERVICE_SEND_TOKEN = 'svc_test_token';
+  const svc = (method, path, body) =>
+    req(srv2, method, path, { body, headers: { 'x-service-token': 'svc_test_token' } });
+
+  await test('service send: wrong token → 401', async () => {
+    const r = await req(srv2, 'POST', '/api/service/send-template', {
+      body: { to: '201000000009', template: 'ops_group_invite' },
+      headers: { 'x-service-token': 'WRONG' },
+    });
+    assert.strictEqual(r.status, 401);
+  });
+
+  await test('service health reports wiring without sending', async () => {
+    const r = await svc('GET', '/api/service/health');
+    assert.strictEqual(r.status, 200);
+    const j = JSON.parse(r.text);
+    assert.strictEqual(j.ok, true);
+    assert.strictEqual(j.db_configured, true); // fake db injected
+  });
+
+  await test('service send: non-numeric to → 400', async () => {
+    const r = await svc('POST', '/api/service/send-template', { to: 'not-a-phone', template: 'ops_group_invite' });
+    assert.strictEqual(r.status, 400);
+  });
+
+  await test('service send: template outside the allow-list → 400', async () => {
+    const r = await svc('POST', '/api/service/send-template', { to: '201000000009', template: 'marketing_blast' });
+    assert.strictEqual(r.status, 400);
+  });
+
+  await test('service send: unapproved template surfaces the Graph error as 502', async () => {
+    wa.sendTemplate = async () => ({ ok: false, error: "Template 'ops_group_invite' is not approved (or does not exist) for this WABA yet." });
+    const r = await svc('POST', '/api/service/send-template', { to: '201000000009', template: 'ops_group_invite' });
+    assert.strictEqual(r.status, 502);
+    assert.ok(r.text.includes('not approved'));
+  });
+
+  await test('service send: ok path returns waMessageId and persists the inbox preview', async () => {
+    wa.sendTemplate = async (to, t) => {
+      assert.strictEqual(to, '201000000009');
+      assert.strictEqual(t.name, 'ops_group_invite');
+      assert.strictEqual(t.language, 'en');
+      return { ok: true, waMessageId: 'wamid.TPL1' };
+    };
+    const r = await svc('POST', '/api/service/send-template', {
+      to: '+20 100 000 0009',
+      template: 'ops_group_invite',
+      components: [{ type: 'body', parameters: [{ type: 'text', text: 'Ali' }, { type: 'text', text: 'Group 2' }] }],
+    });
+    assert.strictEqual(r.status, 200);
+    const j = JSON.parse(r.text);
+    assert.strictEqual(j.waMessageId, 'wamid.TPL1');
+    const row = fdb._tables.messages.find((m) => m.wa_message_id === 'wamid.TPL1');
+    assert.ok(row, 'outbound template row not persisted');
+    assert.strictEqual(row.direction, 'out');
+    assert.ok(row.body.includes('[ops_group_invite]') && row.body.includes('Ali'), 'preview body missing template context');
+  });
+
+  await test('service send: WA_TEMPLATE_ALLOWLIST env overrides the ops_ prefix rule', async () => {
+    process.env.WA_TEMPLATE_ALLOWLIST = 'custom_one';
+    wa.sendTemplate = async () => ({ ok: true, waMessageId: 'wamid.TPL2' });
+    const allowed = await svc('POST', '/api/service/send-template', { to: '201000000009', template: 'custom_one' });
+    assert.strictEqual(allowed.status, 200);
+    const blocked = await svc('POST', '/api/service/send-template', { to: '201000000009', template: 'ops_group_invite' });
+    assert.strictEqual(blocked.status, 400);
+    process.env.WA_TEMPLATE_ALLOWLIST = '';
+  });
+
   srv2.close();
   dbmod.__setDbForTesting(null);
 
