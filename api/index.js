@@ -5,6 +5,7 @@ const express = require('express');
 const { checkSignature } = require('../lib/signature');
 const { ingestWebhook } = require('../lib/ingest');
 const apiRouter = require('../lib/routes');
+const serviceRouter = require('../lib/serviceRoutes');
 
 const app = express();
 
@@ -72,6 +73,12 @@ app.post('/', async (req, res) => {
   // 3) Always 200 fast.
   res.sendStatus(200);
 });
+
+// ---------------------------------------------------------------------------
+//  Service API (token-gated, machine callers) — mounted BEFORE the passcode
+//  router so /api/service/* never hits the cookie gate.
+// ---------------------------------------------------------------------------
+app.use('/api/service', serviceRouter);
 
 // ---------------------------------------------------------------------------
 //  Dashboard API (passcode-gated inside the router) + static SPA.
