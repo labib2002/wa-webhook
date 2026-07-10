@@ -1,4 +1,4 @@
-# Agent Inbox — WhatsApp Business webhook + dashboard
+# Agent Inbox - WhatsApp Business webhook + dashboard
 
 A WhatsApp Business Cloud API **webhook receiver** plus a WhatsApp-Web-style
 **agent dashboard** where a human reads incoming messages and replies in
@@ -27,52 +27,57 @@ agent's browser ──▶  /app (gated SPA)  ──▶  /api/*  ─────�
 | Server | **Express on Vercel** (kept, not migrated) | The verified webhook already runs here; the dashboard is a single view that needs no SSR/framework. |
 | Frontend | **Vanilla SPA** (`web/`), no build step | Easy to audit, zero tooling, served by the function. |
 | Database | **Supabase Postgres** (free, no card) | Built-in Postgres; service-role key used server-side only. |
-| Live updates | **Smart polling** (list 4s, open thread 2.5s, incremental) | Robust on serverless, no realtime-auth complexity, keeps all customer PII behind the passcode gate. Supabase Realtime is a documented future upgrade — see below. |
+| Live updates | **Smart polling** (list 4s, open thread 2.5s, incremental) | Robust on serverless, no realtime-auth complexity, keeps all customer PII behind the passcode gate. Supabase Realtime is a documented future upgrade - see below. |
 | Access control | **Shared passcode** → signed httpOnly cookie, enforced on every `/api/*` route | Minimal but real server-side gate, not just hidden UI. |
 | Webhook auth | **`X-Hub-Signature-256`** verified against the app secret | Rejects forged POSTs. Skipped (with a warning) only if `APP_SECRET` is unset. |
 
 ### Why polling, not Supabase Realtime?
 Realtime is great, but the clean ways to use it here both add cost:
 `postgres_changes` won't deliver under our locked-down RLS (no anon read of
-customer PII — by design), and Broadcast-from-DB needs an **authenticated**
+customer PII - by design), and Broadcast-from-DB needs an **authenticated**
 realtime session (RLS on `realtime.messages`), i.e. custom JWT signing. For a
 single-agent inbox, **smart polling** is simpler and just as usable: it fetches
 incrementally (only new message ids), pauses when the tab is hidden, and
 refreshes instantly on focus. Optimistic send means your own messages appear
 immediately. If you later want sub-second pushes, add a Supabase Realtime
-subscription in `web/app.js` — the data model already supports it.
+subscription in `web/app.js` - the data model already supports it.
 
 ---
 
 ## Routes
 
-**Webhook (public — Meta's Callback URL is unchanged):**
-- `GET /` — verification handshake. Echoes `hub.challenge` (200) for the right
+**Webhook (public - Meta's Callback URL is unchanged):**
+- `GET /` - verification handshake. Echoes `hub.challenge` (200) for the right
   `hub.verify_token`, else 403.
-- `POST /` — verifies the signature, parses `messages` / `contacts` /
+- `POST /` - verifies the signature, parses `messages` / `contacts` /
   `statuses`, upserts the conversation, inserts messages (idempotent on
   `wa_message_id`), updates delivery/read status, returns **200 fast**.
 
 **Dashboard API (passcode-gated, except login/session):**
-- `GET  /api/session` — is this browser logged in? (and is send/DB configured)
-- `POST /api/login` — `{ passcode }` → sets the session cookie.
+- `GET  /api/session` - is this browser logged in? (and is send/DB configured)
+- `POST /api/login` - `{ passcode }` → sets the session cookie.
 - `POST /api/logout`
-- `GET  /api/conversations` — list for the left pane (most recent first).
-- `GET  /api/messages?wa_id=…&after=<id>` — thread (incremental).
-- `POST /api/send` — `{ wa_id, text }` → Graph API call + persist outgoing row.
-- `POST /api/mark-read` — `{ wa_id }` → reset unread; best-effort blue ticks.
+- `GET  /api/conversations` - list for the left pane (most recent first).
+- `GET  /api/messages?wa_id=…&after=<id>` - thread (incremental).
+- `POST /api/send` - `{ wa_id, text }` → Graph API call + persist outgoing row.
+- `POST /api/mark-read` - `{ wa_id }` → reset unread; best-effort blue ticks.
 
 **Dashboard UI:** `GET /app`.
+
+**Service API (machine-to-machine, for a trusted backend):**
+- `POST /api/service/send` - token-authenticated (timing-safe comparison) send
+  endpoint with a template allowlist, so an operations backend can trigger
+  WhatsApp messages without a browser session.
 
 ---
 
 ## Data model (`supabase/schema.sql`)
 
-**conversations** — one row per WhatsApp user (`wa_id` PK): `profile_name`,
+**conversations** - one row per WhatsApp user (`wa_id` PK): `profile_name`,
 `last_message_text`, `last_message_at`, `last_message_direction`,
 `unread_count`, `phone_number_id`.
 
-**messages** — one row per message: `wa_message_id` (UNIQUE → idempotent),
+**messages** - one row per message: `wa_message_id` (UNIQUE → idempotent),
 `wa_id` (FK), `direction` (`in`/`out`), `type`, `body`, `media_meta` (jsonb),
 `media_path` + `media_status` (for stored media), `status`
 (`sent`/`delivered`/`read`/`failed`/`received`), `error`, `wa_timestamp`.
@@ -90,7 +95,7 @@ Copy `.env.example` → `.env` and fill in. Set the **same** variables in Vercel
 
 | Variable | Where to get it |
 |---|---|
-| `VERIFY_TOKEN` | You choose; must match Meta's webhook "Verify token". Currently `vibecode123`. |
+| `VERIFY_TOKEN` | You choose; must match Meta's webhook "Verify token". |
 | `WHATSAPP_TOKEN` | Meta dashboard → WhatsApp → **API Setup** (temporary ~24h token; see Tokens). |
 | `PHONE_NUMBER_ID` | Same **API Setup** page. |
 | `GRAPH_API_VERSION` | Defaults to `v23.0`. |
@@ -98,8 +103,8 @@ Copy `.env.example` → `.env` and fill in. Set the **same** variables in Vercel
 | `SUPABASE_URL` | Supabase → Project Settings → API → **Project URL**. |
 | `SUPABASE_SERVICE_ROLE_KEY` | Same page → secret key (`sb_secret_…` or legacy `service_role`; server-only). |
 | `MEDIA_BUCKET` | Storage bucket name for media. Defaults to `wa-media`. |
-| `DASHBOARD_PASSCODE` | You choose — the passcode agents type to log in. |
-| `SESSION_SECRET` | You choose — long random string. Generate: `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` |
+| `DASHBOARD_PASSCODE` | You choose - the passcode agents type to log in. |
+| `SESSION_SECRET` | You choose - long random string. Generate: `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` |
 
 ---
 
@@ -114,7 +119,7 @@ node app.js                 # http://localhost:3000  (dashboard at /app)
 Quick handshake check:
 
 ```bash
-curl "http://localhost:3000/?hub.mode=subscribe&hub.verify_token=vibecode123&hub.challenge=12345"
+curl "http://localhost:3000/?hub.mode=subscribe&hub.verify_token=<your-verify-token>&hub.challenge=12345"
 # -> 12345   (HTTP 200)
 ```
 
@@ -129,7 +134,7 @@ curl "http://localhost:3000/?hub.mode=subscribe&hub.verify_token=vibecode123&hub
 
 ### Media handling
 Incoming WhatsApp media (image/video/audio/voice/sticker/document) is **not** in
-the webhook — only a media **id** is. On receipt, the server:
+the webhook - only a media **id** is. On receipt, the server:
 1. inserts the message row immediately with `media_status='pending'` (so it shows
    a labeled placeholder right away), returns 200, then
 2. downloads the bytes from the Graph API (two hops: resolve id → temporary URL →
@@ -137,11 +142,13 @@ the webhook — only a media **id** is. On receipt, the server:
    flipping the row to `media_status='stored'` with a `media_path`.
 
 The browser loads media through the gated `GET /api/media/:id`, which 302-redirects
-to a short-lived **signed URL** (10 min) — bytes never pass through a public key,
+to a short-lived **signed URL** (10 min) - bytes never pass through a public key,
 and the bucket is private. Images/videos/audio render inline; documents show a
 download card; locations link to Google Maps. If a download fails the bubble
 falls back to its placeholder (`media_status='failed'`), and the row is never
-lost. Free tier is 1 GB of storage — upgrade the Supabase plan if you outgrow it.
+lost. Voice notes are transcoded server-side to OGG/Opus with bundled
+`ffmpeg-static` so they play inline in every browser. Free tier is 1 GB of
+storage - upgrade the Supabase plan if you outgrow it.
 
 ---
 
@@ -150,7 +157,7 @@ lost. Free tier is 1 GB of storage — upgrade the Supabase plan if you outgrow 
 ```bash
 npm test          # 15 checks: handshake 200/403, signature reject, inbound
                   # persistence, idempotency, status ticks, non-text types,
-                  # API auth gate. Uses an in-memory DB — no live Supabase needed.
+                  # API auth gate. Uses an in-memory DB - no live Supabase needed.
 
 npm run shots     # drives headless Chromium over a seeded dashboard and writes
                   # screenshots/{desktop,mobile}-{list,thread}.png
@@ -170,8 +177,8 @@ messages your number within the 24-hour window** (see below).
 1. Push to GitHub.
 2. Import the repo in Vercel (or `vercel --prod`).
 3. Add every env var above in Project → Settings → Environment Variables.
-4. The **Callback URL in Meta is unchanged** (`https://<your-app>/`, verify
-   token `vibecode123`).
+4. The **Callback URL in Meta is unchanged** (`https://<your-app>/`, with the
+   verify token you configured).
 
 ---
 
@@ -189,7 +196,7 @@ The token on Meta's **API Setup** page expires in ~24 hours. When it expires,
 sends fail with "access token is invalid or expired" (shown inline). For
 production, create a **System User** with a permanent token (Meta Business
 Settings → Users → System Users → generate token with `whatsapp_business_messaging`
-+ `whatsapp_business_management`) and set it as `WHATSAPP_TOKEN`. No code change —
++ `whatsapp_business_management`) and set it as `WHATSAPP_TOKEN`. No code change -
 just swap the env var.
 
 ### Webhook reliability
