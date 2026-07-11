@@ -142,14 +142,23 @@ const THREAD_POLL_MS = 1500;
 /* ----------------------------- utilities ----------------------------- */
 
 async function api(path, opts = {}) {
+  const { headers, ...rest } = opts;
   const res = await fetch(path, {
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...(headers || {}) },
     credentials: 'same-origin',
-    ...opts,
+    ...rest,
   });
   let data = null;
   try { data = await res.json(); } catch (_) {}
   return { status: res.status, ok: res.ok, data: data || {} };
+}
+
+// One idempotency key per user send action, REUSED when that same action is
+// retried, so the server dedupes instead of double-sending (x-idempotency-key).
+function newSendKey() {
+  return (window.crypto && crypto.randomUUID)
+    ? crypto.randomUUID()
+    : 'k' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
 }
 
 function escapeHtml(s) {
@@ -743,8 +752,13 @@ async function retrySend(m) {
 
   let resp;
   if (cur._retry) {
-    // client-drop: re-POST the exact original request
-    resp = await api(cur._retry.endpoint, { method: 'POST', body: JSON.stringify(cur._retry.payload) });
+    // client-drop: re-POST the exact original request, reusing the original
+    // idempotency key so the server dedupes if the first POST actually landed
+    resp = await api(cur._retry.endpoint, {
+      method: 'POST',
+      headers: cur._retry.key ? { 'x-idempotency-key': cur._retry.key } : {},
+      body: JSON.stringify(cur._retry.payload),
+    });
   } else if (typeof m.id === 'number') {
     // server row: ask the server to resend from the stored copy
     resp = await api(`/api/retry/${m.id}`, { method: 'POST' });
@@ -911,7 +925,12 @@ async function sendPendingFile() {
   els.sendBtn.disabled = true;
   clearBanner();
 
-  const { ok, status, data } = await api('/api/send-media', { method: 'POST', body: JSON.stringify(payload) });
+  const sendKey = newSendKey();
+  const { ok, status, data } = await api('/api/send-media', {
+    method: 'POST',
+    headers: { 'x-idempotency-key': sendKey },
+    body: JSON.stringify(payload),
+  });
   state.sending = false;
   refreshSendEnabled();
   if (status === 401) return handleAuthLost();
@@ -924,10 +943,11 @@ async function sendPendingFile() {
     settleOptimistic(waId, opt, { _optimistic: false, status: 'sent' });
     toast(data.warning || 'Sent, but not saved.');
   } else {
-    // keep the failed bubble retryable: re-POST the same media (base64 retained)
+    // keep the failed bubble retryable: re-POST the same media (base64
+    // retained) with the SAME idempotency key so the server can dedupe
     settleOptimistic(waId, opt, {
       _optimistic: false, status: 'failed', error: data.error || 'Failed to send.',
-      _retry: { endpoint: '/api/send-media', payload },
+      _retry: { endpoint: '/api/send-media', payload, key: sendKey },
     });
     setBanner(data.error || 'Failed to send attachment.');
   }
@@ -1171,8 +1191,10 @@ els.composerForm.addEventListener('submit', async (e) => {
   els.sendBtn.disabled = true;
   clearBanner();
 
+  const sendKey = newSendKey();
   const { ok, status, data } = await api('/api/send', {
     method: 'POST',
+    headers: { 'x-idempotency-key': sendKey },
     body: JSON.stringify({ wa_id: waId, text }),
   });
 
@@ -1188,10 +1210,11 @@ els.composerForm.addEventListener('submit', async (e) => {
     settleOptimistic(waId, opt, { _optimistic: false, status: 'sent' });
     toast(data.warning || 'Sent, but not saved.');
   } else {
-    // keep the failed bubble retryable: re-POST the same text on retry
+    // keep the failed bubble retryable: re-POST the same text on retry,
+    // carrying the SAME idempotency key so the server can dedupe
     settleOptimistic(waId, opt, {
       _optimistic: false, status: 'failed', error: data.error || 'Failed to send.',
-      _retry: { endpoint: '/api/send', payload: { wa_id: waId, text } },
+      _retry: { endpoint: '/api/send', payload: { wa_id: waId, text }, key: sendKey },
     });
     setBanner(data.error || 'Failed to send. Check the connection and try again.');
   }
