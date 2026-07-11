@@ -127,7 +127,8 @@ curl "http://localhost:3000/?hub.mode=subscribe&hub.verify_token=<your-verify-to
 1. Create a Supabase project (free, no card).
 2. Open **SQL Editor**, paste the entire contents of `supabase/schema.sql`, run.
    (If you ran an older schema, also run the deltas in `supabase/migrations/`:
-   `002_media.sql`, `003_reactions.sql`, `005_updated_at.sql`.)
+   `002_media.sql`, `003_reactions.sql`, `005_updated_at.sql`, `006_forwarded.sql`,
+   `007_hardening.sql`.)
 3. Put `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` in `.env` (and Vercel).
 4. Create the media bucket: `node scripts/setup-storage.js` (makes a private
    `wa-media` bucket).
@@ -202,4 +203,35 @@ just swap the env var.
 ### Webhook reliability
 The handler persists and returns 200 quickly. If persistence ever fails it still
 returns 200 (logging the error) so Meta doesn't retry and create duplicates;
-inbound messages are deduped by `wa_message_id` regardless.
+inbound messages are deduped by `wa_message_id` regardless. A dropped (unstored)
+inbound is logged with the tag `INBOUND_DROPPED` — grep the Vercel logs for it.
+
+### Retention & limits
+A daily cron (`vercel.json` → `GET /api/cron/maintenance`, 03:00 UTC) keeps the
+free-tier footprint in check. **Manual migration step:** run
+`supabase/migrations/007_hardening.sql` in the Supabase SQL Editor (same way
+002-006 were applied) — until then the app degrades gracefully (in-process
+login limiter, idempotency keys ignored, `login_attempts` prune errors logged).
+
+What the cron does each run:
+- deletes bucket **bytes** of media older than `MEDIA_RETENTION_DAYS` and flips
+  those rows to `media_status='expired'` (message text, `media_meta`, and
+  conversations are never deleted; the bubble shows an "expired" placeholder);
+- prunes `login_attempts` rows older than 24h;
+- measures usage (bucket bytes, walk capped at 20k objects + `messages` row
+  count) and, above **70%** of either cap, sends one WhatsApp alert text.
+
+| Variable | Meaning | Default |
+|---|---|---|
+| `CRON_SECRET` | Cron auth; Vercel sends `Authorization: Bearer <CRON_SECRET>` on cron calls. If unset, the endpoint requires `x-service-token` = `SERVICE_SEND_TOKEN` instead (never open). | unset |
+| `MEDIA_RETENTION_DAYS` | Days to keep stored media bytes; `0` disables retention. | `90` |
+| `MEDIA_CAP_MB` | Media usage cap the 70% alert is measured against. | `1000` |
+| `MESSAGES_CAP_ROWS` | `messages` row-count cap for the alert. | `400000` |
+| `WA_USAGE_ALERT_TO` | WhatsApp number (international digits) that receives the alert; empty = no alert. | unset |
+
+Related hardening in the same migration: `POST /api/login` is rate limited
+(5 failed tries per IP, 50 global, per 15 min → 429) via the `login_attempts`
+table, and outbound sends (`/api/send`, `/api/send-media`,
+`/api/service/send-template`) accept an idempotency key
+(`x-idempotency-key` header or `client_key` body field, max 128 chars) that
+dedupes replays via `messages.client_key` instead of double-sending.
