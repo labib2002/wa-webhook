@@ -227,7 +227,7 @@ What the cron does each run:
 | `MEDIA_RETENTION_DAYS` | Days to keep stored media bytes; `0` disables retention. | `90` |
 | `MEDIA_CAP_MB` | Media usage cap the 70% alert is measured against. | `1000` |
 | `MESSAGES_CAP_ROWS` | `messages` row-count cap for the alert. | `400000` |
-| `WA_USAGE_ALERT_TO` | WhatsApp number (international digits) that receives the alert; empty = no alert. | unset |
+| `WA_USAGE_ALERT_TO` | Comma-separated WhatsApp numbers (international digits) that receive the alert; empty = no alert. | unset |
 
 Related hardening in the same migration: `POST /api/login` is rate limited
 (5 failed tries per IP, 50 global, per 15 min → 429) via the `login_attempts`
