@@ -6,6 +6,7 @@ const { checkSignature } = require('../lib/signature');
 const { ingestWebhook } = require('../lib/ingest');
 const apiRouter = require('../lib/routes');
 const serviceRouter = require('../lib/serviceRoutes');
+const maintenance = require('../lib/maintenance');
 
 const app = express();
 
@@ -66,7 +67,9 @@ app.post('/', async (req, res) => {
     if (e && e.code === 'DB_NOT_CONFIGURED') {
       console.warn('Webhook received but DB not configured — event not stored.');
     } else {
-      console.error('Webhook ingest error (returning 200 anyway):', e);
+      // INBOUND_DROPPED: this inbound event was NOT stored (we still 200 so
+      // Meta won't retry). Grep Vercel logs for this tag to find silent loss.
+      console.error('INBOUND_DROPPED webhook ingest error (returning 200 anyway):', e);
     }
   }
 
@@ -79,6 +82,10 @@ app.post('/', async (req, res) => {
 //  router so /api/service/* never hits the cookie gate.
 // ---------------------------------------------------------------------------
 app.use('/api/service', serviceRouter);
+
+// Daily maintenance cron (retention + usage alert), also BEFORE the passcode
+// router. Own auth: CRON_SECRET bearer, else the service token (never open).
+app.get('/api/cron/maintenance', maintenance);
 
 // ---------------------------------------------------------------------------
 //  Dashboard API (passcode-gated inside the router) + static SPA.
