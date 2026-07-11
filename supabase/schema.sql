@@ -33,6 +33,7 @@ create table if not exists public.messages (
   media_status    text,                                  -- null | 'pending' | 'stored' | 'failed' | 'unsupported'
   reaction        text,                                  -- emoji the customer reacted with (on our message), or null
   forwarded       boolean not null default false,        -- dashboard-only: this outgoing message was forwarded from another chat
+  client_key      text,                                  -- caller-supplied idempotency key for outbound sends (nullable)
   status          text,                                  -- out: sent|delivered|read|failed   in: 'received'
   error           text,                                  -- failure reason surfaced to the UI (nullable)
   wa_timestamp    timestamptz,                           -- event time reported by WhatsApp
@@ -45,6 +46,11 @@ create index if not exists messages_wa_id_created_idx
   on public.messages (wa_id, created_at);
 create index if not exists messages_wa_id_updated_idx
   on public.messages (wa_id, updated_at);
+
+-- Idempotency: a client_key, when present, can only exist once.
+create unique index if not exists messages_client_key_unique_idx
+  on public.messages (client_key)
+  where client_key is not null;
 
 -- Bump updated_at on every UPDATE so reactions/status/deletes are detectable.
 create or replace function public.touch_messages_updated_at()
@@ -61,6 +67,21 @@ create trigger messages_set_updated_at
   for each row execute function public.touch_messages_updated_at();
 
 -- ---------------------------------------------------------------------------
+--  login_attempts: one row per POST /api/login attempt, for durable rate
+--  limiting (5 fails/IP or 50 global per 15 min => 429). Pruned after 24h by
+--  the daily maintenance cron.
+-- ---------------------------------------------------------------------------
+create table if not exists public.login_attempts (
+  id            bigserial primary key,
+  ip            text not null,
+  attempted_at  timestamptz not null default now(),
+  success       boolean not null
+);
+
+create index if not exists login_attempts_ip_attempted_idx
+  on public.login_attempts (ip, attempted_at);
+
+-- ---------------------------------------------------------------------------
 --  Row Level Security.
 --  RLS is ENABLED with NO permissive policies, so the public/anon key cannot
 --  read or write any row. The server uses the service_role key (which bypasses
@@ -69,7 +90,8 @@ create trigger messages_set_updated_at
 --  (see README "Realtime vs polling"), so no row data is ever exposed to a
 --  low-privilege key. This is deny-by-default for customer PII.
 -- ---------------------------------------------------------------------------
-alter table public.conversations enable row level security;
-alter table public.messages      enable row level security;
+alter table public.conversations  enable row level security;
+alter table public.messages       enable row level security;
+alter table public.login_attempts enable row level security;
 
 -- (Intentionally no CREATE POLICY statements: deny-by-default for anon.)
