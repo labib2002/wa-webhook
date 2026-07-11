@@ -5,5 +5,6 @@
       "maxDuration": 60
     }
   },
+  "crons": [{ "path": "/api/cron/maintenance", "schedule": "0 3 * * *" }],
   "rewrites": [{ "source": "/(.*)", "destination": "/api/index" }]
 }
