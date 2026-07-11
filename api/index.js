@@ -68,8 +68,15 @@ app.post('/', async (req, res) => {
       console.warn('Webhook received but DB not configured — event not stored.');
     } else {
       // INBOUND_DROPPED: this inbound event was NOT stored (we still 200 so
-      // Meta won't retry). Grep Vercel logs for this tag to find silent loss.
-      console.error('INBOUND_DROPPED webhook ingest error (returning 200 anyway):', e);
+      // Meta won't retry). The full payload is logged so the message content
+      // is recoverable from Vercel logs (retention ~days) — grep the tag.
+      let payload = '';
+      try {
+        payload = JSON.stringify(req.body).slice(0, 8000);
+      } catch {
+        payload = '[unserializable]';
+      }
+      console.error('INBOUND_DROPPED webhook ingest error (returning 200 anyway):', e, 'payload:', payload);
     }
   }
 
