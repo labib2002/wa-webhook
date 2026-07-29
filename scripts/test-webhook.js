@@ -927,6 +927,47 @@ function sign(body) {
     assert.strictEqual(row.media_path, '201000000012/out/k7206.png', 'stored copy was lost');
   });
 
+  // --- media filenames: what the browser actually saves the file as ---
+  console.log('\n\x1b[1mMEDIA FILENAMES\x1b[0m');
+  const mediaLib = require('../lib/media');
+
+  await test('extFromMime: octet-stream is not an extension', async () => {
+    assert.strictEqual(mediaLib.extFromMime('application/octet-stream'), 'bin');
+    assert.strictEqual(mediaLib.extFromMime('application/vnd.ms-excel'), 'bin');
+    assert.strictEqual(mediaLib.extFromMime(null), 'bin');
+  });
+
+  await test('extFromMime: known types still map', async () => {
+    assert.strictEqual(mediaLib.extFromMime('image/jpeg'), 'jpg');
+    assert.strictEqual(mediaLib.extFromMime('application/pdf'), 'pdf');
+    assert.strictEqual(mediaLib.extFromMime('image/png; charset=binary'), 'png');
+  });
+
+  await test('extFromName prefers the sender-supplied extension', async () => {
+    assert.strictEqual(mediaLib.extFromName('Lab Results.PDF'), 'pdf');
+    assert.strictEqual(mediaLib.extFromName('نتائج.pdf'), 'pdf');
+    assert.strictEqual(mediaLib.extFromName('no-extension'), null);
+    assert.strictEqual(mediaLib.extFromName(null), null);
+  });
+
+  await test('downloadName keeps the original document name', async () => {
+    assert.strictEqual(
+      mediaLib.downloadName({ filename: 'Lab Results.pdf' }, '1358517102390880', 'application/octet-stream'),
+      'Lab Results.pdf',
+    );
+    assert.strictEqual(
+      mediaLib.downloadName({ filename: 'نتائج التحاليل.pdf' }, '1', 'application/pdf'),
+      'نتائج التحاليل.pdf',
+    );
+  });
+
+  await test('downloadName never yields a bare media id or .octetstream', async () => {
+    const n = mediaLib.downloadName({}, '1358517102390880', 'application/octet-stream');
+    assert.strictEqual(n, 'whatsapp-1358517102390880.bin');
+    assert.ok(!n.includes('octetstream'));
+    assert.strictEqual(mediaLib.downloadName(null, '99', 'image/jpeg'), 'whatsapp-99.jpg');
+  });
+
   srv2.close();
   dbmod.__setDbForTesting(null);
 
