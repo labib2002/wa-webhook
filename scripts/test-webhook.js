@@ -331,6 +331,7 @@ function sign(body) {
   console.log('\n\x1b[1mFORWARD + READ/UNREAD ROUTES (fake DB)\x1b[0m');
   const dbmod = require('../lib/db');
   const wa = require('../lib/whatsapp');
+  const idem = require('../lib/idempotency');
   const fdb = makeFakeDb();
   dbmod.__setDbForTesting(fdb);
   // Stub the send side so forwarding "succeeds" without a live token.
@@ -343,6 +344,7 @@ function sign(body) {
   const loginRes = await req(srv2, 'POST', '/api/login', { body: { passcode: 'letmein' } });
   const cookie = (loginRes.headers.get('set-cookie') || '').split(';')[0];
   const authed = (method, path, body) => req(srv2, method, path, { body, headers: { cookie } });
+  const rowsForKey = (k) => fdb._tables.messages.filter((m) => m.client_key === k);
 
   await test('read endpoint: mark unread sets unread_count = 1', async () => {
     fdb._tables.conversations.push({ wa_id: '201000000001', unread_count: 0 });
@@ -495,6 +497,45 @@ function sign(body) {
     process.env.WA_TEMPLATE_ALLOWLIST = '';
   });
 
+  await test('service send: replayed key dedupes without a second Graph call', async () => {
+    let calls = 0;
+    wa.sendTemplate = async () => { calls++; return { ok: true, waMessageId: 'wamid.SVC1' }; };
+    const body = { to: '201000000009', template: 'ops_group_invite', client_key: 'svc-key-1' };
+    const first = await svc('POST', '/api/service/send-template', body);
+    assert.strictEqual(first.status, 200);
+    const second = await svc('POST', '/api/service/send-template', body);
+    assert.strictEqual(second.status, 200);
+    const j = JSON.parse(second.text);
+    assert.strictEqual(j.deduped, true);
+    assert.strictEqual(j.waMessageId, 'wamid.SVC1');
+    assert.strictEqual(calls, 1, `Graph was called ${calls} times`);
+    assert.strictEqual(rowsForKey('svc-key-1').length, 1);
+  });
+
+  await test('service send: retry of a FAILED key re-sends onto the same row', async () => {
+    let calls = 0;
+    wa.sendTemplate = async () => {
+      calls++;
+      return calls === 1
+        ? { ok: false, error: 'Temporary send failure.' }
+        : { ok: true, waMessageId: 'wamid.SVC2' };
+    };
+    const body = { to: '201000000009', template: 'ops_group_invite', client_key: 'svc-key-failed' };
+    const first = await svc('POST', '/api/service/send-template', body);
+    assert.strictEqual(first.status, 502);
+    assert.strictEqual(rowsForKey('svc-key-failed')[0].status, 'failed');
+    const second = await svc('POST', '/api/service/send-template', body);
+    assert.strictEqual(second.status, 200);
+    const j = JSON.parse(second.text);
+    assert.strictEqual(j.deduped, undefined, 'a failed key must not report deduped');
+    assert.strictEqual(j.waMessageId, 'wamid.SVC2');
+    assert.strictEqual(calls, 2, `Graph was called ${calls} times`);
+    const rows = rowsForKey('svc-key-failed');
+    assert.strictEqual(rows.length, 1, `duplicate row inserted (${rows.length})`);
+    assert.strictEqual(rows[0].status, 'sent');
+    assert.strictEqual(rows[0].wa_message_id, 'wamid.SVC2');
+  });
+
   // --- inbox send-template (passcode gate + narrower human allow-list) ---
   console.log('\n\x1b[1mINBOX SEND-TEMPLATE (fake DB, stubbed Graph)\x1b[0m');
 
@@ -554,6 +595,144 @@ function sign(body) {
     assert.strictEqual(j.deduped, true);
     assert.strictEqual(j.waMessageId, 'wamid.FUP2');
     assert.strictEqual(calls, 1, `Graph was called ${calls} times`);
+    assert.strictEqual(rowsForKey('inbox-key-1').length, 1);
+  });
+
+  await test('send-template: retry of a FAILED key re-sends and settles the same row', async () => {
+    let calls = 0;
+    wa.sendTemplate = async () => {
+      calls++;
+      return calls === 1
+        ? { ok: false, error: 'Temporary send failure.' }
+        : { ok: true, waMessageId: 'wamid.FUP3' };
+    };
+    const first = await followup({ ...goodBody, client_key: 'inbox-key-failed' });
+    assert.strictEqual(first.status, 502);
+    let rows = rowsForKey('inbox-key-failed');
+    assert.strictEqual(rows.length, 1, `rows after the failure = ${rows.length}`);
+    assert.strictEqual(rows[0].status, 'failed');
+    assert.strictEqual(rows[0].error, 'Temporary send failure.');
+
+    const second = await followup({ ...goodBody, client_key: 'inbox-key-failed' });
+    assert.strictEqual(second.status, 200);
+    const j = JSON.parse(second.text);
+    assert.strictEqual(j.deduped, undefined, 'a failed key must not report deduped');
+    assert.strictEqual(j.waMessageId, 'wamid.FUP3');
+    assert.strictEqual(calls, 2, `Graph was called ${calls} times`);
+    rows = rowsForKey('inbox-key-failed');
+    assert.strictEqual(rows.length, 1, `duplicate row inserted (${rows.length})`);
+    assert.strictEqual(rows[0].status, 'sent');
+    assert.strictEqual(rows[0].wa_message_id, 'wamid.FUP3');
+    assert.strictEqual(rows[0].error, null);
+  });
+
+  await test('send-template: a failed key that fails again stays one failed row', async () => {
+    let calls = 0;
+    wa.sendTemplate = async () => { calls++; return { ok: false, error: 'Still rejected by Meta.' }; };
+    const first = await followup({ ...goodBody, client_key: 'inbox-key-failed-2' });
+    assert.strictEqual(first.status, 502);
+    const second = await followup({ ...goodBody, client_key: 'inbox-key-failed-2' });
+    assert.strictEqual(second.status, 502);
+    assert.ok(second.text.includes('Still rejected by Meta.'), `error not surfaced: ${second.text}`);
+    assert.strictEqual(calls, 2, `Graph was called ${calls} times`);
+    const rows = rowsForKey('inbox-key-failed-2');
+    assert.strictEqual(rows.length, 1, `duplicate row inserted (${rows.length})`);
+    assert.strictEqual(rows[0].status, 'failed');
+    assert.strictEqual(rows[0].error, 'Still rejected by Meta.');
+  });
+
+  await test('send-template: a pending row is still in flight, not re-sent', async () => {
+    let calls = 0;
+    wa.sendTemplate = async () => { calls++; return { ok: true, waMessageId: 'wamid.NEVER' }; };
+    fdb._tables.messages.push({
+      id: 7101, client_key: 'inbox-key-pending', wa_id: '201000000010',
+      direction: 'out', type: 'text', body: 'in flight', status: 'pending',
+    });
+    const r = await followup({ ...goodBody, client_key: 'inbox-key-pending' });
+    assert.strictEqual(r.status, 200);
+    const j = JSON.parse(r.text);
+    assert.strictEqual(j.deduped, true);
+    assert.strictEqual(j.waMessageId, null);
+    assert.strictEqual(calls, 0, `Graph was called ${calls} times`);
+    assert.strictEqual(rowsForKey('inbox-key-pending').length, 1);
+  });
+
+  await test('send-template: a delivered row still dedupes', async () => {
+    let calls = 0;
+    wa.sendTemplate = async () => { calls++; return { ok: true, waMessageId: 'wamid.NEVER' }; };
+    fdb._tables.messages.push({
+      id: 7102, client_key: 'inbox-key-delivered', wa_id: '201000000010',
+      direction: 'out', type: 'text', body: 'already out', status: 'delivered',
+      wa_message_id: 'wamid.DLV',
+    });
+    const r = await followup({ ...goodBody, client_key: 'inbox-key-delivered' });
+    const j = JSON.parse(r.text);
+    assert.strictEqual(j.deduped, true);
+    assert.strictEqual(j.waMessageId, 'wamid.DLV');
+    assert.strictEqual(calls, 0, `Graph was called ${calls} times`);
+  });
+
+  await test('send-template: a failed row that reached Meta dedupes, no double delivery', async () => {
+    let calls = 0;
+    wa.sendTemplate = async () => { calls++; return { ok: true, waMessageId: 'wamid.NEVER' }; };
+    fdb._tables.messages.push({
+      id: 7103, client_key: 'inbox-key-undelivered', wa_id: '201000000010',
+      direction: 'out', type: 'text', body: 'accepted then failed', status: 'failed',
+      wa_message_id: 'wamid.ACCEPTED', error: 'Message undeliverable.',
+    });
+    const r = await followup({ ...goodBody, client_key: 'inbox-key-undelivered' });
+    const j = JSON.parse(r.text);
+    assert.strictEqual(j.deduped, true);
+    assert.strictEqual(j.waMessageId, 'wamid.ACCEPTED');
+    assert.strictEqual(calls, 0, `Graph was called ${calls} times`);
+  });
+
+  // The reserve race: our SELECT missed the row, the insert then loses on the
+  // client_key unique index and reserve hands back the winner.
+  await test('send-template: reserve race onto a failed row re-sends', async () => {
+    let calls = 0;
+    wa.sendTemplate = async () => { calls++; return { ok: true, waMessageId: 'wamid.RACE1' }; };
+    fdb._tables.messages.push({
+      id: 7104, client_key: 'inbox-key-race-failed', wa_id: '201000000010',
+      direction: 'out', type: 'text', body: 'raced', status: 'failed', error: 'Temporary send failure.',
+    });
+    const realFind = idem.findByKey;
+    idem.findByKey = async () => ({ row: null });
+    try {
+      const r = await followup({ ...goodBody, client_key: 'inbox-key-race-failed' });
+      assert.strictEqual(r.status, 200);
+      const j = JSON.parse(r.text);
+      assert.strictEqual(j.deduped, undefined, 'a failed row must not report deduped');
+      assert.strictEqual(j.waMessageId, 'wamid.RACE1');
+    } finally {
+      idem.findByKey = realFind;
+    }
+    assert.strictEqual(calls, 1, `Graph was called ${calls} times`);
+    const rows = rowsForKey('inbox-key-race-failed');
+    assert.strictEqual(rows.length, 1, `duplicate row inserted (${rows.length})`);
+    assert.strictEqual(rows[0].status, 'sent');
+    assert.strictEqual(rows[0].wa_message_id, 'wamid.RACE1');
+  });
+
+  await test('send-template: reserve race onto a sent row dedupes', async () => {
+    let calls = 0;
+    wa.sendTemplate = async () => { calls++; return { ok: true, waMessageId: 'wamid.RACE2' }; };
+    fdb._tables.messages.push({
+      id: 7105, client_key: 'inbox-key-race-sent', wa_id: '201000000010',
+      direction: 'out', type: 'text', body: 'winner', status: 'sent', wa_message_id: 'wamid.WINNER',
+    });
+    const realFind = idem.findByKey;
+    idem.findByKey = async () => ({ row: null });
+    try {
+      const r = await followup({ ...goodBody, client_key: 'inbox-key-race-sent' });
+      const j = JSON.parse(r.text);
+      assert.strictEqual(j.deduped, true);
+      assert.strictEqual(j.waMessageId, 'wamid.WINNER');
+    } finally {
+      idem.findByKey = realFind;
+    }
+    assert.strictEqual(calls, 0, `Graph was called ${calls} times`);
+    assert.strictEqual(rowsForKey('inbox-key-race-sent').length, 1);
   });
 
   srv2.close();
