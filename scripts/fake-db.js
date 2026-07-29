@@ -37,6 +37,21 @@ function makeFakeDb() {
       },
       insert(values) {
         const list = Array.isArray(values) ? values : [values];
+        // messages.client_key is UNIQUE when present (migration 007) — the
+        // reservation insert relies on losing this race with a 23505.
+        const dup = list.find(
+          (v) => tableName === 'messages' && v.client_key != null && rows.some((r) => r.client_key === v.client_key),
+        );
+        if (dup) {
+          const error = { code: '23505', message: 'duplicate key value violates unique constraint' };
+          return {
+            select: () => ({
+              single: () => Promise.resolve({ data: null, error }),
+              maybeSingle: () => Promise.resolve({ data: null, error }),
+            }),
+            then: (res) => res({ data: null, error }),
+          };
+        }
         const inserted = [];
         for (const v of list) {
           const row = { ...v };
