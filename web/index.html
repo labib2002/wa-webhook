@@ -104,6 +104,11 @@
             <div id="thread-name" class="thread-name">—</div>
             <div id="thread-sub" class="thread-sub">—</div>
           </div>
+          <div class="thread-header-actions">
+            <button id="followup-btn" class="icon-btn" title="Follow up" aria-label="Send a follow-up template">
+              <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><line x1="9" y1="10" x2="15" y2="10"/><line x1="12" y1="7" x2="12" y2="13"/></svg>
+            </button>
+          </div>
         </header>
 
         <div id="messages" class="messages" tabindex="0" aria-label="Messages">
@@ -184,6 +189,32 @@
       <div class="modal-actions">
         <button id="new-chat-cancel" type="button" class="btn-ghost">Cancel</button>
         <button id="new-chat-submit" type="submit" class="btn-primary btn-inline">Open chat</button>
+      </div>
+    </form>
+  </div>
+
+  <!-- follow-up template modal (reuses the modal styling) -->
+  <div id="followup-modal" class="modal-overlay" hidden>
+    <form id="followup-form" class="modal-card" autocomplete="off">
+      <h2 class="modal-title">Follow up</h2>
+      <p class="modal-sub">Sends the approved follow-up template, the only message WhatsApp allows outside the 24-hour window. Their reply reopens it.</p>
+      <label class="field">
+        <span class="field-label">First name</span>
+        <input id="followup-name" type="text" placeholder="Omar" required />
+      </label>
+      <label class="field">
+        <span class="field-label">Program / company</span>
+        <input id="followup-program" type="text" placeholder="Oasis" required />
+      </label>
+      <div id="followup-langs" class="lang-chips" role="group" aria-label="Template language">
+        <button type="button" class="filter-chip active" data-lang="ar" aria-pressed="true">العربية</button>
+        <button type="button" class="filter-chip" data-lang="en" aria-pressed="false">English</button>
+      </div>
+      <div id="followup-preview" class="tpl-preview"></div>
+      <p id="followup-error" class="login-error" role="alert" hidden></p>
+      <div class="modal-actions">
+        <button id="followup-cancel" type="button" class="btn-ghost">Cancel</button>
+        <button id="followup-submit" type="submit" class="btn-primary btn-inline">Send</button>
       </div>
     </form>
   </div>

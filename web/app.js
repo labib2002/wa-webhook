@@ -56,6 +56,16 @@ const els = {
   newChatName: $('#new-chat-name'),
   newChatError: $('#new-chat-error'),
   newChatCancel: $('#new-chat-cancel'),
+  followupBtn: $('#followup-btn'),
+  followupModal: $('#followup-modal'),
+  followupForm: $('#followup-form'),
+  followupName: $('#followup-name'),
+  followupProgram: $('#followup-program'),
+  followupLangs: $('#followup-langs'),
+  followupPreview: $('#followup-preview'),
+  followupError: $('#followup-error'),
+  followupCancel: $('#followup-cancel'),
+  followupSubmit: $('#followup-submit'),
   forwardModal: $('#forward-modal'),
   forwardSearch: $('#forward-search'),
   forwardList: $('#forward-list'),
@@ -72,6 +82,7 @@ const state = {
   listFilter: 'all',      // 'all' | 'unread' — composes WITH the search term
   activeWaId: null,
   forward: null,          // { msgId, selected: Set(wa_id), search } while the picker is open
+  followupLang: 'ar',     // template language for the follow-up modal
   threads: {},            // wa_id -> { byId: Map(id->msg), order: [ids], lastMsgId, loaded }
   drafts: {},             // wa_id -> unsent composer text (preserved across chat switches)
   sending: false,
@@ -428,10 +439,10 @@ els.search.addEventListener('input', () => {
 });
 
 // Filter chips (All / Unread) — compose with the search term.
-document.querySelectorAll('.filter-chip').forEach((chip) => {
+document.querySelectorAll('.list-filters .filter-chip').forEach((chip) => {
   chip.addEventListener('click', () => {
     state.listFilter = chip.dataset.filter;
-    document.querySelectorAll('.filter-chip').forEach((c) => {
+    document.querySelectorAll('.list-filters .filter-chip').forEach((c) => {
       const on = c === chip;
       c.classList.toggle('active', on);
       c.setAttribute('aria-selected', on ? 'true' : 'false');
@@ -803,9 +814,20 @@ function autoGrow() {
   ta.classList.toggle('is-scrolling', full > 140);
 }
 
+// The phrase lib/whatsapp.js maps Meta's 131047 to. A send that hit it can only
+// be recovered with a template, so the banner offers that fix inline.
+const WINDOW_CLOSED = 'Outside the 24-hour reply window';
+
 function setBanner(msg) {
   els.composerBanner.textContent = msg;
   els.composerBanner.hidden = false;
+  if (!String(msg).includes(WINDOW_CLOSED)) return;
+  const action = document.createElement('button');
+  action.type = 'button';
+  action.className = 'banner-action';
+  action.textContent = 'Reopen with a follow-up template';
+  action.addEventListener('click', openFollowupModal);
+  els.composerBanner.appendChild(action);
 }
 function clearBanner() {
   els.composerBanner.hidden = true;
@@ -1470,6 +1492,109 @@ els.forwardSubmit.addEventListener('click', async () => {
   }
   // If the agent is currently viewing one of the destinations, refresh it.
   if (state.activeWaId && dests.includes(state.activeWaId)) renderMessages();
+});
+
+/* ----------------------- follow-up template ----------------------- */
+// The one template an agent can send (the server enforces the same list). Its
+// only job is to earn a reply, which reopens the 24-hour window. Bodies mirror
+// the copy Meta approved, so the preview is what the customer actually gets.
+const FOLLOWUP_TEMPLATE = 'ops_support_followup';
+const FOLLOWUP_BODY = {
+  en: (name, program) =>
+    `Hi ${name}, this is the Byte+ support team following up on your ${program} program.\n` +
+    `If you have an open question, or something isn't working for you, reply to this message and we'll pick it up from here.`,
+  ar: (name, program) =>
+    `أهلاً ${name}، فريق دعم Byte+ بيتابع معاك بخصوص برنامج ${program}.\n` +
+    `لو عندك أي سؤال، أو في حاجة مش شغالة معاك، رد على الرسالة دي وهنكمل معاك من هنا.`,
+};
+
+// The same agent works the same few companies all day, so the program sticks.
+const PROGRAM_KEY = 'wa_followup_program';
+function loadProgram() { try { return localStorage.getItem(PROGRAM_KEY) || ''; } catch (_) { return ''; } }
+function saveProgram(v) { try { localStorage.setItem(PROGRAM_KEY, v); } catch (_) {} }
+
+function openFollowupModal() {
+  if (!state.activeWaId) return;
+  const conv = state.conversations.find((c) => c.wa_id === state.activeWaId);
+  const first = ((conv && conv.profile_name) || '').trim().split(/\s+/)[0] || '';
+  els.followupName.value = first;
+  els.followupProgram.value = loadProgram();
+  els.followupError.hidden = true;
+  state.followupLang = 'ar';
+  renderFollowupLang();
+  els.followupModal.hidden = false;
+  setTimeout(() => (first ? els.followupProgram : els.followupName).focus(), 50);
+}
+function closeFollowupModal() { els.followupModal.hidden = true; }
+
+function renderFollowupLang() {
+  els.followupLangs.querySelectorAll('.filter-chip').forEach((chip) => {
+    const on = chip.dataset.lang === state.followupLang;
+    chip.classList.toggle('active', on);
+    chip.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+  renderFollowupPreview();
+}
+
+function renderFollowupPreview() {
+  const name = els.followupName.value.trim() || '…';
+  const program = els.followupProgram.value.trim() || '…';
+  els.followupPreview.textContent = FOLLOWUP_BODY[state.followupLang](name, program);
+  els.followupPreview.dir = state.followupLang === 'ar' ? 'rtl' : 'ltr';
+}
+
+els.followupBtn.addEventListener('click', openFollowupModal);
+els.followupCancel.addEventListener('click', closeFollowupModal);
+els.followupModal.addEventListener('click', (e) => {
+  if (e.target === els.followupModal) closeFollowupModal();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !els.followupModal.hidden) closeFollowupModal();
+});
+els.followupLangs.addEventListener('click', (e) => {
+  const chip = e.target.closest('.filter-chip');
+  if (!chip) return;
+  state.followupLang = chip.dataset.lang;
+  renderFollowupLang();
+});
+els.followupName.addEventListener('input', renderFollowupPreview);
+els.followupProgram.addEventListener('input', renderFollowupPreview);
+
+els.followupForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const waId = state.activeWaId;
+  const name = els.followupName.value.trim();
+  const program = els.followupProgram.value.trim();
+  if (!waId || !name || !program) {
+    els.followupError.textContent = 'Fill in the name and the program.';
+    els.followupError.hidden = false;
+    return;
+  }
+  els.followupError.hidden = true;
+  els.followupSubmit.disabled = true;
+  els.followupSubmit.textContent = 'Sending…';
+
+  const { ok, status, data } = await api('/api/send-template', {
+    method: 'POST',
+    headers: { 'x-idempotency-key': newSendKey() },
+    body: JSON.stringify({
+      wa_id: waId, template: FOLLOWUP_TEMPLATE, language: state.followupLang, params: [name, program],
+    }),
+  });
+  els.followupSubmit.disabled = false;
+  els.followupSubmit.textContent = 'Send';
+  if (status === 401) return handleAuthLost();
+  if (!ok) {
+    els.followupError.textContent = data.error || 'Could not send the template.';
+    els.followupError.hidden = false;
+    return;
+  }
+
+  saveProgram(program);
+  closeFollowupModal();
+  clearBanner();
+  toast('Follow-up template sent.');
+  loadThread(false); // pull the persisted row now instead of waiting for the poll
 });
 
 /* ----------------------------- start ----------------------------- */
