@@ -37,6 +37,21 @@ function makeFakeDb() {
       },
       insert(values) {
         const list = Array.isArray(values) ? values : [values];
+        // messages.client_key is UNIQUE when present (migration 007) — the
+        // reservation insert relies on losing this race with a 23505.
+        const dup = list.find(
+          (v) => tableName === 'messages' && v.client_key != null && rows.some((r) => r.client_key === v.client_key),
+        );
+        if (dup) {
+          const error = { code: '23505', message: 'duplicate key value violates unique constraint' };
+          return {
+            select: () => ({
+              single: () => Promise.resolve({ data: null, error }),
+              maybeSingle: () => Promise.resolve({ data: null, error }),
+            }),
+            then: (res) => res({ data: null, error }),
+          };
+        }
         const inserted = [];
         for (const v of list) {
           const row = { ...v };
@@ -56,11 +71,19 @@ function makeFakeDb() {
         };
       },
       update(patch) {
-        // returns object with .eq(...) that applies the patch to matches
+        // .eq(...) applies the patch to matches and is awaitable on its own or
+        // chainable into .select().single(), like the real builder.
         return {
           eq(col, val) {
-            for (const r of rows) if (r[col] === val) Object.assign(r, patch);
-            return Promise.resolve({ data: null, error: null });
+            const hit = [];
+            for (const r of rows) if (r[col] === val) { Object.assign(r, patch); hit.push(r); }
+            return {
+              select: () => ({
+                single: () => Promise.resolve({ data: hit[0] || null, error: hit.length ? null : { message: 'no rows' } }),
+                maybeSingle: () => Promise.resolve({ data: hit[0] || null, error: null }),
+              }),
+              then: (res) => res({ data: null, error: null }),
+            };
           },
         };
       },

@@ -331,6 +331,7 @@ function sign(body) {
   console.log('\n\x1b[1mFORWARD + READ/UNREAD ROUTES (fake DB)\x1b[0m');
   const dbmod = require('../lib/db');
   const wa = require('../lib/whatsapp');
+  const idem = require('../lib/idempotency');
   const fdb = makeFakeDb();
   dbmod.__setDbForTesting(fdb);
   // Stub the send side so forwarding "succeeds" without a live token.
@@ -343,6 +344,7 @@ function sign(body) {
   const loginRes = await req(srv2, 'POST', '/api/login', { body: { passcode: 'letmein' } });
   const cookie = (loginRes.headers.get('set-cookie') || '').split(';')[0];
   const authed = (method, path, body) => req(srv2, method, path, { body, headers: { cookie } });
+  const rowsForKey = (k) => fdb._tables.messages.filter((m) => m.client_key === k);
 
   await test('read endpoint: mark unread sets unread_count = 1', async () => {
     fdb._tables.conversations.push({ wa_id: '201000000001', unread_count: 0 });
@@ -495,6 +497,45 @@ function sign(body) {
     process.env.WA_TEMPLATE_ALLOWLIST = '';
   });
 
+  await test('service send: replayed key dedupes without a second Graph call', async () => {
+    let calls = 0;
+    wa.sendTemplate = async () => { calls++; return { ok: true, waMessageId: 'wamid.SVC1' }; };
+    const body = { to: '201000000009', template: 'ops_group_invite', client_key: 'svc-key-1' };
+    const first = await svc('POST', '/api/service/send-template', body);
+    assert.strictEqual(first.status, 200);
+    const second = await svc('POST', '/api/service/send-template', body);
+    assert.strictEqual(second.status, 200);
+    const j = JSON.parse(second.text);
+    assert.strictEqual(j.deduped, true);
+    assert.strictEqual(j.waMessageId, 'wamid.SVC1');
+    assert.strictEqual(calls, 1, `Graph was called ${calls} times`);
+    assert.strictEqual(rowsForKey('svc-key-1').length, 1);
+  });
+
+  await test('service send: retry of a FAILED key re-sends onto the same row', async () => {
+    let calls = 0;
+    wa.sendTemplate = async () => {
+      calls++;
+      return calls === 1
+        ? { ok: false, error: 'Temporary send failure.' }
+        : { ok: true, waMessageId: 'wamid.SVC2' };
+    };
+    const body = { to: '201000000009', template: 'ops_group_invite', client_key: 'svc-key-failed' };
+    const first = await svc('POST', '/api/service/send-template', body);
+    assert.strictEqual(first.status, 502);
+    assert.strictEqual(rowsForKey('svc-key-failed')[0].status, 'failed');
+    const second = await svc('POST', '/api/service/send-template', body);
+    assert.strictEqual(second.status, 200);
+    const j = JSON.parse(second.text);
+    assert.strictEqual(j.deduped, undefined, 'a failed key must not report deduped');
+    assert.strictEqual(j.waMessageId, 'wamid.SVC2');
+    assert.strictEqual(calls, 2, `Graph was called ${calls} times`);
+    const rows = rowsForKey('svc-key-failed');
+    assert.strictEqual(rows.length, 1, `duplicate row inserted (${rows.length})`);
+    assert.strictEqual(rows[0].status, 'sent');
+    assert.strictEqual(rows[0].wa_message_id, 'wamid.SVC2');
+  });
+
   // --- inbox send-template (passcode gate + narrower human allow-list) ---
   console.log('\n\x1b[1mINBOX SEND-TEMPLATE (fake DB, stubbed Graph)\x1b[0m');
 
@@ -554,6 +595,377 @@ function sign(body) {
     assert.strictEqual(j.deduped, true);
     assert.strictEqual(j.waMessageId, 'wamid.FUP2');
     assert.strictEqual(calls, 1, `Graph was called ${calls} times`);
+    assert.strictEqual(rowsForKey('inbox-key-1').length, 1);
+  });
+
+  await test('send-template: retry of a FAILED key re-sends and settles the same row', async () => {
+    let calls = 0;
+    wa.sendTemplate = async () => {
+      calls++;
+      return calls === 1
+        ? { ok: false, error: 'Temporary send failure.' }
+        : { ok: true, waMessageId: 'wamid.FUP3' };
+    };
+    const first = await followup({ ...goodBody, client_key: 'inbox-key-failed' });
+    assert.strictEqual(first.status, 502);
+    let rows = rowsForKey('inbox-key-failed');
+    assert.strictEqual(rows.length, 1, `rows after the failure = ${rows.length}`);
+    assert.strictEqual(rows[0].status, 'failed');
+    assert.strictEqual(rows[0].error, 'Temporary send failure.');
+
+    const second = await followup({ ...goodBody, client_key: 'inbox-key-failed' });
+    assert.strictEqual(second.status, 200);
+    const j = JSON.parse(second.text);
+    assert.strictEqual(j.deduped, undefined, 'a failed key must not report deduped');
+    assert.strictEqual(j.waMessageId, 'wamid.FUP3');
+    assert.strictEqual(calls, 2, `Graph was called ${calls} times`);
+    rows = rowsForKey('inbox-key-failed');
+    assert.strictEqual(rows.length, 1, `duplicate row inserted (${rows.length})`);
+    assert.strictEqual(rows[0].status, 'sent');
+    assert.strictEqual(rows[0].wa_message_id, 'wamid.FUP3');
+    assert.strictEqual(rows[0].error, null);
+  });
+
+  await test('send-template: a failed key that fails again stays one failed row', async () => {
+    let calls = 0;
+    wa.sendTemplate = async () => { calls++; return { ok: false, error: 'Still rejected by Meta.' }; };
+    const first = await followup({ ...goodBody, client_key: 'inbox-key-failed-2' });
+    assert.strictEqual(first.status, 502);
+    const second = await followup({ ...goodBody, client_key: 'inbox-key-failed-2' });
+    assert.strictEqual(second.status, 502);
+    assert.ok(second.text.includes('Still rejected by Meta.'), `error not surfaced: ${second.text}`);
+    assert.strictEqual(calls, 2, `Graph was called ${calls} times`);
+    const rows = rowsForKey('inbox-key-failed-2');
+    assert.strictEqual(rows.length, 1, `duplicate row inserted (${rows.length})`);
+    assert.strictEqual(rows[0].status, 'failed');
+    assert.strictEqual(rows[0].error, 'Still rejected by Meta.');
+  });
+
+  await test('send-template: a pending row is still in flight, not re-sent', async () => {
+    let calls = 0;
+    wa.sendTemplate = async () => { calls++; return { ok: true, waMessageId: 'wamid.NEVER' }; };
+    fdb._tables.messages.push({
+      id: 7101, client_key: 'inbox-key-pending', wa_id: '201000000010',
+      direction: 'out', type: 'text', body: 'in flight', status: 'pending',
+    });
+    const r = await followup({ ...goodBody, client_key: 'inbox-key-pending' });
+    assert.strictEqual(r.status, 200);
+    const j = JSON.parse(r.text);
+    assert.strictEqual(j.deduped, true);
+    assert.strictEqual(j.waMessageId, null);
+    assert.strictEqual(calls, 0, `Graph was called ${calls} times`);
+    assert.strictEqual(rowsForKey('inbox-key-pending').length, 1);
+  });
+
+  await test('send-template: a delivered row still dedupes', async () => {
+    let calls = 0;
+    wa.sendTemplate = async () => { calls++; return { ok: true, waMessageId: 'wamid.NEVER' }; };
+    fdb._tables.messages.push({
+      id: 7102, client_key: 'inbox-key-delivered', wa_id: '201000000010',
+      direction: 'out', type: 'text', body: 'already out', status: 'delivered',
+      wa_message_id: 'wamid.DLV',
+    });
+    const r = await followup({ ...goodBody, client_key: 'inbox-key-delivered' });
+    const j = JSON.parse(r.text);
+    assert.strictEqual(j.deduped, true);
+    assert.strictEqual(j.waMessageId, 'wamid.DLV');
+    assert.strictEqual(calls, 0, `Graph was called ${calls} times`);
+  });
+
+  await test('send-template: a failed row that reached Meta dedupes, no double delivery', async () => {
+    let calls = 0;
+    wa.sendTemplate = async () => { calls++; return { ok: true, waMessageId: 'wamid.NEVER' }; };
+    fdb._tables.messages.push({
+      id: 7103, client_key: 'inbox-key-undelivered', wa_id: '201000000010',
+      direction: 'out', type: 'text', body: 'accepted then failed', status: 'failed',
+      wa_message_id: 'wamid.ACCEPTED', error: 'Message undeliverable.',
+    });
+    const r = await followup({ ...goodBody, client_key: 'inbox-key-undelivered' });
+    const j = JSON.parse(r.text);
+    assert.strictEqual(j.deduped, true);
+    assert.strictEqual(j.waMessageId, 'wamid.ACCEPTED');
+    assert.strictEqual(calls, 0, `Graph was called ${calls} times`);
+  });
+
+  // The reserve race: our SELECT missed the row, the insert then loses on the
+  // client_key unique index and reserve hands back the winner.
+  await test('send-template: reserve race onto a failed row re-sends', async () => {
+    let calls = 0;
+    wa.sendTemplate = async () => { calls++; return { ok: true, waMessageId: 'wamid.RACE1' }; };
+    fdb._tables.messages.push({
+      id: 7104, client_key: 'inbox-key-race-failed', wa_id: '201000000010',
+      direction: 'out', type: 'text', body: 'raced', status: 'failed', error: 'Temporary send failure.',
+    });
+    const realFind = idem.findByKey;
+    idem.findByKey = async () => ({ row: null });
+    try {
+      const r = await followup({ ...goodBody, client_key: 'inbox-key-race-failed' });
+      assert.strictEqual(r.status, 200);
+      const j = JSON.parse(r.text);
+      assert.strictEqual(j.deduped, undefined, 'a failed row must not report deduped');
+      assert.strictEqual(j.waMessageId, 'wamid.RACE1');
+    } finally {
+      idem.findByKey = realFind;
+    }
+    assert.strictEqual(calls, 1, `Graph was called ${calls} times`);
+    const rows = rowsForKey('inbox-key-race-failed');
+    assert.strictEqual(rows.length, 1, `duplicate row inserted (${rows.length})`);
+    assert.strictEqual(rows[0].status, 'sent');
+    assert.strictEqual(rows[0].wa_message_id, 'wamid.RACE1');
+  });
+
+  await test('send-template: reserve race onto a sent row dedupes', async () => {
+    let calls = 0;
+    wa.sendTemplate = async () => { calls++; return { ok: true, waMessageId: 'wamid.RACE2' }; };
+    fdb._tables.messages.push({
+      id: 7105, client_key: 'inbox-key-race-sent', wa_id: '201000000010',
+      direction: 'out', type: 'text', body: 'winner', status: 'sent', wa_message_id: 'wamid.WINNER',
+    });
+    const realFind = idem.findByKey;
+    idem.findByKey = async () => ({ row: null });
+    try {
+      const r = await followup({ ...goodBody, client_key: 'inbox-key-race-sent' });
+      const j = JSON.parse(r.text);
+      assert.strictEqual(j.deduped, true);
+      assert.strictEqual(j.waMessageId, 'wamid.WINNER');
+    } finally {
+      idem.findByKey = realFind;
+    }
+    assert.strictEqual(calls, 0, `Graph was called ${calls} times`);
+    assert.strictEqual(rowsForKey('inbox-key-race-sent').length, 1);
+  });
+
+  // --- /api/send + /api/send-media: the same key lifecycle as send-template ---
+  console.log('\n\x1b[1mSEND + SEND-MEDIA IDEMPOTENCY (fake DB, stubbed Graph)\x1b[0m');
+
+  const sendText = (body) => authed('POST', '/api/send', { wa_id: '201000000011', text: 'hi', ...body });
+
+  await test('send: replayed key dedupes without a second Graph call', async () => {
+    let calls = 0;
+    wa.sendText = async () => { calls++; return { ok: true, waMessageId: 'wamid.TXT1' }; };
+    const first = await sendText({ client_key: 'send-key-1' });
+    assert.strictEqual(first.status, 200);
+    const second = await sendText({ client_key: 'send-key-1' });
+    assert.strictEqual(second.status, 200);
+    const j = JSON.parse(second.text);
+    assert.strictEqual(j.deduped, true);
+    assert.strictEqual(j.message.wa_message_id, 'wamid.TXT1');
+    assert.strictEqual(calls, 1, `Graph was called ${calls} times`);
+    assert.strictEqual(rowsForKey('send-key-1').length, 1);
+  });
+
+  await test('send: retry of a FAILED key re-sends and settles the same row', async () => {
+    let calls = 0;
+    wa.sendText = async () => {
+      calls++;
+      return calls === 1
+        ? { ok: false, error: 'Temporary send failure.' }
+        : { ok: true, waMessageId: 'wamid.TXT2' };
+    };
+    const first = await sendText({ client_key: 'send-key-failed' });
+    assert.strictEqual(first.status, 502);
+    let rows = rowsForKey('send-key-failed');
+    assert.strictEqual(rows.length, 1, `rows after the failure = ${rows.length}`);
+    assert.strictEqual(rows[0].status, 'failed');
+
+    const second = await sendText({ client_key: 'send-key-failed' });
+    assert.strictEqual(second.status, 200);
+    const j = JSON.parse(second.text);
+    assert.strictEqual(j.deduped, undefined, 'a failed key must not report deduped');
+    assert.strictEqual(j.message.wa_message_id, 'wamid.TXT2');
+    assert.strictEqual(calls, 2, `Graph was called ${calls} times`);
+    rows = rowsForKey('send-key-failed');
+    assert.strictEqual(rows.length, 1, `duplicate row inserted (${rows.length})`);
+    assert.strictEqual(rows[0].status, 'sent');
+    assert.strictEqual(rows[0].error, null);
+  });
+
+  await test('send: a pending row is still in flight, not re-sent', async () => {
+    let calls = 0;
+    wa.sendText = async () => { calls++; return { ok: true, waMessageId: 'wamid.NEVER' }; };
+    fdb._tables.messages.push({
+      id: 7201, client_key: 'send-key-pending', wa_id: '201000000011',
+      direction: 'out', type: 'text', body: 'in flight', status: 'pending',
+    });
+    const r = await sendText({ client_key: 'send-key-pending' });
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(JSON.parse(r.text).deduped, true);
+    assert.strictEqual(calls, 0, `Graph was called ${calls} times`);
+    assert.strictEqual(rowsForKey('send-key-pending').length, 1);
+  });
+
+  await test('send: a delivered row still dedupes', async () => {
+    let calls = 0;
+    wa.sendText = async () => { calls++; return { ok: true, waMessageId: 'wamid.NEVER' }; };
+    fdb._tables.messages.push({
+      id: 7202, client_key: 'send-key-delivered', wa_id: '201000000011',
+      direction: 'out', type: 'text', body: 'already out', status: 'delivered',
+      wa_message_id: 'wamid.TXTDLV',
+    });
+    const r = await sendText({ client_key: 'send-key-delivered' });
+    const j = JSON.parse(r.text);
+    assert.strictEqual(j.deduped, true);
+    assert.strictEqual(j.message.wa_message_id, 'wamid.TXTDLV');
+    assert.strictEqual(calls, 0, `Graph was called ${calls} times`);
+  });
+
+  await test('send: a failed row that reached Meta dedupes, no double delivery', async () => {
+    let calls = 0;
+    wa.sendText = async () => { calls++; return { ok: true, waMessageId: 'wamid.NEVER' }; };
+    fdb._tables.messages.push({
+      id: 7203, client_key: 'send-key-undelivered', wa_id: '201000000011',
+      direction: 'out', type: 'text', body: 'accepted then failed', status: 'failed',
+      wa_message_id: 'wamid.TXTACCEPTED', error: 'Message undeliverable.',
+    });
+    const r = await sendText({ client_key: 'send-key-undelivered' });
+    const j = JSON.parse(r.text);
+    assert.strictEqual(j.deduped, true);
+    assert.strictEqual(j.message.wa_message_id, 'wamid.TXTACCEPTED');
+    assert.strictEqual(calls, 0, `Graph was called ${calls} times`);
+  });
+
+  const sendMedia = (body) => authed('POST', '/api/send-media', {
+    wa_id: '201000000012',
+    file_base64: Buffer.from('fake-png-bytes').toString('base64'),
+    mime: 'image/png',
+    filename: 'shot.png',
+    ...body,
+  });
+
+  await test('send-media: replayed key dedupes without a second Graph call', async () => {
+    let calls = 0;
+    wa.uploadMedia = async () => ({ ok: true, mediaId: 'MEDIA_K1' });
+    wa.sendMedia = async () => { calls++; return { ok: true, waMessageId: 'wamid.MED1' }; };
+    const first = await sendMedia({ client_key: 'media-key-1' });
+    assert.strictEqual(first.status, 200);
+    const second = await sendMedia({ client_key: 'media-key-1' });
+    assert.strictEqual(second.status, 200);
+    const j = JSON.parse(second.text);
+    assert.strictEqual(j.deduped, true);
+    assert.strictEqual(j.message.wa_message_id, 'wamid.MED1');
+    assert.strictEqual(calls, 1, `Graph was called ${calls} times`);
+    assert.strictEqual(rowsForKey('media-key-1').length, 1);
+  });
+
+  await test('send-media: retry of a FAILED key re-sends and settles the same row', async () => {
+    let calls = 0;
+    wa.uploadMedia = async () => ({ ok: true, mediaId: 'MEDIA_K2' });
+    wa.sendMedia = async () => {
+      calls++;
+      return calls === 1
+        ? { ok: false, error: 'Temporary media failure.' }
+        : { ok: true, waMessageId: 'wamid.MED2' };
+    };
+    const first = await sendMedia({ client_key: 'media-key-failed' });
+    assert.strictEqual(first.status, 502);
+    let rows = rowsForKey('media-key-failed');
+    assert.strictEqual(rows.length, 1, `rows after the failure = ${rows.length}`);
+    assert.strictEqual(rows[0].status, 'failed');
+    assert.strictEqual(rows[0].media_status, 'stored');
+
+    const second = await sendMedia({ client_key: 'media-key-failed' });
+    assert.strictEqual(second.status, 200);
+    const j = JSON.parse(second.text);
+    assert.strictEqual(j.deduped, undefined, 'a failed key must not report deduped');
+    assert.strictEqual(j.message.wa_message_id, 'wamid.MED2');
+    assert.strictEqual(calls, 2, `Graph was called ${calls} times`);
+    rows = rowsForKey('media-key-failed');
+    assert.strictEqual(rows.length, 1, `duplicate row inserted (${rows.length})`);
+    assert.strictEqual(rows[0].status, 'sent');
+    assert.strictEqual(rows[0].media_status, 'stored');
+  });
+
+  await test('send-media: a pending row is still in flight, not re-sent', async () => {
+    let calls = 0;
+    wa.sendMedia = async () => { calls++; return { ok: true, waMessageId: 'wamid.NEVER' }; };
+    fdb._tables.messages.push({
+      id: 7204, client_key: 'media-key-pending', wa_id: '201000000012',
+      direction: 'out', type: 'image', body: '📷 Image', status: 'pending',
+    });
+    const r = await sendMedia({ client_key: 'media-key-pending' });
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(JSON.parse(r.text).deduped, true);
+    assert.strictEqual(calls, 0, `Graph was called ${calls} times`);
+    assert.strictEqual(rowsForKey('media-key-pending').length, 1);
+  });
+
+  await test('send-media: a failed row that reached Meta dedupes, no double delivery', async () => {
+    let calls = 0;
+    wa.sendMedia = async () => { calls++; return { ok: true, waMessageId: 'wamid.NEVER' }; };
+    fdb._tables.messages.push({
+      id: 7205, client_key: 'media-key-undelivered', wa_id: '201000000012',
+      direction: 'out', type: 'image', body: '📷 Image', status: 'failed',
+      wa_message_id: 'wamid.MEDACCEPTED', error: 'Message undeliverable.',
+      media_path: '201000000012/out/k7205.png', media_status: 'stored',
+    });
+    const r = await sendMedia({ client_key: 'media-key-undelivered' });
+    const j = JSON.parse(r.text);
+    assert.strictEqual(j.deduped, true);
+    assert.strictEqual(j.message.wa_message_id, 'wamid.MEDACCEPTED');
+    assert.strictEqual(calls, 0, `Graph was called ${calls} times`);
+  });
+
+  await test('send-media: a re-send whose bucket upload fails keeps the stored copy', async () => {
+    wa.uploadMedia = async () => ({ ok: true, mediaId: 'MEDIA_K3' });
+    wa.sendMedia = async () => ({ ok: true, waMessageId: 'wamid.MED3' });
+    fdb._tables.messages.push({
+      id: 7206, client_key: 'media-key-keep-copy', wa_id: '201000000012',
+      direction: 'out', type: 'image', body: '📷 Image', status: 'failed',
+      media_path: '201000000012/out/k7206.png', media_status: 'stored',
+    });
+    const realFrom = fdb.storage.from;
+    fdb.storage.from = () => ({ upload: async () => ({ error: { message: 'bucket unavailable' } }) });
+    try {
+      const r = await sendMedia({ client_key: 'media-key-keep-copy' });
+      assert.strictEqual(r.status, 200);
+    } finally {
+      fdb.storage.from = realFrom;
+    }
+    const row = rowsForKey('media-key-keep-copy')[0];
+    assert.strictEqual(row.status, 'sent');
+    assert.strictEqual(row.media_status, 'stored', 'stored copy was downgraded');
+    assert.strictEqual(row.media_path, '201000000012/out/k7206.png', 'stored copy was lost');
+  });
+
+  // --- media filenames: what the browser actually saves the file as ---
+  console.log('\n\x1b[1mMEDIA FILENAMES\x1b[0m');
+  const mediaLib = require('../lib/media');
+
+  await test('extFromMime: octet-stream is not an extension', async () => {
+    assert.strictEqual(mediaLib.extFromMime('application/octet-stream'), 'bin');
+    assert.strictEqual(mediaLib.extFromMime('application/vnd.ms-excel'), 'bin');
+    assert.strictEqual(mediaLib.extFromMime(null), 'bin');
+  });
+
+  await test('extFromMime: known types still map', async () => {
+    assert.strictEqual(mediaLib.extFromMime('image/jpeg'), 'jpg');
+    assert.strictEqual(mediaLib.extFromMime('application/pdf'), 'pdf');
+    assert.strictEqual(mediaLib.extFromMime('image/png; charset=binary'), 'png');
+  });
+
+  await test('extFromName prefers the sender-supplied extension', async () => {
+    assert.strictEqual(mediaLib.extFromName('Lab Results.PDF'), 'pdf');
+    assert.strictEqual(mediaLib.extFromName('نتائج.pdf'), 'pdf');
+    assert.strictEqual(mediaLib.extFromName('no-extension'), null);
+    assert.strictEqual(mediaLib.extFromName(null), null);
+  });
+
+  await test('downloadName keeps the original document name', async () => {
+    assert.strictEqual(
+      mediaLib.downloadName({ filename: 'Lab Results.pdf' }, '1358517102390880', 'application/octet-stream'),
+      'Lab Results.pdf',
+    );
+    assert.strictEqual(
+      mediaLib.downloadName({ filename: 'نتائج التحاليل.pdf' }, '1', 'application/pdf'),
+      'نتائج التحاليل.pdf',
+    );
+  });
+
+  await test('downloadName never yields a bare media id or .octetstream', async () => {
+    const n = mediaLib.downloadName({}, '1358517102390880', 'application/octet-stream');
+    assert.strictEqual(n, 'whatsapp-1358517102390880.bin');
+    assert.ok(!n.includes('octetstream'));
+    assert.strictEqual(mediaLib.downloadName(null, '99', 'image/jpeg'), 'whatsapp-99.jpg');
   });
 
   srv2.close();
