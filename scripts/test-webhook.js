@@ -160,6 +160,12 @@ function sign(body) {
     const r = await req(srv, 'POST', '/api/forward', { body: { message_id: 1, wa_ids: ['201001234567'] } });
     assert.strictEqual(r.status, 401);
   });
+  await test('POST /api/send-template without cookie → 401 (gated)', async () => {
+    const r = await req(srv, 'POST', '/api/send-template', {
+      body: { wa_id: '201001234567', template: 'ops_support_followup', language: 'ar', params: ['Omar', 'Oasis'] },
+    });
+    assert.strictEqual(r.status, 401);
+  });
   await test('POST /api/conversations/:wa_id/read without cookie → 401 (gated)', async () => {
     const r = await req(srv, 'POST', '/api/conversations/201001234567/read', { body: { read: false } });
     assert.strictEqual(r.status, 401);
@@ -487,6 +493,67 @@ function sign(body) {
     const blocked = await svc('POST', '/api/service/send-template', { to: '201000000009', template: 'ops_group_invite' });
     assert.strictEqual(blocked.status, 400);
     process.env.WA_TEMPLATE_ALLOWLIST = '';
+  });
+
+  // --- inbox send-template (passcode gate + narrower human allow-list) ---
+  console.log('\n\x1b[1mINBOX SEND-TEMPLATE (fake DB, stubbed Graph)\x1b[0m');
+
+  const followup = (body) => req(srv2, 'POST', '/api/send-template', { body, headers: { cookie } });
+  const goodBody = {
+    wa_id: '201000000010', template: 'ops_support_followup', language: 'ar', params: ['Omar', 'Oasis'],
+  };
+
+  await test('send-template: a service-allowed template the inbox may not send → 400', async () => {
+    const r = await followup({ ...goodBody, template: 'ops_group_invite' });
+    assert.strictEqual(r.status, 400);
+  });
+
+  await test('send-template: ar_EG / fr are not valid languages → 400', async () => {
+    const eg = await followup({ ...goodBody, language: 'ar_EG' });
+    assert.strictEqual(eg.status, 400);
+    const fr = await followup({ ...goodBody, language: 'fr' });
+    assert.strictEqual(fr.status, 400);
+  });
+
+  await test('send-template: empty / whitespace-only param → 400', async () => {
+    const empty = await followup({ ...goodBody, params: ['', 'Oasis'] });
+    assert.strictEqual(empty.status, 400);
+    const blank = await followup({ ...goodBody, params: ['Omar', '   '] });
+    assert.strictEqual(blank.status, 400);
+  });
+
+  await test('send-template: ok path sends ar, returns waMessageId, persists row + preview', async () => {
+    wa.sendTemplate = async (to, t) => {
+      assert.strictEqual(to, '201000000010');
+      assert.strictEqual(t.name, 'ops_support_followup');
+      assert.strictEqual(t.language, 'ar');
+      assert.deepStrictEqual(t.components[0].parameters.map((p) => p.text), ['Omar', 'Oasis']);
+      return { ok: true, waMessageId: 'wamid.FUP1' };
+    };
+    const r = await followup(goodBody);
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(JSON.parse(r.text).waMessageId, 'wamid.FUP1');
+    const row = fdb._tables.messages.find((m) => m.wa_message_id === 'wamid.FUP1');
+    assert.ok(row, 'outbound template row not persisted');
+    assert.strictEqual(row.direction, 'out');
+    assert.strictEqual(row.status, 'sent');
+    assert.ok(row.body.includes('[ops_support_followup]') && row.body.includes('Omar'), `preview = ${row.body}`);
+    const conv = fdb._tables.conversations.find((c) => c.wa_id === '201000000010');
+    assert.strictEqual(conv.last_message_text, row.body);
+    assert.strictEqual(conv.last_message_direction, 'out');
+  });
+
+  await test('send-template: replayed client_key dedupes without a second Graph call', async () => {
+    let calls = 0;
+    wa.sendTemplate = async () => { calls++; return { ok: true, waMessageId: 'wamid.FUP2' }; };
+    const first = await followup({ ...goodBody, client_key: 'inbox-key-1' });
+    assert.strictEqual(first.status, 200);
+    const second = await followup({ ...goodBody, client_key: 'inbox-key-1' });
+    assert.strictEqual(second.status, 200);
+    const j = JSON.parse(second.text);
+    assert.strictEqual(j.deduped, true);
+    assert.strictEqual(j.waMessageId, 'wamid.FUP2');
+    assert.strictEqual(calls, 1, `Graph was called ${calls} times`);
   });
 
   srv2.close();
