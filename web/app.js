@@ -145,8 +145,18 @@ function mergeMessages(t, rows) {
   return changed;
 }
 
+// byId is the source of truth; order is just the ordering index. Render each id
+// once even if order briefly holds it twice, so no race can double a bubble.
 function threadMessages(t) {
-  return t.order.map((id) => t.byId.get(id)).filter(Boolean);
+  const seen = new Set();
+  const out = [];
+  for (const id of t.order) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const m = t.byId.get(id);
+    if (m) out.push(m);
+  }
+  return out;
 }
 
 const LIST_POLL_MS = 4000;
@@ -794,7 +804,7 @@ async function retrySend(m) {
     const idx = t2.order.indexOf(m.id);
     if (idx > -1) t2.order.splice(idx, 1);
     t2.byId.set(data.message.id, data.message);
-    t2.order.push(data.message.id);
+    if (!t2.order.includes(data.message.id)) t2.order.push(data.message.id);
     mergeMessages(t2, []); // re-sort + advance maxUpdatedAt
     renderMessages();
     bumpConversationPreview(waId, data.message.body || stripCaption(stillThere.body) || '', 'out');
@@ -1192,7 +1202,10 @@ function settleOptimistic(waId, opt, patch, persisted) {
   if (idx > -1) t.order.splice(idx, 1);
   const row = persisted || { ...opt, ...patch };
   t.byId.set(row.id, row);
-  t.order.push(row.id);
+  // The 1500ms poll usually beats the ~3.5s send, so this row may already be in
+  // order (the twin-drop having removed the optimistic id). Pushing regardless
+  // listed it twice and drew the message twice until the thread was rebuilt.
+  if (!t.order.includes(row.id)) t.order.push(row.id);
   if (typeof row.id === 'number' && row.id > t.lastMsgId) t.lastMsgId = row.id;
   mergeMessages(t, []); // re-sort
   renderMessages();
