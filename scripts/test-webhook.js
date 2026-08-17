@@ -11,8 +11,8 @@ const assert = require('assert');
 const { makeFakeDb } = require('./fake-db');
 
 // ---- test env (set BEFORE requiring the app/modules) ----
-// Force a hermetic environment: blank out any real Supabase creds from .env so
-// the suite NEVER touches the live database.
+// Force a hermetic environment: blank out any real DB creds from .env so the
+// suite NEVER touches a live database.
 process.env.VERIFY_TOKEN = 'vibecode123';
 process.env.APP_SECRET = 'test_app_secret';
 process.env.SESSION_SECRET = 'test_session_secret_0123456789';
@@ -20,8 +20,7 @@ process.env.DASHBOARD_PASSCODE = 'letmein';
 process.env.NODE_ENV = 'test';
 // Empty (not delete): dotenv won't override an already-present key, so this
 // survives the dotenv.config() inside api/index.js and keeps the DB unconfigured.
-process.env.SUPABASE_URL = '';
-process.env.SUPABASE_SERVICE_ROLE_KEY = '';
+process.env.DATABASE_URL = '';
 
 const { ingestWebhook, describeMessage, __setMediaFetcher } = require('../lib/ingest');
 

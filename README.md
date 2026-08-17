@@ -71,7 +71,7 @@ subscription in `web/app.js` - the data model already supports it.
 
 ---
 
-## Data model (`supabase/schema.sql`)
+## Data model (`db/schema.sql`)
 
 **conversations** - one row per WhatsApp user (`wa_id` PK): `profile_name`,
 `last_message_text`, `last_message_at`, `last_message_direction`,
@@ -82,29 +82,38 @@ subscription in `web/app.js` - the data model already supports it.
 `media_path` + `media_status` (for stored media), `status`
 (`sent`/`delivered`/`read`/`failed`/`received`), `error`, `wa_timestamp`.
 
-RLS is **enabled with no anon policies**; the server uses the service-role key
-(which bypasses RLS) for all access, and the anon key is never shipped to the
-browser.
+Everything lives in schema `wa` inside the shared `byteplus` database, reached
+by the `wa_app` role, which holds no privilege on any other schema.
+
+**RLS is deliberately disabled.** There is no PostgREST and no anon role here,
+so RLS protects nothing, while RLS-enabled-with-zero-policies fails silently:
+SELECT returns 0 rows with a null error and UPDATE matches 0 rows and reports
+success. `lib/boot.js` probes for exactly that at startup and refuses to boot.
+Authorization is entirely in Express middleware, as it always was.
 
 ---
 
 ## Environment variables
 
-Copy `.env.example` → `.env` and fill in. Set the **same** variables in Vercel
-(Project → Settings → Environment Variables).
+Copy `.env.example` → `.env` and fill in. In production this is an on-box
+`/opt/wa-webhook/.env` at `chmod 600`, owned by the service user.
 
 | Variable | Where to get it |
 |---|---|
 | `VERIFY_TOKEN` | You choose; must match Meta's webhook "Verify token". |
-| `WHATSAPP_TOKEN` | Meta dashboard → WhatsApp → **API Setup** (temporary ~24h token; see Tokens). |
-| `PHONE_NUMBER_ID` | Same **API Setup** page. |
+| `WHATSAPP_TOKEN` | Meta dashboard → WhatsApp → **API Setup** (see Tokens). |
+| `PHONE_NUMBER_ID` | Same **API Setup** page. Shared with the backend OTP sender. |
 | `GRAPH_API_VERSION` | Defaults to `v23.0`. |
 | `APP_SECRET` | Meta dashboard → **App Settings → Basic → App secret**. |
-| `SUPABASE_URL` | Supabase → Project Settings → API → **Project URL**. |
-| `SUPABASE_SERVICE_ROLE_KEY` | Same page → secret key (`sb_secret_…` or legacy `service_role`; server-only). |
-| `MEDIA_BUCKET` | Storage bucket name for media. Defaults to `wa-media`. |
+| `DATABASE_URL` | `postgres://wa_app:<pw>@<aurora-writer>:5432/byteplus` |
+| `WA_DB_SCHEMA` | Schema every table is qualified with. Defaults to `wa`. |
+| `MEDIA_BUCKET` | Private S3 bucket for media. `byteplus-wa-media-prod`. |
+| `AWS_REGION` | `eu-west-1`. Credentials come from the instance role. |
+| `MEDIA_MAX_BYTES` | Inbound download cap. Defaults to 25 MB. |
 | `DASHBOARD_PASSCODE` | You choose - the passcode agents type to log in. |
 | `SESSION_SECRET` | You choose - long random string. Generate: `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` |
+| `NODE_ENV` | Must be `production` on the box; it gates the Secure cookie flag. |
+| `PORT` | 8080 on `byteplus-prod-app`. |
 
 ---
 
@@ -124,14 +133,21 @@ curl "http://localhost:3000/?hub.mode=subscribe&hub.verify_token=<your-verify-to
 ```
 
 ### Set up the database (once)
-1. Create a Supabase project (free, no card).
-2. Open **SQL Editor**, paste the entire contents of `supabase/schema.sql`, run.
-   (If you ran an older schema, also run the deltas in `supabase/migrations/`:
-   `002_media.sql`, `003_reactions.sql`, `005_updated_at.sql`, `006_forwarded.sql`,
-   `007_hardening.sql`.)
-3. Put `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` in `.env` (and Vercel).
-4. Create the media bucket: `node scripts/setup-storage.js` (makes a private
-   `wa-media` bucket).
+1. Apply `db/schema.sql` to the target database. It creates schema `wa`, the
+   three tables, the trigger and all six indexes, and enables no RLS.
+2. Put `DATABASE_URL` in `.env`.
+3. The media bucket is provisioned separately (private, Block Public Access on,
+   never behind CloudFront). Put its name in `MEDIA_BUCKET`.
+
+`supabase/` is retained only as the historical record of what the Supabase
+project held. It is no longer applied to anything.
+
+### Checks
+```bash
+npm test            # hermetic, in-memory fake DB, no credentials needed
+npm run adapter-check   # the pg adapter against a REAL scratch Postgres
+npm run live-check      # the whole app against a scratch DB, signed webhooks
+```
 
 ### Media handling
 Incoming WhatsApp media (image/video/audio/voice/sticker/document) is **not** in
