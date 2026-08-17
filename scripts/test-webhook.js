@@ -970,6 +970,98 @@ function sign(body) {
   srv2.close();
   dbmod.__setDbForTesting(null);
 
+  // =========================== INBOX RENDERING ===========================
+  // web/app.js is a browser module, so lift the pure thread-state functions out
+  // of it and drive them directly. The thread polls every 1500ms while a send
+  // takes ~3.5s, so the poll normally merges the server row first; settling the
+  // send afterwards used to list that id in t.order twice and draw it twice.
+  console.log('\n\x1b[1mINBOX RENDERING\x1b[0m');
+  {
+    const fs = require('fs');
+    const path = require('path');
+    const src = fs.readFileSync(path.join(__dirname, '..', 'web', 'app.js'), 'utf8').replace(/\r\n/g, '\n');
+    const lift = (name) => {
+      const lines = src.split('\n');
+      const start = lines.findIndex((l) => l.startsWith(`function ${name}(`));
+      assert.notStrictEqual(start, -1, `web/app.js no longer defines ${name}`);
+      let end = start;
+      while (end < lines.length && lines[end] !== '}') end++;
+      return lines.slice(start, end + 1).join('\n');
+    };
+    const ui = new Function(`
+      const state = { optimisticSeq: -1, threads: {} };
+      function thread(waId) {
+        if (!state.threads[waId]) state.threads[waId] = { byId: new Map(), order: [], maxUpdatedAt: null, loaded: false };
+        return state.threads[waId];
+      }
+      function renderMessages() {}
+      function scrollMessagesToBottom() {}
+      ${lift('mergeMessages')}
+      ${lift('threadMessages')}
+      ${lift('addOptimistic')}
+      ${lift('settleOptimistic')}
+      return { state, thread, mergeMessages, threadMessages, addOptimistic, settleOptimistic };
+    `)();
+
+    const WA = '201555000111';
+    const srvRow = (id, body) => ({
+      id, wa_id: WA, direction: 'out', type: 'text', body, status: 'sent',
+      created_at: '2026-08-17T15:00:00.000000Z', wa_timestamp: '2026-08-17T15:00:00.000000Z',
+      updated_at: `2026-08-17T15:00:0${id % 10}.123456Z`,
+    });
+
+    await test('send: poll merges the row before the POST resolves -> ONE bubble', async () => {
+      ui.state.threads = {};
+      const opt = ui.addOptimistic(WA, { type: 'text', body: 'yo' });
+      const t = ui.thread(WA);
+      assert.strictEqual(ui.threadMessages(t).length, 1, 'pending bubble');
+      ui.mergeMessages(t, [srvRow(587, 'yo')]);
+      ui.settleOptimistic(WA, opt, null, srvRow(587, 'yo'));
+      assert.strictEqual(ui.threadMessages(t).length, 1, 'settled send drew twice');
+      assert.deepStrictEqual(t.order, [587], 'id listed twice in t.order');
+    });
+
+    await test('send: POST resolves before the poll -> ONE bubble', async () => {
+      ui.state.threads = {};
+      const opt = ui.addOptimistic(WA, { type: 'text', body: 'yo' });
+      const t = ui.thread(WA);
+      ui.settleOptimistic(WA, opt, null, srvRow(587, 'yo'));
+      ui.mergeMessages(t, [srvRow(587, 'yo')]);
+      assert.strictEqual(ui.threadMessages(t).length, 1);
+    });
+
+    await test('two sends racing the poll stay two bubbles, not four', async () => {
+      ui.state.threads = {};
+      const t = ui.thread(WA);
+      [588, 589].forEach((id, i) => {
+        const row = srvRow(id, 'yo' + i);
+        const opt = ui.addOptimistic(WA, { type: 'text', body: 'yo' + i });
+        ui.mergeMessages(t, [row]);
+        ui.settleOptimistic(WA, opt, null, row);
+      });
+      assert.strictEqual(ui.threadMessages(t).length, 2);
+      assert.deepStrictEqual(t.order, [588, 589]);
+    });
+
+    await test('a FAILED send is not doubled by its own server row', async () => {
+      ui.state.threads = {};
+      const opt = ui.addOptimistic(WA, { type: 'text', body: 'yo' });
+      const t = ui.thread(WA);
+      ui.settleOptimistic(WA, opt, { _optimistic: false, status: 'failed', error: 'Re-engagement message', _retry: {} });
+      assert.strictEqual(ui.threadMessages(t).length, 1);
+      ui.mergeMessages(t, [{ ...srvRow(590, 'yo'), status: 'failed', error: 'Re-engagement message' }]);
+      assert.strictEqual(ui.threadMessages(t).length, 1, 'failed send drew twice');
+    });
+
+    await test('a duplicated id in t.order can never render twice', async () => {
+      ui.state.threads = {};
+      const t = ui.thread(WA);
+      t.byId.set(591, srvRow(591, 'yo'));
+      t.order.push(591, 591, 591);
+      assert.strictEqual(ui.threadMessages(t).length, 1);
+    });
+  }
+
   // ---- summary ----
   console.log(`\n\x1b[1mRESULT:\x1b[0m ${passed} passed, ${failed} failed\n`);
   process.exit(failed ? 1 : 0);
