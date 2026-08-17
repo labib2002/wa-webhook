@@ -1,9 +1,10 @@
 /* =============================================================================
-   Live end-to-end check against the REAL Supabase project.
+   Live end-to-end check against a REAL database and bucket.
    Boots the real app in-process, POSTs signed webhook payloads (text + a status
    update), and reads the rows back through the DB. Cleans up after itself.
    Run:  node scripts/live-check.js
-   Requires a configured .env (SUPABASE_*, APP_SECRET, PHONE_NUMBER_ID).
+   Requires a configured .env (DATABASE_URL, APP_SECRET, PHONE_NUMBER_ID).
+   Point it at a SCRATCH schema, never at the live one.
    ============================================================================= */
 
 require('dotenv').config();
@@ -28,8 +29,8 @@ function post(port, payload) {
 }
 
 (async () => {
-  if (!process.env.SUPABASE_URL || !process.env.APP_SECRET) {
-    console.error('Missing SUPABASE_URL / APP_SECRET in .env'); process.exit(1);
+  if (!process.env.DATABASE_URL || !process.env.APP_SECRET) {
+    console.error('Missing DATABASE_URL / APP_SECRET in .env'); process.exit(1);
   }
   const db = getDb();
   const app = require('../api/index');
@@ -77,6 +78,13 @@ function post(port, payload) {
     await new Promise((r) => setTimeout(r, 300));
     const dupe = await db.from('messages').select('id', { count: 'exact', head: true }).eq('wa_message_id', wamid);
     dupe.count === 1 ? ok('idempotent: still exactly 1 row after re-POST') : bad(`idempotency broken: ${dupe.count} rows`);
+
+    // The old read-then-write bumped unread on every replay; the SQL increment
+    // runs once because the message upsert is what dedupes.
+    const conv2 = await db.from('conversations').select('unread_count').eq('wa_id', TEST_WA).maybeSingle();
+    conv2.data && conv2.data.unread_count === 1
+      ? ok('unread_count is 1 after the replay, not 2')
+      : bad(`unread_count double-counted: ${conv2.data && conv2.data.unread_count}`);
 
     // 3) bad signature rejected
     const bodyBad = JSON.stringify({ entry: [] });

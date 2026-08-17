@@ -10,17 +10,19 @@ const maintenance = require('../lib/maintenance');
 
 const app = express();
 
-// Capture the raw request body so we can verify Meta's X-Hub-Signature-256.
-// (Meta signs the exact bytes it sent; we must hash those, not a re-encode.)
-app.use(
-  express.json({
-    // base64-encoded media uploads from the composer can be several MB.
-    limit: '30mb',
-    verify: (req, _res, buf) => {
-      req.rawBody = buf;
-    },
-  })
-);
+// Body parsing is scoped per path, not global. A 30mb parse mounted above the
+// signature check put the largest allocation in the process on the public
+// unauthenticated path, and the ALB in front of this has no WAF and no rate
+// limiting. Meta's own payloads are a few KB.
+const webhookJson = express.json({
+  limit: '256kb',
+  // Capture the raw bytes so we can verify Meta's X-Hub-Signature-256.
+  // (Meta signs the exact bytes it sent; we must hash those, not a re-encode.)
+  verify: (req, _res, buf) => { req.rawBody = buf; },
+});
+const smallJson = express.json({ limit: '1mb' });
+// Only the composer's base64 media upload needs the big ceiling.
+const largeJson = express.json({ limit: '30mb' });
 
 // ---------------------------------------------------------------------------
 //  Webhook — UNCHANGED public path. Meta's Callback URL stays the same.
@@ -41,7 +43,7 @@ app.get('/', (req, res) => {
 
 // POST / — incoming WhatsApp events.
 // 1) verify signature, 2) persist (fast), 3) return 200.
-app.post('/', async (req, res) => {
+app.post('/', webhookJson, async (req, res) => {
   // 1) Signature check (skipped only if APP_SECRET isn't set yet).
   const sig = checkSignature(req);
   if (sig === 'invalid') {
@@ -52,10 +54,7 @@ app.post('/', async (req, res) => {
     console.warn('APP_SECRET not set — skipping webhook signature verification.');
   }
 
-  // 2) Persist. We await the (fast) DB writes so data is durable BEFORE we
-  //    return 200 — on Vercel a fire-and-forget write can be frozen after the
-  //    response and lost. If persistence fails we still return 200 so Meta
-  //    doesn't hammer us with retries; the error is logged for inspection.
+  // 2) Persist, awaited so the data is durable before we answer.
   try {
     const summary = await ingestWebhook(req.body || {});
     if (summary.messages || summary.statuses) {
@@ -65,22 +64,26 @@ app.post('/', async (req, res) => {
     }
   } catch (e) {
     if (e && e.code === 'DB_NOT_CONFIGURED') {
+      // Deliberate 200: a retry cannot fix a missing DATABASE_URL, and this is
+      // loud in the logs already.
       console.warn('Webhook received but DB not configured — event not stored.');
-    } else {
-      // INBOUND_DROPPED: this inbound event was NOT stored (we still 200 so
-      // Meta won't retry). The full payload is logged so the message content
-      // is recoverable from Vercel logs (retention ~days) — grep the tag.
-      let payload = '';
-      try {
-        payload = JSON.stringify(req.body).slice(0, 8000);
-      } catch {
-        payload = '[unserializable]';
-      }
-      console.error('INBOUND_DROPPED webhook ingest error (returning 200 anyway):', e, 'payload:', payload);
+      return res.sendStatus(200);
     }
+    // INBOUND_DROPPED: this inbound event was NOT stored. Answer 500 so Meta
+    // redelivers it — the upsert is idempotent on wa_message_id, so the retry
+    // is free and cannot duplicate. A 200 here told Meta we had it and the
+    // message was gone for good.
+    let payload = '';
+    try {
+      payload = JSON.stringify(req.body).slice(0, 8000);
+    } catch {
+      payload = '[unserializable]';
+    }
+    console.error('INBOUND_DROPPED webhook ingest error (returning 500 for redelivery):', e, 'payload:', payload);
+    return res.sendStatus(500);
   }
 
-  // 3) Always 200 fast.
+  // 3) 200 fast.
   res.sendStatus(200);
 });
 
@@ -88,7 +91,7 @@ app.post('/', async (req, res) => {
 //  Service API (token-gated, machine callers) — mounted BEFORE the passcode
 //  router so /api/service/* never hits the cookie gate.
 // ---------------------------------------------------------------------------
-app.use('/api/service', serviceRouter);
+app.use('/api/service', smallJson, serviceRouter);
 
 // Daily maintenance cron (retention + usage alert), also BEFORE the passcode
 // router. Own auth: CRON_SECRET bearer, else the service token (never open).
@@ -97,7 +100,10 @@ app.get('/api/cron/maintenance', maintenance);
 // ---------------------------------------------------------------------------
 //  Dashboard API (passcode-gated inside the router) + static SPA.
 // ---------------------------------------------------------------------------
-app.use('/api', apiRouter);
+// The composer's base64 upload is the only body that needs 30mb, and it sits
+// behind requireAuth inside the router.
+app.use('/api/send-media', largeJson);
+app.use('/api', smallJson, apiRouter);
 
 // Serve the dashboard SPA assets under /static.
 // Two Vercel gotchas this avoids:

@@ -21,19 +21,36 @@ function makeFakeDb() {
       upsert(values, opts = {}) {
         const list = Array.isArray(values) ? values : [values];
         const onConflict = opts.onConflict;
+        const inc = opts.increment || null;
+        // RETURNING semantics: DO UPDATE returns the row, DO NOTHING returns
+        // nothing. lib/ingest.js uses exactly that to tell a first delivery
+        // from a Meta retry.
+        const returned = [];
         for (const v of list) {
           let idx = -1;
           if (onConflict) idx = rows.findIndex((r) => r[onConflict] === v[onConflict]);
           if (idx > -1) {
-            if (opts.ignoreDuplicates) continue; // keep existing
+            if (opts.ignoreDuplicates) continue; // keep existing, return nothing
             rows[idx] = { ...rows[idx], ...v };
+            // mirrors ON CONFLICT DO UPDATE SET col = table.col + n
+            if (inc) for (const k of Object.keys(inc)) rows[idx][k] = (rows[idx][k] || 0) + inc[k];
+            returned.push(rows[idx]);
           } else {
             const row = { ...v };
+            if (inc) for (const k of Object.keys(inc)) if (row[k] == null) row[k] = inc[k];
             if (tableName === 'messages' && row.id == null) row.id = ++messageSeq;
             rows.push(row);
+            returned.push(row);
           }
         }
-        return Promise.resolve({ data: null, error: null });
+        return {
+          select: () => ({
+            single: () => Promise.resolve({ data: returned[0] || null, error: returned.length ? null : { message: 'no rows' } }),
+            maybeSingle: () => Promise.resolve({ data: returned[0] || null, error: null }),
+            then: (res) => res({ data: returned, error: null }),
+          }),
+          then: (res) => res({ data: null, error: null }),
+        };
       },
       insert(values) {
         const list = Array.isArray(values) ? values : [values];
@@ -91,7 +108,13 @@ function makeFakeDb() {
       // ---- read chain ----
       select() { return builder; },
       eq(col, val) { filters.push((r) => r[col] === val); return builder; },
+      neq(col, val) { filters.push((r) => r[col] !== val); return builder; },
       gt(col, val) { filters.push((r) => r[col] > val); return builder; },
+      gte(col, val) { filters.push((r) => r[col] >= val); return builder; },
+      lt(col, val) { filters.push((r) => r[col] < val); return builder; },
+      lte(col, val) { filters.push((r) => r[col] <= val); return builder; },
+      in(col, vals) { filters.push((r) => (vals || []).includes(r[col])); return builder; },
+      not(col, _op, _val) { filters.push((r) => r[col] != null); return builder; },
       order(col, opts = {}) { _order.push({ col, asc: opts.ascending !== false }); return builder; },
       limit(n) { _limit = n; return builder; },
 
@@ -134,10 +157,10 @@ function makeFakeDb() {
         remove: async () => ({ data: null, error: null }),
         download: async () => ({ data: { arrayBuffer: async () => new ArrayBuffer(4) }, error: null }),
         createSignedUrl: async () => ({ data: { signedUrl: '/_sample.svg' }, error: null }),
+        measure: async () => ({ data: { bytes: 0, objects: 0 }, error: null }),
+        listKeys: async () => ({ data: [], error: null }),
       };
     },
-    listBuckets: async () => ({ data: [{ name: 'wa-media' }], error: null }),
-    createBucket: async () => ({ data: null, error: null }),
   };
 
   return { from, storage, _tables: tables };
