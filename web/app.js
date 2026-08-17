@@ -109,10 +109,14 @@ function mergeMessages(t, rows) {
   for (const m of rows) {
     const existing = t.byId.get(m.id);
     if (!existing) {
-      // drop an optimistic twin (same body+direction) the server now confirms
+      // drop the client-side twin (same body+direction) the server now confirms.
+      // Match on the negative id, not on _optimistic: a failed send clears that
+      // flag but keeps its local id, and matching only the flag left the server
+      // row to land beside it as a second bubble.
       for (let i = t.order.length - 1; i >= 0; i--) {
         const o = t.byId.get(t.order[i]);
-        if (o && o._optimistic && o.direction === m.direction && o.body === m.body && o.type === m.type) {
+        const local = o && (o._optimistic || (typeof o.id === 'number' && o.id < 0));
+        if (local && o.direction === m.direction && o.body === m.body && o.type === m.type) {
           t.byId.delete(o.id); t.order.splice(i, 1); break;
         }
       }
