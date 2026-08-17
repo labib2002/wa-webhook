@@ -7,14 +7,18 @@
 --  return 0 rows with a NULL error and makes UPDATEs match 0 rows and report
 --  success. Both are silent. lib/boot.js probes for exactly that at startup.
 --
---  !! NOT YET RECONCILED AGAINST THE LIVE DATABASE !!
---  Column names, types and nullability below were read from the live PostgREST
---  OpenAPI spec on 2026-08-17 and are accurate. DEFAULTS and CONSTRAINTS were
---  reconstructed from supabase/schema.sql plus migrations 002-007 and are NOT
---  confirmed. In particular `deleted boolean NOT NULL` is live (migration 004
---  was reverted in code but never dropped from the database) and its default is
---  assumed to be false. Diff this file against a real
---  `pg_dump --schema-only` of the live project before applying it.
+--  Reconciled against the live database on 2026-08-17 via the PostgREST
+--  OpenAPI spec, which exposes column names, types, nullability, DEFAULTS, the
+--  primary keys and the foreign key. Every default below was READ, not assumed,
+--  including `deleted DEFAULT false` (migration 004 was reverted in code but
+--  never dropped from the database).
+--
+--  Not exposed by that route, and therefore taken from supabase/schema.sql plus
+--  migrations 002-007: the FK's ON DELETE CASCADE, the index definitions and
+--  the trigger. All three are CREATED fresh here rather than restored, so the
+--  source's versions matter only for the G4 parity diff, not for building this.
+--  A real `pg_dump --schema-only` is still worth diffing when available, and is
+--  required anyway for the phase 4 and 5 data copy.
 -- =============================================================================
 
 CREATE SCHEMA IF NOT EXISTS wa;
