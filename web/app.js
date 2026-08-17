@@ -338,7 +338,7 @@ async function refreshConversations(initial = false) {
       els.convEmpty.hidden = false;
       els.convEmpty.querySelector('p').textContent = 'Database not connected';
       els.convEmpty.querySelector('span').textContent =
-        'Set the Supabase env vars to start receiving messages.';
+        'Check DATABASE_URL to start receiving messages.';
       return;
     }
     if (initial) { els.convLoading.hidden = true; }
