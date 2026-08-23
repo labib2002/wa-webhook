@@ -535,6 +535,61 @@ function sign(body) {
     assert.strictEqual(rows[0].wa_message_id, 'wamid.SVC2');
   });
 
+  await test('service send: language outside en/ar → 400, no Graph call', async () => {
+    let calls = 0;
+    wa.sendTemplate = async () => { calls++; return { ok: true, waMessageId: 'wamid.NEVER' }; };
+    const eg = await svc('POST', '/api/service/send-template', { to: '201000000009', template: 'ops_group_invite', language: 'ar_EG' });
+    assert.strictEqual(eg.status, 400);
+    assert.ok(eg.text.includes('language'), `error not about language: ${eg.text}`);
+    const us = await svc('POST', '/api/service/send-template', { to: '201000000009', template: 'ops_group_invite', language: 'en_US' });
+    assert.strictEqual(us.status, 400);
+    assert.strictEqual(calls, 0, `Graph was called ${calls} times`);
+  });
+
+  await test('service send: malformed components → 400, no Graph call', async () => {
+    let calls = 0;
+    wa.sendTemplate = async () => { calls++; return { ok: true, waMessageId: 'wamid.NEVER' }; };
+    const obj = await svc('POST', '/api/service/send-template', { to: '201000000009', template: 'ops_group_invite', components: { type: 'body' } });
+    assert.strictEqual(obj.status, 400);
+    assert.ok(obj.text.includes('components'), `error not about components: ${obj.text}`);
+    const strings = await svc('POST', '/api/service/send-template', { to: '201000000009', template: 'ops_group_invite', components: ['body'] });
+    assert.strictEqual(strings.status, 400);
+    assert.strictEqual(calls, 0, `Graph was called ${calls} times`);
+  });
+
+  await test('service send: dedupe onto a pending row reports status pending', async () => {
+    let calls = 0;
+    wa.sendTemplate = async () => { calls++; return { ok: true, waMessageId: 'wamid.NEVER' }; };
+    fdb._tables.messages.push({
+      id: 7301, client_key: 'svc-key-pending', wa_id: '201000000009',
+      direction: 'out', type: 'text', body: 'in flight', status: 'pending',
+    });
+    const r = await svc('POST', '/api/service/send-template', { to: '201000000009', template: 'ops_group_invite', client_key: 'svc-key-pending' });
+    assert.strictEqual(r.status, 200);
+    const j = JSON.parse(r.text);
+    assert.strictEqual(j.deduped, true);
+    assert.strictEqual(j.status, 'pending');
+    assert.strictEqual(j.waMessageId, null);
+    assert.strictEqual(calls, 0, `Graph was called ${calls} times`);
+  });
+
+  await test('service send: dedupe onto a failed row that reached Meta reports status failed', async () => {
+    let calls = 0;
+    wa.sendTemplate = async () => { calls++; return { ok: true, waMessageId: 'wamid.NEVER' }; };
+    fdb._tables.messages.push({
+      id: 7302, client_key: 'svc-key-meta-failed', wa_id: '201000000009',
+      direction: 'out', type: 'text', body: 'accepted then failed', status: 'failed',
+      wa_message_id: 'wamid.SVCACCEPTED', error: 'Message undeliverable.',
+    });
+    const r = await svc('POST', '/api/service/send-template', { to: '201000000009', template: 'ops_group_invite', client_key: 'svc-key-meta-failed' });
+    assert.strictEqual(r.status, 200);
+    const j = JSON.parse(r.text);
+    assert.strictEqual(j.deduped, true);
+    assert.strictEqual(j.status, 'failed');
+    assert.strictEqual(j.waMessageId, 'wamid.SVCACCEPTED');
+    assert.strictEqual(calls, 0, `Graph was called ${calls} times`);
+  });
+
   // --- inbox send-template (passcode gate + narrower human allow-list) ---
   console.log('\n\x1b[1mINBOX SEND-TEMPLATE (fake DB, stubbed Graph)\x1b[0m');
 
