@@ -573,21 +573,25 @@ function sign(body) {
     assert.strictEqual(calls, 0, `Graph was called ${calls} times`);
   });
 
-  await test('service send: dedupe onto a failed row that reached Meta reports status failed', async () => {
+  await test('service send: replay onto a row Meta accepted then failed re-sends it', async () => {
     let calls = 0;
-    wa.sendTemplate = async () => { calls++; return { ok: true, waMessageId: 'wamid.NEVER' }; };
+    wa.sendTemplate = async () => { calls++; return { ok: true, waMessageId: 'wamid.SVCRESENT' }; };
     fdb._tables.messages.push({
       id: 7302, client_key: 'svc-key-meta-failed', wa_id: '201000000009',
       direction: 'out', type: 'text', body: 'accepted then failed', status: 'failed',
-      wa_message_id: 'wamid.SVCACCEPTED', error: 'Message undeliverable.',
+      wa_message_id: 'wamid.SVCACCEPTED', error: 'Business eligibility payment issue',
     });
     const r = await svc('POST', '/api/service/send-template', { to: '201000000009', template: 'ops_group_invite', client_key: 'svc-key-meta-failed' });
     assert.strictEqual(r.status, 200);
     const j = JSON.parse(r.text);
-    assert.strictEqual(j.deduped, true);
-    assert.strictEqual(j.status, 'failed');
-    assert.strictEqual(j.waMessageId, 'wamid.SVCACCEPTED');
-    assert.strictEqual(calls, 0, `Graph was called ${calls} times`);
+    assert.strictEqual(j.deduped, undefined, 'a failed key must not report deduped');
+    assert.strictEqual(j.waMessageId, 'wamid.SVCRESENT');
+    assert.strictEqual(calls, 1, `Graph was called ${calls} times`);
+    const rows = rowsForKey('svc-key-meta-failed');
+    assert.strictEqual(rows.length, 1, `duplicate row inserted (${rows.length})`);
+    assert.strictEqual(rows[0].status, 'sent');
+    assert.strictEqual(rows[0].wa_message_id, 'wamid.SVCRESENT');
+    assert.strictEqual(rows[0].error, null);
   });
 
   // --- inbox send-template (passcode gate + narrower human allow-list) ---
@@ -726,9 +730,9 @@ function sign(body) {
     assert.strictEqual(calls, 0, `Graph was called ${calls} times`);
   });
 
-  await test('send-template: a failed row that reached Meta dedupes, no double delivery', async () => {
+  await test('send-template: a row Meta accepted then failed is re-sent on replay', async () => {
     let calls = 0;
-    wa.sendTemplate = async () => { calls++; return { ok: true, waMessageId: 'wamid.NEVER' }; };
+    wa.sendTemplate = async () => { calls++; return { ok: true, waMessageId: 'wamid.RESENT' }; };
     fdb._tables.messages.push({
       id: 7103, client_key: 'inbox-key-undelivered', wa_id: '201000000010',
       direction: 'out', type: 'text', body: 'accepted then failed', status: 'failed',
@@ -736,9 +740,13 @@ function sign(body) {
     });
     const r = await followup({ ...goodBody, client_key: 'inbox-key-undelivered' });
     const j = JSON.parse(r.text);
-    assert.strictEqual(j.deduped, true);
-    assert.strictEqual(j.waMessageId, 'wamid.ACCEPTED');
-    assert.strictEqual(calls, 0, `Graph was called ${calls} times`);
+    assert.strictEqual(j.deduped, undefined, 'a failed key must not report deduped');
+    assert.strictEqual(j.waMessageId, 'wamid.RESENT');
+    assert.strictEqual(calls, 1, `Graph was called ${calls} times`);
+    const rows = rowsForKey('inbox-key-undelivered');
+    assert.strictEqual(rows.length, 1, `duplicate row inserted (${rows.length})`);
+    assert.strictEqual(rows[0].status, 'sent');
+    assert.strictEqual(rows[0].wa_message_id, 'wamid.RESENT');
   });
 
   // The reserve race: our SELECT missed the row, the insert then loses on the
@@ -863,9 +871,9 @@ function sign(body) {
     assert.strictEqual(calls, 0, `Graph was called ${calls} times`);
   });
 
-  await test('send: a failed row that reached Meta dedupes, no double delivery', async () => {
+  await test('send: a row Meta accepted then failed is re-sent on replay', async () => {
     let calls = 0;
-    wa.sendText = async () => { calls++; return { ok: true, waMessageId: 'wamid.NEVER' }; };
+    wa.sendText = async () => { calls++; return { ok: true, waMessageId: 'wamid.TXTRESENT' }; };
     fdb._tables.messages.push({
       id: 7203, client_key: 'send-key-undelivered', wa_id: '201000000011',
       direction: 'out', type: 'text', body: 'accepted then failed', status: 'failed',
@@ -873,9 +881,12 @@ function sign(body) {
     });
     const r = await sendText({ client_key: 'send-key-undelivered' });
     const j = JSON.parse(r.text);
-    assert.strictEqual(j.deduped, true);
-    assert.strictEqual(j.message.wa_message_id, 'wamid.TXTACCEPTED');
-    assert.strictEqual(calls, 0, `Graph was called ${calls} times`);
+    assert.strictEqual(j.deduped, undefined, 'a failed key must not report deduped');
+    assert.strictEqual(j.message.wa_message_id, 'wamid.TXTRESENT');
+    assert.strictEqual(calls, 1, `Graph was called ${calls} times`);
+    const rows = rowsForKey('send-key-undelivered');
+    assert.strictEqual(rows.length, 1, `duplicate row inserted (${rows.length})`);
+    assert.strictEqual(rows[0].status, 'sent');
   });
 
   const sendMedia = (body) => authed('POST', '/api/send-media', {
@@ -943,9 +954,10 @@ function sign(body) {
     assert.strictEqual(rowsForKey('media-key-pending').length, 1);
   });
 
-  await test('send-media: a failed row that reached Meta dedupes, no double delivery', async () => {
+  await test('send-media: a row Meta accepted then failed is re-sent on replay', async () => {
     let calls = 0;
-    wa.sendMedia = async () => { calls++; return { ok: true, waMessageId: 'wamid.NEVER' }; };
+    wa.uploadMedia = async () => ({ ok: true, mediaId: 'MEDIA_RESENT' });
+    wa.sendMedia = async () => { calls++; return { ok: true, waMessageId: 'wamid.MEDRESENT' }; };
     fdb._tables.messages.push({
       id: 7205, client_key: 'media-key-undelivered', wa_id: '201000000012',
       direction: 'out', type: 'image', body: '📷 Image', status: 'failed',
@@ -954,9 +966,12 @@ function sign(body) {
     });
     const r = await sendMedia({ client_key: 'media-key-undelivered' });
     const j = JSON.parse(r.text);
-    assert.strictEqual(j.deduped, true);
-    assert.strictEqual(j.message.wa_message_id, 'wamid.MEDACCEPTED');
-    assert.strictEqual(calls, 0, `Graph was called ${calls} times`);
+    assert.strictEqual(j.deduped, undefined, 'a failed key must not report deduped');
+    assert.strictEqual(j.message.wa_message_id, 'wamid.MEDRESENT');
+    assert.strictEqual(calls, 1, `Graph was called ${calls} times`);
+    const rows = rowsForKey('media-key-undelivered');
+    assert.strictEqual(rows.length, 1, `duplicate row inserted (${rows.length})`);
+    assert.strictEqual(rows[0].status, 'sent');
   });
 
   await test('send-media: a re-send whose bucket upload fails keeps the stored copy', async () => {
