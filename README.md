@@ -57,7 +57,12 @@ subscription in `web/app.js` - the data model already supports it.
 - `GET  /api/session` - is this browser logged in? (and is send/DB configured)
 - `POST /api/login` - `{ passcode }` → sets the session cookie.
 - `POST /api/logout`
-- `GET  /api/conversations` - list for the left pane (most recent first).
+- `GET  /api/conversations` - list for the left pane (most recent first), each
+  row with its saved name and the member/company the number belongs to.
+- `PATCH /api/conversations/:wa_id` - `{ name }` → save (or clear) the name
+  the inbox shows for a number.
+- `POST /api/start-conversation` - `{ wa_id, name? }` → open a chat by number.
+  Egypt is the default country (`web/phone.js`), so `010 1234 5678` works.
 - `GET  /api/messages?wa_id=…&after=<id>` - thread (incremental).
 - `POST /api/send` - `{ wa_id, text }` → Graph API call + persist outgoing row.
 - `POST /api/mark-read` - `{ wa_id }` → reset unread; best-effort blue ticks.
@@ -75,7 +80,9 @@ subscription in `web/app.js` - the data model already supports it.
 
 **conversations** - one row per WhatsApp user (`wa_id` PK): `profile_name`,
 `last_message_text`, `last_message_at`, `last_message_direction`,
-`unread_count`, `phone_number_id`.
+`unread_count`, `phone_number_id`, `display_name`. `profile_name` is the
+WhatsApp profile name and every inbound message refreshes it; `display_name`
+is the name an agent saved and the webhook never writes it (migration 008).
 
 **messages** - one row per message: `wa_message_id` (UNIQUE → idempotent),
 `wa_id` (FK), `direction` (`in`/`out`), `type`, `body`, `media_meta` (jsonb),
@@ -83,7 +90,10 @@ subscription in `web/app.js` - the data model already supports it.
 (`sent`/`delivered`/`read`/`failed`/`received`), `error`, `wa_timestamp`.
 
 Everything lives in schema `wa` inside the shared `byteplus` database, reached
-by the `wa_app` role, which holds no privilege on any other schema.
+by the `wa_app` role, which holds no privilege on any other schema. The one
+way out is `wa_lookup.members(wa_ids)` (migration 009): an admin-owned
+function that answers which member, HR contact or coordinator the given
+numbers belong to, and the company. Without it the inbox shows no company.
 
 **RLS is deliberately disabled.** There is no PostgREST and no anon role here,
 so RLS protects nothing, while RLS-enabled-with-zero-policies fails silently:
@@ -147,6 +157,7 @@ project held. It is no longer applied to anything.
 npm test            # hermetic, in-memory fake DB, no credentials needed
 npm run adapter-check   # the pg adapter against a REAL scratch Postgres
 npm run live-check      # the whole app against a scratch DB, signed webhooks
+npm run member-check    # migration 009 against a REAL scratch Postgres
 ```
 
 ### Media handling

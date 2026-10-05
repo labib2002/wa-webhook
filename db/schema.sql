@@ -34,7 +34,8 @@ CREATE TABLE IF NOT EXISTS wa.conversations (
   last_message_at         timestamptz,
   last_message_direction  text,
   unread_count            integer NOT NULL DEFAULT 0,
-  created_at              timestamptz NOT NULL DEFAULT now()
+  created_at              timestamptz NOT NULL DEFAULT now(),
+  display_name            text                    -- saved in the inbox, never written by the webhook (008)
 );
 
 -- ---------------------------------------------------------------------------

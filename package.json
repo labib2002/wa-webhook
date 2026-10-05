@@ -9,7 +9,8 @@
     "shots": "node scripts/screenshots.js",
     "test": "node scripts/test-webhook.js",
     "adapter-check": "node scripts/adapter-check.js",
-    "live-check": "node scripts/live-check.js"
+    "live-check": "node scripts/live-check.js",
+    "member-check": "node scripts/member-lookup-check.js"
   },
   "keywords": [],
   "author": "",
