@@ -327,6 +327,53 @@ function sign(body) {
   // These DB-backed routes return 503 under the blanked-Supabase HTTP suite, so
   // we inject a fake DB (like the screenshots harness) and stub the WhatsApp
   // send helpers so no real network is touched.
+  // --- phone numbers (pure) ---
+  console.log('\n\x1b[1mPHONE NUMBERS\x1b[0m');
+  const phone = require('../web/phone');
+
+  await test('Egyptian numbers typed any common way become one wa_id', async () => {
+    for (const raw of ['01012345678', '1012345678', '201012345678', '+201012345678', '00201012345678',
+      '+20 010 1234 5678', '+2 010 1234 5678', '(+20) 101-234-5678', '010-1234-5678',
+      '\u0660\u0661\u0660\u0661\u0662\u0663\u0664\u0665\u0666\u0667\u0668', '\u202a+20 10 1234 5678\u202c']) {
+      assert.strictEqual(phone.toWaId(raw), '201012345678', raw);
+    }
+  });
+
+  await test('Egyptian landlines and other countries keep their own code', async () => {
+    assert.strictEqual(phone.toWaId('02 2345 6789'), '20223456789');
+    assert.strictEqual(phone.toWaId('+20 3 456 7890'), '2034567890');
+    assert.strictEqual(phone.toWaId('+44 7911 123456'), '447911123456');
+    assert.strictEqual(phone.toWaId('0044 7911 123456'), '447911123456');
+    assert.strictEqual(phone.toWaId('966501234567'), '966501234567');
+    assert.strictEqual(phone.toWaId('+1 (415) 555-2671'), '14155552671');
+  });
+
+  await test('ambiguous or broken numbers are refused, not guessed', async () => {
+    for (const raw of ['', null, undefined, 'hello', '12345', '3581234567', '+20 10 1234 567', '2010123456789', '0123', '+0044']) {
+      assert.strictEqual(phone.toWaId(raw), null, String(raw));
+    }
+  });
+
+  await test('lenient mode (machine callers, stored phones) only rescues Egyptian mobiles', async () => {
+    assert.strictEqual(phone.toWaId('01012345678', { lenient: true }), '201012345678');
+    assert.strictEqual(phone.toWaId('201012345678', { lenient: true }), '201012345678');
+    assert.strictEqual(phone.toWaId('3581234567', { lenient: true }), '3581234567');
+    assert.strictEqual(phone.toWaId('1234567', { lenient: true }), null);
+  });
+
+  await test('numbers display grouped, Egyptian mobiles the local way', async () => {
+    assert.strictEqual(phone.formatWaId('201012345678'), '+20 10 1234 5678');
+    assert.strictEqual(phone.formatWaId('447911123456'), '+447911123456');
+  });
+
+  await test('a search typed the local way finds the stored number', async () => {
+    const id = '201012345678';
+    for (const q of ['01012345678', '010 1234', '0020 101', '+20 10 1234 5678', '5678']) {
+      assert.ok(phone.searchKeys(q).some((k) => id.includes(k)), q);
+    }
+    assert.ok(!phone.searchKeys('01099999999').some((k) => id.includes(k)));
+  });
+
   console.log('\n\x1b[1mFORWARD + READ/UNREAD ROUTES (fake DB)\x1b[0m');
   const dbmod = require('../lib/db');
   const wa = require('../lib/whatsapp');
@@ -417,6 +464,168 @@ function sign(body) {
     assert.strictEqual(row.media_meta && row.media_meta.voice, true);
   });
 
+  // --- saved names, local numbers, member lookup ---
+  console.log('\n\x1b[1mCONTACT NAMES + MEMBERS (fake DB)\x1b[0m');
+  const members = require('../lib/members');
+  members.__setLookupForTesting(async () => []);
+  const conv = (id) => fdb._tables.conversations.find((c) => c.wa_id === id);
+
+  await test('rename: PATCH saves the name and keeps the WhatsApp name apart', async () => {
+    fdb._tables.conversations.push({ wa_id: '201000000020', profile_name: 'Mo 🦁', unread_count: 0 });
+    const r = await authed('PATCH', '/api/conversations/201000000020', { name: '  Mohamed   Ali ' });
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(JSON.parse(r.text).display_name, 'Mohamed Ali');
+    assert.strictEqual(conv('201000000020').display_name, 'Mohamed Ali');
+    assert.strictEqual(conv('201000000020').profile_name, 'Mo 🦁');
+  });
+
+  await test('rename: their next WhatsApp message does not overwrite the saved name', async () => {
+    const body = inboundText('hello again', 'wamid.RENAME1');
+    body.entry[0].changes[0].value.contacts[0] = { profile: { name: 'Mo' }, wa_id: '201000000020' };
+    body.entry[0].changes[0].value.messages[0].from = '201000000020';
+    await ingestWebhook(body, fdb);
+    assert.strictEqual(conv('201000000020').display_name, 'Mohamed Ali');
+    assert.strictEqual(conv('201000000020').profile_name, 'Mo');
+  });
+
+  await test('rename: the list returns the saved name', async () => {
+    const r = await authed('GET', '/api/conversations');
+    const row = JSON.parse(r.text).conversations.find((c) => c.wa_id === '201000000020');
+    assert.strictEqual(row.display_name, 'Mohamed Ali');
+  });
+
+  await test('rename: an empty name clears it, a long or non-text one is refused', async () => {
+    let r = await authed('PATCH', '/api/conversations/201000000020', { name: '   ' });
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(conv('201000000020').display_name, null);
+    r = await authed('PATCH', '/api/conversations/201000000020', { name: 'x'.repeat(81) });
+    assert.strictEqual(r.status, 400);
+    r = await authed('PATCH', '/api/conversations/201000000020', { name: 42 });
+    assert.strictEqual(r.status, 400);
+    await authed('PATCH', '/api/conversations/201000000020', { name: 'Mohamed Ali' });
+  });
+
+  await test('rename: unknown chat → 404, no cookie → 401', async () => {
+    let r = await authed('PATCH', '/api/conversations/201000000099', { name: 'Nobody' });
+    assert.strictEqual(r.status, 404);
+    r = await req(srv2, 'PATCH', '/api/conversations/201000000020', { body: { name: 'x' } });
+    assert.strictEqual(r.status, 401);
+  });
+
+  await test('new chat on a number that already has a chat saves the name (it used to be dropped)', async () => {
+    fdb._tables.conversations.push({ wa_id: '201000000021', profile_name: 'sara', unread_count: 3 });
+    const r = await authed('POST', '/api/start-conversation', { wa_id: '010 0000 0021', name: 'Sara Ali' });
+    assert.strictEqual(r.status, 200);
+    assert.deepStrictEqual(JSON.parse(r.text), { wa_id: '201000000021', created: false, display_name: 'Sara Ali' });
+    assert.strictEqual(conv('201000000021').display_name, 'Sara Ali');
+    assert.strictEqual(conv('201000000021').unread_count, 3);
+  });
+
+  await test('new chat typed the local Egyptian way opens the +20 number', async () => {
+    const r = await authed('POST', '/api/start-conversation', { wa_id: '01000000022', name: 'Omar' });
+    const j = JSON.parse(r.text);
+    assert.strictEqual(j.wa_id, '201000000022');
+    assert.strictEqual(j.created, true);
+    assert.strictEqual(conv('201000000022').display_name, 'Omar');
+    assert.ok(!conv('201000000022').profile_name);
+    assert.ok(!conv('01000000022'), 'a second chat under the local spelling was created');
+  });
+
+  await test('new chat with a number that cannot be read → 400, nothing created', async () => {
+    const before = fdb._tables.conversations.length;
+    const r = await authed('POST', '/api/start-conversation', { wa_id: '12345' });
+    assert.strictEqual(r.status, 400);
+    assert.strictEqual(fdb._tables.conversations.length, before);
+  });
+
+  await test('before migration 008 the list still loads, chats still open, renaming says so', async () => {
+    const realFrom = fdb.from;
+    const missing = { code: '42703', message: 'column "display_name" does not exist' };
+    const failing = () => {
+      const f = {
+        eq: () => f, order: () => f, limit: () => f, select: () => f,
+        single: () => Promise.resolve({ data: null, error: missing }),
+        maybeSingle: () => Promise.resolve({ data: null, error: missing }),
+        then: (res) => res({ data: null, error: missing }),
+      };
+      return f;
+    };
+    fdb.from = (table) => {
+      const b = realFrom(table);
+      if (table !== 'conversations') return b;
+      const select = b.select;
+      const update = b.update;
+      b.select = (cols) => (String(cols || '').includes('display_name') ? failing() : select(cols));
+      b.update = (patch) => ('display_name' in patch ? failing() : update(patch));
+      return b;
+    };
+    try {
+      let r = await authed('GET', '/api/conversations');
+      assert.strictEqual(r.status, 200);
+      assert.ok(JSON.parse(r.text).conversations.length > 0);
+      r = await authed('PATCH', '/api/conversations/201000000020', { name: 'X' });
+      assert.strictEqual(r.status, 503);
+      assert.strictEqual(JSON.parse(r.text).code, 'SAVED_NAMES_OFF');
+      r = await authed('POST', '/api/start-conversation', { wa_id: '01000000023', name: 'Lina' });
+      assert.strictEqual(r.status, 200);
+      assert.deepStrictEqual(JSON.parse(r.text), { wa_id: '201000000023', created: true, display_name: null });
+    } finally {
+      fdb.from = realFrom;
+    }
+  });
+
+  await test('members: each chat carries its member and company', async () => {
+    members.__setLookupForTesting(async (ids) => {
+      assert.ok(ids.includes('201000000020'));
+      return [
+        { wa_id: '201000000020', source: 'app', kind: 'member', name: 'Mohamed Ali', company: 'Nawy Degla', active: true },
+        { wa_id: '201000000020', source: 'roster', kind: 'member', name: 'Mohamed Ali Hassan', company: 'Nawy Degla', active: true },
+        { wa_id: '201000000021', source: 'contact', kind: 'hr', name: 'Sara HR', company: 'Oasis', active: true },
+      ];
+    });
+    const j = JSON.parse((await authed('GET', '/api/conversations')).text);
+    assert.strictEqual(j.members_available, true);
+    const row = (id) => j.conversations.find((c) => c.wa_id === id);
+    assert.deepStrictEqual(row('201000000020').member, { name: 'Mohamed Ali Hassan', company: 'Nawy Degla', kind: 'member', active: true, more: 0 });
+    assert.strictEqual(row('201000000021').member.kind, 'hr');
+    assert.strictEqual(row('201000000022').member, null);
+  });
+
+  await test('members: one lookup per refresh, not one per chat, and cached between polls', async () => {
+    let calls = 0;
+    members.__setLookupForTesting(async () => { calls++; return []; });
+    await authed('GET', '/api/conversations');
+    await authed('GET', '/api/conversations');
+    assert.strictEqual(calls, 1);
+  });
+
+  await test('members: a lookup that fails leaves the list working and claims nothing', async () => {
+    members.__setLookupForTesting(async () => {
+      throw Object.assign(new Error('function wa_lookup.members(text[]) does not exist'), { code: '42883' });
+    });
+    const r = await authed('GET', '/api/conversations');
+    assert.strictEqual(r.status, 200);
+    const j = JSON.parse(r.text);
+    assert.strictEqual(j.members_available, false);
+    assert.ok(j.conversations.every((c) => c.member === null));
+  });
+
+  await test('members: a lookup that hangs is cut off and the list still answers', async () => {
+    members.__setLookupForTesting(() => new Promise(() => {}), { timeoutMs: 50 });
+    const r = await authed('GET', '/api/conversations');
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(JSON.parse(r.text).members_available, false);
+  });
+
+  await test('members: active beats inactive, and the other company is counted', async () => {
+    const m = members.pick([
+      { source: 'roster', kind: 'member', name: 'Moved Person', company: 'Oasis', active: false },
+      { source: 'app', kind: 'member', name: 'Moved Person', company: 'Nawy Degla', active: true },
+    ]);
+    assert.deepStrictEqual(m, { name: 'Moved Person', company: 'Nawy Degla', kind: 'member', active: true, more: 1 });
+  });
+  members.__setLookupForTesting(async () => []);
+
   // --- service send API (token gate + template allow-list) ---
   console.log('\n\x1b[1mSERVICE SEND API (fake DB, stubbed Graph)\x1b[0m');
 
@@ -484,6 +693,14 @@ function sign(body) {
     assert.ok(row, 'outbound template row not persisted');
     assert.strictEqual(row.direction, 'out');
     assert.ok(row.body.includes('[ops_group_invite]') && row.body.includes('Ali'), 'preview body missing template context');
+  });
+
+  await test('service send: a local Egyptian number goes to its +20 wa_id', async () => {
+    let sentTo = null;
+    wa.sendTemplate = async (to) => { sentTo = to; return { ok: true, waMessageId: 'wamid.SVC_LOCAL' }; };
+    const r = await svc('POST', '/api/service/send-template', { to: '01000000031', template: 'ops_group_invite' });
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(sentTo, '201000000031');
   });
 
   await test('service send: WA_TEMPLATE_ALLOWLIST env overrides the ops_ prefix rule', async () => {
@@ -1129,6 +1346,52 @@ function sign(body) {
       t.byId.set(591, srvRow(591, 'yo'));
       t.order.push(591, 591, 591);
       assert.strictEqual(ui.threadMessages(t).length, 1);
+    });
+
+    const liftConst = (name) => {
+      const line = src.split('\n').find((l) => l.startsWith(`const ${name} =`));
+      assert.ok(line, `web/app.js no longer defines ${name}`);
+      return line;
+    };
+    const names = new Function('WaPhone', `
+      const { toWaId, formatWaId, searchKeys } = WaPhone;
+      ${liftConst('MEMBER_ROLES')}
+      ${liftConst('PHONE_QUERY')}
+      ${lift('knownName')}
+      ${lift('displayName')}
+      ${lift('memberLabel')}
+      ${lift('memberTag')}
+      ${lift('matchesQuery')}
+      ${lift('formatPhone')}
+      return { displayName, memberLabel, memberTag, matchesQuery };
+    `)(require('../web/phone'));
+
+    const member = { name: 'Ahmed Roster', company: 'Nawy Degla', kind: 'member', active: true, more: 0 };
+    const c = { wa_id: '201012345678', profile_name: 'Mo 🦁', display_name: null, member: null };
+
+    await test('names: saved name, then member name, then WhatsApp name, then the number', async () => {
+      assert.strictEqual(names.displayName({ ...c, display_name: 'Mohamed', member }), 'Mohamed');
+      assert.strictEqual(names.displayName({ ...c, member }), 'Ahmed Roster');
+      assert.strictEqual(names.displayName(c), 'Mo 🦁');
+      assert.strictEqual(names.displayName({ ...c, profile_name: null }), '+20 10 1234 5678');
+    });
+
+    await test('names: membership reads in plain words', async () => {
+      assert.strictEqual(names.memberLabel(member), 'Member · Nawy Degla');
+      assert.strictEqual(names.memberLabel({ ...member, active: false, company: 'Oasis' }), 'Former member · Oasis');
+      assert.strictEqual(names.memberLabel({ ...member, kind: 'hr' }), 'HR · Nawy Degla');
+      assert.strictEqual(names.memberLabel({ ...member, more: 1 }), 'Member · Nawy Degla +1');
+      assert.strictEqual(names.memberTag(member), 'Nawy Degla');
+      assert.strictEqual(names.memberTag(null), '');
+    });
+
+    await test('search: local numbers, saved names, member names and companies all find the chat', async () => {
+      const row = { ...c, display_name: 'Mohamed', member };
+      for (const q of ['01012345678', '010 1234 5678', '0020 10 1234', '+20 10 1234 5678', 'moham', 'roster', 'degla', 'mo 🦁']) {
+        assert.ok(names.matchesQuery(row, q), q);
+      }
+      assert.ok(!names.matchesQuery(row, '01099999999'));
+      assert.ok(!names.matchesQuery(row, 'Oasis 2'), 'a word query with a digit matched by digits');
     });
   }
 

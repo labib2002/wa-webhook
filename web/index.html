@@ -101,8 +101,14 @@
           </button>
           <div id="thread-avatar" class="avatar" aria-hidden="true">?</div>
           <div class="thread-peer">
-            <div id="thread-name" class="thread-name">—</div>
+            <div class="thread-name-row">
+              <button id="thread-name" type="button" class="thread-name" title="Edit name">—</button>
+              <button id="rename-btn" type="button" class="icon-btn rename-btn" title="Edit name" aria-label="Edit contact name">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+              </button>
+            </div>
             <div id="thread-sub" class="thread-sub">—</div>
+            <div id="thread-member" class="thread-member" hidden></div>
           </div>
           <div class="thread-header-actions">
             <button id="followup-btn" class="icon-btn" title="Follow up" aria-label="Send a follow-up template">
@@ -176,19 +182,37 @@
   <div id="new-chat-modal" class="modal-overlay" hidden>
     <form id="new-chat-form" class="modal-card" autocomplete="off">
       <h2 class="modal-title">New conversation</h2>
-      <p class="modal-sub">Start a chat by phone number (with country code). Note: WhatsApp only allows free-form messages within 24h of the customer's last message — otherwise only approved templates send.</p>
+      <p class="modal-sub">Start a chat by phone number. Egyptian numbers can be typed as 010…; other countries need + and the country code. Note: WhatsApp only allows free-form messages within 24h of the customer's last message — otherwise only approved templates send.</p>
       <label class="field">
         <span class="field-label">Phone number</span>
-        <input id="new-chat-number" type="tel" inputmode="tel" placeholder="+20 100 000 0000" required />
+        <input id="new-chat-number" type="tel" inputmode="tel" placeholder="010 1234 5678" required />
+        <span id="new-chat-hint" class="field-hint" aria-live="polite"></span>
       </label>
       <label class="field">
-        <span class="field-label">Name <span class="field-opt">(optional)</span></span>
-        <input id="new-chat-name" type="text" placeholder="Contact name" />
+        <span class="field-label">Name <span class="field-opt">(optional, saved for this number)</span></span>
+        <input id="new-chat-name" type="text" maxlength="80" placeholder="Contact name" />
       </label>
       <p id="new-chat-error" class="login-error" role="alert" hidden></p>
       <div class="modal-actions">
         <button id="new-chat-cancel" type="button" class="btn-ghost">Cancel</button>
         <button id="new-chat-submit" type="submit" class="btn-primary btn-inline">Open chat</button>
+      </div>
+    </form>
+  </div>
+
+  <!-- contact name modal (reuses the modal styling) -->
+  <div id="rename-modal" class="modal-overlay" hidden>
+    <form id="rename-form" class="modal-card" autocomplete="off">
+      <h2 class="modal-title">Contact name</h2>
+      <p class="modal-sub">Saved in this inbox for everyone. Leave it empty to show the member or WhatsApp name instead.</p>
+      <label class="field">
+        <span class="field-label">Name</span>
+        <input id="rename-input" type="text" maxlength="80" placeholder="Contact name" />
+      </label>
+      <p id="rename-error" class="login-error" role="alert" hidden></p>
+      <div class="modal-actions">
+        <button id="rename-cancel" type="button" class="btn-ghost">Cancel</button>
+        <button id="rename-submit" type="submit" class="btn-primary btn-inline">Save</button>
       </div>
     </form>
   </div>
@@ -241,6 +265,7 @@
   <!-- toast for transient errors / notices -->
   <div id="toast" class="toast" role="status" hidden></div>
 
+  <script src="/static/phone.js"></script>
   <script src="/static/app.js" type="module"></script>
 </body>
 </html>
