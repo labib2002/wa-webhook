@@ -256,8 +256,15 @@ input, textarea, button { font-family: inherit; }
 }
 .conv-row .row-name {
   font-weight: 600; font-size: 15px; color: var(--ink);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  display: flex; align-items: baseline; gap: 6px; min-width: 0;
   align-self: end;
+}
+.row-name-text { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row-co {
+  flex: 0 4 auto; min-width: 48px; max-width: 55%;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-size: 11px; font-weight: 600; color: var(--pine-deep);
+  border: 1px solid var(--card-edge); border-radius: 999px; padding: 0 7px;
 }
 .conv-row .row-time {
   font-size: 11.5px; color: var(--ink-3); white-space: nowrap; align-self: end;
@@ -365,7 +372,22 @@ input, textarea, button { font-family: inherit; }
   font-weight: 600; font-size: 16px; color: var(--ink);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.thread-sub { font-size: 12.5px; color: var(--ink-2); }
+.thread-sub {
+  font-size: 12.5px; color: var(--ink-2);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.thread-name-row { display: flex; align-items: center; gap: 2px; min-width: 0; }
+button.thread-name {
+  border: none; background: none; padding: 0; font-family: inherit;
+  text-align: left; cursor: pointer; min-width: 0;
+}
+button.thread-name:hover { text-decoration: underline; text-decoration-color: var(--ink-3); }
+.rename-btn { width: 28px; height: 28px; flex: none; }
+.thread-member {
+  font-size: 12px; font-weight: 600; color: var(--pine-deep);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.thread-member.none { color: var(--ink-3); font-weight: 500; }
 .thread-header-actions { margin-left: auto; }
 .back-btn { display: none; margin-left: -6px; }
 
@@ -721,6 +743,7 @@ a.media-frame:focus-visible { outline: 2px solid var(--pine); outline-offset: 2p
 .modal-title { font-family: var(--font-display); font-weight: 600; font-size: 22px; margin: 0 0 6px; }
 .modal-sub { margin: 0 0 18px; color: var(--ink-2); font-size: 13.5px; line-height: 1.5; }
 .field-opt { font-weight: 400; text-transform: none; color: var(--ink-3); letter-spacing: 0; }
+.field-hint { display: block; min-height: 18px; margin: 6px 0 0 2px; font-size: 12.5px; color: var(--pine-deep); }
 .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 4px; }
 .btn-ghost {
   border: 1px solid var(--card-edge); background: transparent; color: var(--ink-2);
