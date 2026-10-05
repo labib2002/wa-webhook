@@ -6,6 +6,7 @@
    ============================================================================= */
 
 const $ = (sel) => document.querySelector(sel);
+const { toWaId, formatWaId, searchKeys } = window.WaPhone;
 
 const els = {
   body: document.body,
@@ -26,6 +27,14 @@ const els = {
   threadAvatar: $('#thread-avatar'),
   threadName: $('#thread-name'),
   threadSub: $('#thread-sub'),
+  threadMember: $('#thread-member'),
+  renameBtn: $('#rename-btn'),
+  renameModal: $('#rename-modal'),
+  renameForm: $('#rename-form'),
+  renameInput: $('#rename-input'),
+  renameError: $('#rename-error'),
+  renameCancel: $('#rename-cancel'),
+  renameSubmit: $('#rename-submit'),
   messages: $('#messages'),
   threadLoading: $('#thread-loading'),
   messagesEmpty: $('#messages-empty'),
@@ -54,6 +63,7 @@ const els = {
   newChatForm: $('#new-chat-form'),
   newChatNumber: $('#new-chat-number'),
   newChatName: $('#new-chat-name'),
+  newChatHint: $('#new-chat-hint'),
   newChatError: $('#new-chat-error'),
   newChatCancel: $('#new-chat-cancel'),
   followupBtn: $('#followup-btn'),
@@ -78,6 +88,8 @@ const els = {
 
 const state = {
   conversations: [],      // latest list snapshot
+  membersAvailable: false, // false: the member lookup is off, so never say "Not a member"
+  renameWaId: null,
   filter: '',
   listFilter: 'all',      // 'all' | 'unread' — composes WITH the search term
   activeWaId: null,
@@ -201,32 +213,49 @@ function initials(name, waId) {
   return (waId || '?').slice(-2);
 }
 
-function displayName(c) {
-  return (c.profile_name && c.profile_name.trim()) || formatPhone(c.wa_id);
+// The name saved in this inbox wins, then the member's name from the roster or
+// the app, then the WhatsApp profile name (WhatsApp never shares the name the
+// person is saved under on anyone's phone).
+function knownName(c) {
+  const clean = (v) => (v && String(v).trim()) || '';
+  return clean(c.display_name) || clean(c.member && c.member.name) || clean(c.profile_name);
 }
 
-// Does a conversation match a search query? Matches on the contact name AND on
-// the phone number. For numbers we compare digits-to-digits, so a query with a
-// leading "+", spaces, dashes, or parens (e.g. "+20 120-645 7557") still finds
-// the digit-only wa_id ("201206457557"). A non-numeric query just does a
-// case-insensitive name substring match.
+function displayName(c) {
+  return knownName(c) || formatPhone(c.wa_id);
+}
+
+const MEMBER_ROLES = { member: 'Member', hr: 'HR', coordinator: 'Coordinator' };
+
+function memberLabel(m) {
+  const role = m.kind === 'member' && !m.active ? 'Former member' : (MEMBER_ROLES[m.kind] || 'Member');
+  return m.company ? `${role} · ${m.company}${m.more ? ` +${m.more}` : ''}` : role;
+}
+
+function memberTag(m) {
+  if (!m || !m.company) return '';
+  return m.kind === 'member' ? m.company : memberLabel(m);
+}
+
+// Does a conversation match a search query? Text matches the saved, member and
+// WhatsApp names and the company. A query that looks like a phone number is
+// matched digit-to-digit against the wa_id, typed any way: "+20 120-645 7557",
+// "0120 645 7557" and "0020..." all find "201206457557".
+const PHONE_QUERY = /^[\d\s+().\-\u0660-\u0669\u06f0-\u06f9\u200e\u200f\u202a-\u202e]+$/;
 function matchesQuery(c, rawQuery) {
   const q = (rawQuery || '').trim();
   if (!q) return true;
   const ql = q.toLowerCase();
-  if (displayName(c).toLowerCase().includes(ql)) return true;
-  const qDigits = q.replace(/\D/g, '');
-  if (qDigits) {
-    const idDigits = (c.wa_id || '').replace(/\D/g, '');
-    if (idDigits.includes(qDigits)) return true;
-  }
-  return false;
+  const m = c.member || {};
+  if ([displayName(c), c.profile_name, m.name, m.company].some((t) => t && String(t).toLowerCase().includes(ql))) return true;
+  if (!PHONE_QUERY.test(q)) return false;
+  const id = String(c.wa_id || '');
+  return searchKeys(q).some((k) => id.includes(k));
 }
 
 function formatPhone(waId) {
   if (!waId) return 'Unknown';
-  // light formatting: prefix with + (WhatsApp ids are E.164 without +)
-  return '+' + waId;
+  return formatWaId(waId);
 }
 
 function fmtTime(iso) {
@@ -355,8 +384,10 @@ async function refreshConversations(initial = false) {
     return;
   }
   state.conversations = data.conversations || [];
+  state.membersAvailable = Boolean(data.members_available);
   els.convLoading.hidden = true;
   renderConversations();
+  renderThreadHeader();
 }
 
 let _lastConvSig = '';
@@ -375,7 +406,7 @@ function renderConversations(forceRender = false) {
   // search term are part of the signature so a row correctly appears/disappears
   // as its unread state changes.
   const sig = state.activeWaId + '|' + state.listFilter + '|' + q + '|' + list.map((c) =>
-    `${c.wa_id}:${c.last_message_at}:${c.unread_count}:${c.last_message_text}:${c.profile_name || ''}:${c.last_message_direction || ''}`
+    `${c.wa_id}:${c.last_message_at}:${c.unread_count}:${c.last_message_text}:${displayName(c)}:${memberTag(c.member)}:${c.last_message_direction || ''}`
   ).join(';');
   if (!forceRender && sig === _lastConvSig) return;
   _lastConvSig = sig;
@@ -396,6 +427,8 @@ function renderConversations(forceRender = false) {
 
   els.convList.innerHTML = list.map((c) => {
     const name = escapeHtml(displayName(c));
+    const tag = memberTag(c.member);
+    const coTag = tag ? `<span class="row-co" title="${escapeHtml(memberLabel(c.member))}">${escapeHtml(tag)}</span>` : '';
     const active = c.wa_id === state.activeWaId ? ' active' : '';
     const hasUnread = c.unread_count > 0;
     const unread = hasUnread ? ' has-unread' : '';
@@ -412,8 +445,8 @@ function renderConversations(forceRender = false) {
       : '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3" fill="currentColor" stroke="none"/></svg>';
     return `
       <button class="conv-row${active}${unread}" role="listitem" data-wa="${escapeHtml(c.wa_id)}">
-        <span class="avatar">${escapeHtml(initials(c.profile_name, c.wa_id))}</span>
-        <span class="row-name">${name}</span>
+        <span class="avatar">${escapeHtml(initials(knownName(c), c.wa_id))}</span>
+        <span class="row-name"><span class="row-name-text">${name}</span>${coTag}</span>
         <span class="row-time">${escapeHtml(fmtListTime(c.last_message_at))}</span>
         <span class="row-preview">${outTick}${escapeHtml(c.last_message_text || '')}</span>
         <span class="row-badge">${badge}</span>
@@ -486,6 +519,24 @@ async function setConversationRead(waId, read) {
 
 /* --------------------------- open a thread --------------------------- */
 
+// Re-run on every list poll too, so a rename by another agent or a member
+// match that arrives later shows without reopening the chat.
+function renderThreadHeader() {
+  const waId = state.activeWaId;
+  if (!waId) return;
+  const conv = state.conversations.find((c) => c.wa_id === waId) || { wa_id: waId };
+  const name = knownName(conv);
+  const waName = (conv.profile_name || '').trim();
+  els.threadName.textContent = name || formatPhone(waId);
+  els.threadSub.textContent = name
+    ? [formatPhone(waId), waName && waName !== name ? `WhatsApp: ${waName}` : ''].filter(Boolean).join(' · ')
+    : 'WhatsApp';
+  els.threadAvatar.textContent = initials(name, waId);
+  els.threadMember.hidden = !state.membersAvailable;
+  els.threadMember.textContent = conv.member ? memberLabel(conv.member) : 'Not a member';
+  els.threadMember.classList.toggle('none', !conv.member);
+}
+
 async function openConversation(waId) {
   if (!waId) return;
   const conv = state.conversations.find((c) => c.wa_id === waId);
@@ -496,10 +547,7 @@ async function openConversation(waId) {
   state.activeWaId = waId;
   const t = thread(waId);
 
-  // header
-  els.threadName.textContent = conv ? displayName(conv) : formatPhone(waId);
-  els.threadSub.textContent = conv && conv.profile_name ? formatPhone(waId) : 'WhatsApp';
-  els.threadAvatar.textContent = initials(conv?.profile_name, waId);
+  renderThreadHeader();
 
   // view swap
   els.placeholder.hidden = true;
@@ -1336,13 +1384,24 @@ function openNewChatModal() {
   els.newChatError.hidden = true;
   els.newChatNumber.value = '';
   els.newChatName.value = '';
+  renderNewChatHint();
   els.newChatModal.hidden = false;
   setTimeout(() => els.newChatNumber.focus(), 50);
 }
 function closeNewChatModal() { els.newChatModal.hidden = true; }
 
+// Shows which number the typed text becomes, and whether that chat exists.
+function renderNewChatHint() {
+  const id = toWaId(els.newChatNumber.value);
+  const known = id && state.conversations.find((c) => c.wa_id === id);
+  els.newChatHint.textContent = !id ? ''
+    : known ? `Opens your chat with ${displayName(known)} (${formatPhone(id)})`
+    : `Opens ${formatPhone(id)}`;
+}
+
 els.newChatBtn.addEventListener('click', openNewChatModal);
 els.newChatCancel.addEventListener('click', closeNewChatModal);
+els.newChatNumber.addEventListener('input', renderNewChatHint);
 els.newChatModal.addEventListener('click', (e) => {
   if (e.target === els.newChatModal) closeNewChatModal();
 });
@@ -1351,15 +1410,15 @@ els.newChatForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   els.newChatError.hidden = true;
   const raw = els.newChatNumber.value;
-  const digits = (raw || '').replace(/[^0-9]/g, '');
-  if (digits.length < 8) {
-    els.newChatError.textContent = 'Enter a valid phone number with country code.';
+  const name = els.newChatName.value.trim();
+  if (!toWaId(raw)) {
+    els.newChatError.textContent = 'Enter a valid number: 010 1234 5678 for Egypt, or + and the country code for other countries.';
     els.newChatError.hidden = false;
     return;
   }
   const { ok, status, data } = await api('/api/start-conversation', {
     method: 'POST',
-    body: JSON.stringify({ wa_id: digits, name: els.newChatName.value }),
+    body: JSON.stringify({ wa_id: raw, name }),
   });
   if (status === 401) return handleAuthLost();
   if (!ok) {
@@ -1373,17 +1432,73 @@ els.newChatForm.addEventListener('submit', async (e) => {
   if (!state.conversations.find((c) => c.wa_id === data.wa_id)) {
     state.conversations.unshift({
       wa_id: data.wa_id,
-      profile_name: els.newChatName.value.trim() || null,
+      display_name: data.display_name || null,
+      profile_name: null,
+      member: null,
       last_message_text: '', last_message_at: new Date().toISOString(),
       last_message_direction: 'out', unread_count: 0,
     });
   }
   openConversation(data.wa_id);
+  if (name && !data.display_name) toast('Chat opened, but the name was not saved.', true);
 });
 
 // Escape closes the modal.
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && !els.newChatModal.hidden) closeNewChatModal();
+});
+
+/* ----------------------- contact name ----------------------- */
+
+function openRenameModal() {
+  const waId = state.activeWaId;
+  if (!waId) return;
+  const conv = state.conversations.find((c) => c.wa_id === waId) || {};
+  state.renameWaId = waId;
+  els.renameError.hidden = true;
+  els.renameInput.value = conv.display_name || '';
+  els.renameInput.placeholder = (conv.member && conv.member.name) || conv.profile_name || 'Contact name';
+  els.renameModal.hidden = false;
+  setTimeout(() => { els.renameInput.focus(); els.renameInput.select(); }, 50);
+}
+function closeRenameModal() {
+  els.renameModal.hidden = true;
+  state.renameWaId = null;
+}
+
+els.renameBtn.addEventListener('click', openRenameModal);
+els.threadName.addEventListener('click', openRenameModal);
+els.renameCancel.addEventListener('click', closeRenameModal);
+els.renameModal.addEventListener('click', (e) => {
+  if (e.target === els.renameModal) closeRenameModal();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !els.renameModal.hidden) closeRenameModal();
+});
+
+els.renameForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const waId = state.renameWaId;
+  if (!waId) return;
+  els.renameError.hidden = true;
+  els.renameSubmit.disabled = true;
+  const { ok, status, data } = await api(`/api/conversations/${encodeURIComponent(waId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ name: els.renameInput.value }),
+  });
+  els.renameSubmit.disabled = false;
+  if (status === 401) return handleAuthLost();
+  if (!ok) {
+    els.renameError.textContent = data.error || 'Could not save the name.';
+    els.renameError.hidden = false;
+    return;
+  }
+  const conv = state.conversations.find((c) => c.wa_id === waId);
+  if (conv) conv.display_name = data.display_name || null;
+  closeRenameModal();
+  renderConversations(true);
+  renderThreadHeader();
+  toast(data.display_name ? 'Name saved.' : 'Saved name removed.');
 });
 
 /* ----------------------- forward message ----------------------- */
@@ -1423,7 +1538,7 @@ function renderForwardList() {
     const sel = f.selected.has(c.wa_id) ? ' selected' : '';
     return `
       <button type="button" class="forward-opt${sel}" data-wa="${escapeHtml(c.wa_id)}">
-        <span class="avatar">${escapeHtml(initials(c.profile_name, c.wa_id))}</span>
+        <span class="avatar">${escapeHtml(initials(knownName(c), c.wa_id))}</span>
         <span class="fo-name">${escapeHtml(displayName(c))}</span>
         <span class="fo-check">${f.selected.has(c.wa_id) ? '✓' : ''}</span>
       </button>`;
@@ -1533,9 +1648,9 @@ function saveProgram(v) { try { localStorage.setItem(PROGRAM_KEY, v); } catch (_
 function openFollowupModal() {
   if (!state.activeWaId) return;
   const conv = state.conversations.find((c) => c.wa_id === state.activeWaId);
-  const first = ((conv && conv.profile_name) || '').trim().split(/\s+/)[0] || '';
+  const first = (conv ? knownName(conv) : '').split(/\s+/)[0] || '';
   els.followupName.value = first;
-  els.followupProgram.value = loadProgram();
+  els.followupProgram.value = (conv && conv.member && conv.member.company) || loadProgram();
   els.followupError.hidden = true;
   state.followupLang = 'ar';
   renderFollowupLang();
