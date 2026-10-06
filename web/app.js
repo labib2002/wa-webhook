@@ -758,12 +758,15 @@ function renderBubble(m, continued) {
       inner += `<a class="media-link" href="https://maps.google.com/?q=${q}" target="_blank" rel="noopener">${q}</a>`;
     } else if (stored && (m.type === 'image' || m.type === 'sticker')) {
       div.classList.add('has-media');
-      inner += `<a href="${src}" target="_blank" rel="noopener" class="media-frame">
+      inner += `<button type="button" class="media-frame" data-view title="Open">
         <img src="${src}" alt="${escapeHtml(labelForType(m.type))}" loading="lazy" />
-      </a>`;
+      </button>`;
     } else if (stored && m.type === 'video') {
       div.classList.add('has-media');
-      inner += `<video class="media-frame" controls preload="metadata" src="${src}"></video>`;
+      inner += `<button type="button" class="media-frame media-video" data-view title="Play">
+        <video preload="metadata" muted playsinline src="${src}"></video>
+        <span class="play-badge" aria-hidden="true"><svg viewBox="0 0 24 24" width="26" height="26" fill="currentColor"><polygon points="7 4 20 12 7 20 7 4"/></svg></span>
+      </button>`;
     } else if (stored && (m.type === 'audio' || m.type === 'voice')) {
       const isVoice = m.type === 'voice' || meta.voice === true;
       div.classList.add(isVoice ? 'is-voice' : 'is-audio');
@@ -773,10 +776,17 @@ function renderBubble(m, continued) {
         <audio class="media-audio" controls preload="metadata" src="${audioSrc}" data-compat="${compat}"></audio>`;
     } else if (stored && m.type === 'document') {
       const fname = escapeHtml(meta.filename || 'Document');
-      inner += `<a class="media-doc" href="${src}" target="_blank" rel="noopener" download>
-        <span class="doc-ico">📄</span><span class="doc-name">${fname}</span>
-        <span class="doc-dl">Download</span>
-      </a>`;
+      inner += isPdf(m)
+        ? `<div class="media-doc">
+            <button type="button" class="doc-open" data-view title="Open">
+              <span class="doc-ico">📄</span><span class="doc-name">${fname}</span>
+            </button>
+            <a class="doc-dl" href="${src}" download>Download</a>
+          </div>`
+        : `<a class="media-doc" href="${src}" download>
+            <span class="doc-ico">📄</span><span class="doc-name">${fname}</span>
+            <span class="doc-dl">Download</span>
+          </a>`;
     } else {
       // pending / failed / unsupported / non-downloadable → labeled placeholder
       const isVoice = m.type === 'voice' || meta.voice === true;
@@ -808,6 +818,8 @@ function renderBubble(m, continued) {
       if (!audio.src.endsWith(compat)) audio.src = compat;
     });
   }
+  const view = div.querySelector('[data-view]');
+  if (view) view.addEventListener('click', (e) => { e.stopPropagation(); openViewer(m.id); });
   const quote = div.querySelector('.bubble-quote[data-quote]');
   if (quote) quote.addEventListener('click', (e) => { e.stopPropagation(); jumpToMessage(Number(quote.dataset.quote)); });
 
@@ -1852,3 +1864,152 @@ els.followupForm.addEventListener('submit', async (e) => {
 
 /* ----------------------------- start ----------------------------- */
 boot();
+
+/* ----------------------- media viewer ----------------------- */
+
+function isPdf(m) {
+  const meta = m.media_meta || {};
+  return meta.mime_type === 'application/pdf' || /\.pdf$/i.test(meta.filename || '');
+}
+
+function isViewable(m) {
+  const stored = m.media_status === 'stored' || Boolean(m._localUrl);
+  if (!stored) return false;
+  return ['image', 'sticker', 'video'].includes(m.type) || (m.type === 'document' && isPdf(m));
+}
+
+const viewer = {
+  el: $('#viewer'), stage: $('#viewer-stage'), strip: $('#viewer-strip'),
+  name: $('#viewer-name'), when: $('#viewer-when'), count: $('#viewer-count'),
+  caption: $('#viewer-caption'), download: $('#viewer-download'),
+  prev: $('#viewer-prev'), next: $('#viewer-next'),
+  items: [], index: 0, returnFocus: null, touchX: null,
+};
+
+function mediaSrc(m) {
+  return m._localUrl || `/api/media/${m.id}`;
+}
+
+function openViewer(msgId) {
+  if (!state.activeWaId) return;
+  const t = thread(state.activeWaId);
+  viewer.items = t.order.map((id) => t.byId.get(id)).filter((m) => m && isViewable(m));
+  const index = viewer.items.findIndex((m) => m.id === msgId);
+  if (index < 0) return;
+  viewer.returnFocus = document.activeElement;
+  viewer.strip.innerHTML = viewer.items.map((m, i) => {
+    const thumb = m.type === 'image' || m.type === 'sticker'
+      ? `<img src="${mediaSrc(m)}" alt="" loading="lazy" />`
+      : `<span class="thumb-ico">${m.type === 'video' ? '🎬' : '📄'}</span>`;
+    return `<button type="button" class="viewer-thumb" data-i="${i}" aria-label="Item ${i + 1}">${thumb}</button>`;
+  }).join('');
+  viewer.strip.hidden = viewer.items.length < 2;
+  viewer.el.hidden = false;
+  document.body.classList.add('viewer-open');
+  showViewerItem(index);
+  $('#viewer-close').focus();
+}
+
+function closeViewer() {
+  if (viewer.el.hidden) return;
+  viewer.el.hidden = true;
+  viewer.stage.innerHTML = '';
+  viewer.strip.innerHTML = '';
+  document.body.classList.remove('viewer-open');
+  if (viewer.returnFocus && viewer.returnFocus.focus) viewer.returnFocus.focus();
+}
+
+function showViewerItem(index) {
+  const items = viewer.items;
+  if (index < 0 || index >= items.length) return;
+  viewer.index = index;
+  const m = items[index];
+  const src = mediaSrc(m);
+  const meta = m.media_meta || {};
+  const conv = state.conversations.find((c) => c.wa_id === state.activeWaId) || { wa_id: state.activeWaId };
+  const iso = m.wa_timestamp || m.created_at;
+  const d = iso ? new Date(iso) : null;
+
+  viewer.name.textContent = m.direction === 'out' ? 'You' : displayName(conv);
+  viewer.when.textContent = d && !isNaN(d)
+    ? `${d.toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' })} at ${fmtTime(iso)}`
+    : '';
+  viewer.count.textContent = items.length > 1 ? `${index + 1} / ${items.length}` : '';
+  viewer.download.href = src;
+  viewer.download.setAttribute('download', meta.filename || '');
+
+  if (m.type === 'video') {
+    viewer.stage.innerHTML = `<video class="viewer-media" controls autoplay playsinline src="${src}"></video>`;
+  } else if (m.type === 'document') {
+    const inline = m._localUrl || `/api/media/${m.id}?inline=1`;
+    viewer.stage.innerHTML = `<iframe class="viewer-pdf" src="${inline}" title="${escapeHtml(meta.filename || 'Document')}"></iframe>`;
+  } else {
+    viewer.stage.innerHTML = `<img class="viewer-media viewer-img" src="${src}" alt="${escapeHtml(labelForType(m.type))}" />`;
+  }
+  viewer.stage.classList.remove('zoomed');
+
+  const caption = meta.caption || (m.type === 'document' ? meta.filename : '');
+  viewer.caption.textContent = caption || '';
+  viewer.caption.hidden = !caption;
+
+  viewer.prev.hidden = index === 0;
+  viewer.next.hidden = index === items.length - 1;
+  viewer.strip.querySelectorAll('.viewer-thumb').forEach((b, i) => {
+    b.classList.toggle('active', i === index);
+    if (i === index) b.scrollIntoView({ block: 'nearest', inline: 'center' });
+  });
+
+  // Warm the neighbours so arrowing through photos feels instant.
+  [items[index - 1], items[index + 1]].forEach((n) => {
+    if (n && (n.type === 'image' || n.type === 'sticker')) new Image().src = mediaSrc(n);
+  });
+}
+
+function toggleZoom(e) {
+  const stage = viewer.stage;
+  if (stage.classList.contains('zoomed')) {
+    stage.classList.remove('zoomed');
+    return;
+  }
+  const r = e.target.getBoundingClientRect();
+  const fx = (e.clientX - r.left) / r.width;
+  const fy = (e.clientY - r.top) / r.height;
+  stage.classList.add('zoomed');
+  stage.scrollLeft = fx * stage.scrollWidth - stage.clientWidth / 2;
+  stage.scrollTop = fy * stage.scrollHeight - stage.clientHeight / 2;
+}
+
+viewer.stage.addEventListener('click', (e) => {
+  if (e.target.classList.contains('viewer-img')) toggleZoom(e);
+  else if (e.target === viewer.stage) closeViewer();
+});
+viewer.el.querySelector('.viewer-main').addEventListener('click', (e) => {
+  if (e.target.classList.contains('viewer-main')) closeViewer();
+});
+viewer.prev.addEventListener('click', () => showViewerItem(viewer.index - 1));
+viewer.next.addEventListener('click', () => showViewerItem(viewer.index + 1));
+$('#viewer-close').addEventListener('click', closeViewer);
+$('#viewer-forward').addEventListener('click', () => {
+  const m = viewer.items[viewer.index];
+  closeViewer();
+  if (m) openForwardModal(m);
+});
+viewer.strip.addEventListener('click', (e) => {
+  const b = e.target.closest('.viewer-thumb');
+  if (b) showViewerItem(Number(b.dataset.i));
+});
+viewer.stage.addEventListener('touchstart', (e) => {
+  viewer.touchX = e.touches.length === 1 && !viewer.stage.classList.contains('zoomed') ? e.touches[0].clientX : null;
+}, { passive: true });
+viewer.stage.addEventListener('touchend', (e) => {
+  if (viewer.touchX == null) return;
+  const dx = e.changedTouches[0].clientX - viewer.touchX;
+  viewer.touchX = null;
+  if (Math.abs(dx) > 50) showViewerItem(viewer.index + (dx < 0 ? 1 : -1));
+});
+document.addEventListener('keydown', (e) => {
+  if (viewer.el.hidden) return;
+  if (e.key === 'Escape') closeViewer();
+  else if (e.key === 'ArrowLeft') showViewerItem(viewer.index - 1);
+  else if (e.key === 'ArrowRight') showViewerItem(viewer.index + 1);
+});

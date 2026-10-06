@@ -269,6 +269,39 @@
   </div>
 
   <!-- toast for transient errors / notices -->
+  <!-- media viewer: opens images, videos and PDFs over the chat -->
+  <div id="viewer" class="viewer" role="dialog" aria-modal="true" aria-label="Media viewer" hidden>
+    <header class="viewer-bar">
+      <div class="viewer-who">
+        <span id="viewer-name" class="viewer-name"></span>
+        <span id="viewer-when" class="viewer-when"></span>
+      </div>
+      <div class="viewer-tools">
+        <span id="viewer-count" class="viewer-count"></span>
+        <button id="viewer-forward" class="viewer-btn" type="button" title="Forward" aria-label="Forward">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 17 20 12 15 7"/><path d="M4 18v-2a4 4 0 0 1 4-4h12"/></svg>
+        </button>
+        <a id="viewer-download" class="viewer-btn" href="#" download title="Download" aria-label="Download">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        </a>
+        <button id="viewer-close" class="viewer-btn" type="button" title="Close (Esc)" aria-label="Close">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+    </header>
+    <div class="viewer-main">
+      <button id="viewer-prev" class="viewer-nav prev" type="button" title="Previous (←)" aria-label="Previous">
+        <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+      </button>
+      <div id="viewer-stage" class="viewer-stage"></div>
+      <button id="viewer-next" class="viewer-nav next" type="button" title="Next (→)" aria-label="Next">
+        <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+      </button>
+    </div>
+    <p id="viewer-caption" class="viewer-caption" hidden></p>
+    <div id="viewer-strip" class="viewer-strip"></div>
+  </div>
+
   <div id="toast" class="toast" role="status" hidden></div>
 
   <script src="/static/phone.js"></script>
