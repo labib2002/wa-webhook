@@ -1305,6 +1305,29 @@ function sign(body) {
       assert.strictEqual(textOpts.replyTo, 'wamid.ORIG3');
     });
 
+    await test('voice notes go out with voice:true, uploaded OGG files as AAC', async () => {
+      const calls = [];
+      const uploads = [];
+      wa.uploadMedia = async (buf, mime, name) => { uploads.push({ mime, name }); return { ok: true, mediaId: 'MEDIA_V' }; };
+      wa.sendMedia = async (to, cat, id, opts) => { calls.push(opts); return { ok: true, waMessageId: `wamid.V${calls.length}` }; };
+      const transcode = require('../lib/transcode');
+      const real = { ogg: transcode.toOggOpus, m4a: transcode.toM4a };
+      transcode.toOggOpus = async () => ({ ok: true, buffer: Buffer.from('ogg'), mime: 'audio/ogg', ext: 'ogg' });
+      transcode.toM4a = async () => ({ ok: true, buffer: Buffer.from('aac'), mime: 'audio/mp4', ext: 'm4a' });
+      try {
+        const audio = { file_base64: Buffer.from('x').toString('base64') };
+        assert.strictEqual((await sendMedia({ ...audio, mime: 'audio/webm', filename: 'voice-note.webm', voice: true, client_key: 'voice-1' })).status, 200);
+        assert.strictEqual((await sendMedia({ ...audio, mime: 'audio/ogg', filename: 'song.ogg', client_key: 'voice-2' })).status, 200);
+        assert.strictEqual((await sendMedia({ ...audio, mime: 'audio/mpeg', filename: 'song.mp3', client_key: 'voice-3' })).status, 200);
+      } finally {
+        transcode.toOggOpus = real.ogg;
+        transcode.toM4a = real.m4a;
+      }
+      assert.deepStrictEqual(calls.map((c) => c.voice), [true, false, false]);
+      assert.deepStrictEqual(uploads.map((u) => u.mime), ['audio/ogg', 'audio/mp4', 'audio/mpeg']);
+      assert.strictEqual(uploads[1].name, 'song.m4a');
+    });
+
     await test('forward: the quote stays behind in the source chat', async () => {
       wa.uploadMedia = async () => ({ ok: true, mediaId: 'MEDIA_F' });
       wa.sendMedia = async () => ({ ok: true, waMessageId: 'wamid.FWD_Q' });
@@ -1338,6 +1361,8 @@ function sign(body) {
         await freshWa.sendText('201', 'hi', { replyTo: 'wamid.Q' });
         await freshWa.sendText('201', 'hi');
         await freshWa.sendMedia('201', 'audio', 'M1', { replyTo: 'wamid.Q2' });
+        await freshWa.sendMedia('201', 'audio', 'M2', { voice: true });
+        await freshWa.sendMedia('201', 'image', 'M3', { voice: true });
       } finally {
         global.fetch = realFetch;
         process.env.WHATSAPP_TOKEN = env.t || '';
@@ -1347,6 +1372,9 @@ function sign(body) {
       assert.deepStrictEqual(bodies[0].context, { message_id: 'wamid.Q' });
       assert.strictEqual(bodies[1].context, undefined);
       assert.deepStrictEqual(bodies[2].context, { message_id: 'wamid.Q2' });
+      assert.strictEqual(bodies[2].audio.voice, undefined, 'plain audio marked as voice');
+      assert.deepStrictEqual(bodies[3].audio, { id: 'M2', voice: true });
+      assert.strictEqual(bodies[4].image.voice, undefined);
     });
 
     const mediaReq = (id) => req(srv2, 'GET', `/api/media/${id}?compat=1`, { headers: { cookie }, redirect: 'manual' });
