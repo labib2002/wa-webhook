@@ -103,11 +103,11 @@ function startServer() {
     const srv = http.createServer(app).listen(0, () => resolve(srv));
   });
 }
-function req(srv, method, path, { body, headers } = {}) {
+function req(srv, method, path, { body, headers, redirect } = {}) {
   const port = srv.address().port;
   const payload = body ? JSON.stringify(body) : null;
   const h = { 'Content-Type': 'application/json', ...(headers || {}) };
-  return fetch(`http://127.0.0.1:${port}${path}`, { method, headers: h, body: payload })
+  return fetch(`http://127.0.0.1:${port}${path}`, { method, headers: h, body: payload, redirect })
     .then(async (r) => ({ status: r.status, text: await r.text(), headers: r.headers }));
 }
 function sign(body) {
@@ -1254,6 +1254,191 @@ function sign(body) {
     assert.strictEqual(mediaLib.downloadName(null, '99', 'image/jpeg'), 'whatsapp-99.jpg');
   });
 
+  // --- replies (quoted messages), forward guard, iPhone audio ---
+  console.log('\n\x1b[1mREPLIES + FORWARD + IPHONE AUDIO\x1b[0m');
+  {
+    await test('inbound swipe-reply keeps the quoted wa_message_id', async () => {
+      const text = describeMessage({ type: 'text', text: { body: 'yes' }, context: { from: '201', id: 'wamid.ORIG' } });
+      assert.deepStrictEqual(text.media_meta, { reply_to: 'wamid.ORIG' });
+      const img = describeMessage({ type: 'image', image: { id: 'MEDIA9', mime_type: 'image/jpeg' }, context: { id: 'wamid.ORIG' } });
+      assert.strictEqual(img.media_meta.id, 'MEDIA9', 'media id lost');
+      assert.strictEqual(img.media_meta.reply_to, 'wamid.ORIG');
+      const fwd = describeMessage({ type: 'text', text: { body: 'fw' }, context: { forwarded: true } });
+      assert.strictEqual(fwd.media_meta, null, 'a forward is not a reply');
+    });
+
+    await test('send: reply_to reaches WhatsApp and is stored on the row', async () => {
+      let seen;
+      wa.sendText = async (to, text, opts) => { seen = opts; return { ok: true, waMessageId: 'wamid.REPLY1' }; };
+      const r = await sendText({ client_key: 'reply-key-1', reply_to: 'wamid.ORIG' });
+      assert.strictEqual(r.status, 200);
+      assert.strictEqual(seen && seen.replyTo, 'wamid.ORIG');
+      const row = rowsForKey('reply-key-1')[0];
+      assert.strictEqual(row.media_meta && row.media_meta.reply_to, 'wamid.ORIG');
+    });
+
+    await test('send: a malformed reply_to is refused before Graph', async () => {
+      let calls = 0;
+      wa.sendText = async () => { calls++; return { ok: true, waMessageId: 'x' }; };
+      const r = await sendText({ client_key: 'reply-key-bad', reply_to: 'bad id"><script>' });
+      assert.strictEqual(r.status, 400);
+      assert.strictEqual(calls, 0);
+    });
+
+    await test('send-media and retry carry the reply', async () => {
+      let mediaOpts;
+      wa.uploadMedia = async () => ({ ok: true, mediaId: 'MEDIA_R' });
+      wa.sendMedia = async (to, cat, id, opts) => { mediaOpts = opts; return { ok: true, waMessageId: 'wamid.REPLYM' }; };
+      const r = await sendMedia({ client_key: 'reply-media-1', reply_to: 'wamid.ORIG2' });
+      assert.strictEqual(r.status, 200);
+      assert.strictEqual(mediaOpts.replyTo, 'wamid.ORIG2');
+      assert.strictEqual(rowsForKey('reply-media-1')[0].media_meta.reply_to, 'wamid.ORIG2');
+
+      let textOpts;
+      wa.sendText = async (to, text, opts) => { textOpts = opts; return { ok: true, waMessageId: 'wamid.RETRY_R' }; };
+      fdb._tables.messages.push({
+        id: 7901, wa_id: '201000000011', direction: 'out', type: 'text', body: 'again',
+        status: 'failed', media_meta: { reply_to: 'wamid.ORIG3' },
+      });
+      const rr = await authed('POST', '/api/retry/7901');
+      assert.strictEqual(rr.status, 200);
+      assert.strictEqual(textOpts.replyTo, 'wamid.ORIG3');
+    });
+
+    await test('forward: the quote stays behind in the source chat', async () => {
+      wa.uploadMedia = async () => ({ ok: true, mediaId: 'MEDIA_F' });
+      wa.sendMedia = async () => ({ ok: true, waMessageId: 'wamid.FWD_Q' });
+      fdb._tables.conversations.push({ wa_id: '201000000031' }, { wa_id: '201000000032' });
+      fdb._tables.messages.push({
+        id: 7902, wa_id: '201000000031', direction: 'in', type: 'audio', body: '🎤 Voice message',
+        media_status: 'stored', media_path: '201000000031/audio/v.ogg',
+        media_meta: { mime_type: 'audio/ogg', voice: true, reply_to: 'wamid.ORIG4' },
+      });
+      const r = await authed('POST', '/api/forward', { message_id: 7902, wa_ids: ['201000000032'] });
+      assert.strictEqual(r.status, 200, r.text);
+      const row = fdb._tables.messages.find((m) => m.wa_message_id === 'wamid.FWD_Q');
+      assert.ok(row, 'forwarded row not persisted');
+      assert.strictEqual(row.media_meta.voice, true);
+      assert.strictEqual(row.media_meta.reply_to, undefined, 'quote leaked into the destination');
+    });
+
+    await test('whatsapp: replyTo becomes the Graph context, absent otherwise', async () => {
+      delete require.cache[require.resolve('../lib/whatsapp')];
+      const freshWa = require('../lib/whatsapp');
+      const realFetch = global.fetch;
+      const env = { t: process.env.WHATSAPP_TOKEN, p: process.env.PHONE_NUMBER_ID };
+      process.env.WHATSAPP_TOKEN = 'test-token';
+      process.env.PHONE_NUMBER_ID = '123';
+      const bodies = [];
+      global.fetch = async (url, init) => {
+        bodies.push(JSON.parse(init.body));
+        return { ok: true, json: async () => ({ messages: [{ id: 'wamid.G' }] }) };
+      };
+      try {
+        await freshWa.sendText('201', 'hi', { replyTo: 'wamid.Q' });
+        await freshWa.sendText('201', 'hi');
+        await freshWa.sendMedia('201', 'audio', 'M1', { replyTo: 'wamid.Q2' });
+      } finally {
+        global.fetch = realFetch;
+        process.env.WHATSAPP_TOKEN = env.t || '';
+        process.env.PHONE_NUMBER_ID = env.p || '';
+        delete require.cache[require.resolve('../lib/whatsapp')];
+      }
+      assert.deepStrictEqual(bodies[0].context, { message_id: 'wamid.Q' });
+      assert.strictEqual(bodies[1].context, undefined);
+      assert.deepStrictEqual(bodies[2].context, { message_id: 'wamid.Q2' });
+    });
+
+    const mediaReq = (id) => req(srv2, 'GET', `/api/media/${id}?compat=1`, { headers: { cookie }, redirect: 'manual' });
+    const transcode = require('../lib/transcode');
+    const signedFor = (stub) => {
+      const signed = [];
+      const realFrom = fdb.storage.from;
+      fdb.storage.from = () => ({
+        ...realFrom(),
+        ...stub,
+        createSignedUrl: async (p) => { signed.push(p); return { data: { signedUrl: `https://s3.test/${p}` }, error: null }; },
+      });
+      return { signed, restore: () => { fdb.storage.from = realFrom; } };
+    };
+    fdb._tables.messages.push(
+      { id: 7903, wa_id: '201000000031', direction: 'in', type: 'audio', media_status: 'stored', media_path: 'a/audio/v.ogg', media_meta: { mime_type: 'audio/ogg; codecs=opus', voice: true } },
+      { id: 7904, wa_id: '201000000031', direction: 'in', type: 'audio', media_status: 'stored', media_path: 'a/audio/s.mp3', media_meta: { mime_type: 'audio/mpeg' } },
+    );
+
+    await test('iPhone audio: an OGG voice note is transcoded once to AAC and cached', async () => {
+      const uploads = [];
+      let transcodes = 0;
+      const realM4a = transcode.toM4a;
+      transcode.toM4a = async () => { transcodes++; return { ok: true, buffer: Buffer.from('aac'), mime: 'audio/mp4', ext: 'm4a' }; };
+      const s = signedFor({
+        exists: async () => ({ data: false, error: null }),
+        upload: async (p, b, o) => { uploads.push({ p, type: o.contentType }); return { data: { path: p }, error: null }; },
+      });
+      try {
+        const r = await mediaReq(7903);
+        assert.strictEqual(r.status, 302);
+        assert.strictEqual(r.headers.get('location'), 'https://s3.test/a/audio/v.ogg.m4a');
+      } finally {
+        s.restore();
+        transcode.toM4a = realM4a;
+      }
+      assert.strictEqual(transcodes, 1);
+      assert.deepStrictEqual(uploads, [{ p: 'a/audio/v.ogg.m4a', type: 'audio/mp4' }]);
+    });
+
+    await test('iPhone audio: a cached copy is served without transcoding', async () => {
+      const realM4a = transcode.toM4a;
+      transcode.toM4a = async () => { throw new Error('should not transcode'); };
+      const s = signedFor({ exists: async () => ({ data: true, error: null }) });
+      try {
+        const r = await mediaReq(7903);
+        assert.strictEqual(r.headers.get('location'), 'https://s3.test/a/audio/v.ogg.m4a');
+      } finally {
+        s.restore();
+        transcode.toM4a = realM4a;
+      }
+    });
+
+    await test('iPhone audio: MP3 and a failed transcode both serve the original', async () => {
+      const realM4a = transcode.toM4a;
+      transcode.toM4a = async () => ({ ok: false, error: 'boom' });
+      const s = signedFor({ exists: async () => ({ data: false, error: null }) });
+      const warn = console.warn;
+      console.warn = () => {};
+      try {
+        assert.strictEqual((await mediaReq(7904)).headers.get('location'), 'https://s3.test/a/audio/s.mp3');
+        assert.strictEqual((await mediaReq(7903)).headers.get('location'), 'https://s3.test/a/audio/v.ogg');
+      } finally {
+        console.warn = warn;
+        s.restore();
+        transcode.toM4a = realM4a;
+      }
+    });
+
+    await test('retention deletes the AAC copy with its original', async () => {
+      const maintenance = require('../lib/maintenance');
+      const removed = [];
+      const realFrom = fdb.storage.from;
+      fdb.storage.from = () => ({ ...realFrom(), remove: async (keys) => { removed.push(...keys); return { data: [], error: null }; } });
+      fdb._tables.messages.push({
+        id: 7905, wa_id: '201000000031', direction: 'in', type: 'audio', media_status: 'stored',
+        media_path: 'old/audio/v.ogg', created_at: '2020-01-01T00:00:00.000Z',
+      });
+      const env = process.env.CRON_SECRET;
+      process.env.CRON_SECRET = 'cron-test';
+      const res = { status() { return this; }, json(b) { this.body = b; return this; } };
+      try {
+        await maintenance({ headers: { authorization: 'Bearer cron-test' }, query: {} }, res);
+      } finally {
+        fdb.storage.from = realFrom;
+        if (env === undefined) delete process.env.CRON_SECRET; else process.env.CRON_SECRET = env;
+      }
+      assert.ok(removed.includes('old/audio/v.ogg'), `removed ${JSON.stringify(removed)}`);
+      assert.ok(removed.includes('old/audio/v.ogg.m4a'), 'AAC copy left behind');
+    });
+  }
+
   srv2.close();
   dbmod.__setDbForTesting(null);
 
@@ -1392,6 +1577,79 @@ function sign(body) {
       }
       assert.ok(!names.matchesQuery(row, '01099999999'));
       assert.ok(!names.matchesQuery(row, 'Oasis 2'), 'a word query with a digit matched by digits');
+    });
+  }
+
+  // --- reply quotes + forward guard in the browser ---
+  console.log('\n\x1b[1mINBOX REPLIES (browser)\x1b[0m');
+  {
+    const fs = require('fs');
+    const path = require('path');
+    const src = fs.readFileSync(path.join(__dirname, '..', 'web', 'app.js'), 'utf8').replace(/\r\n/g, '\n');
+    const lift = (name) => {
+      const lines = src.split('\n');
+      const start = lines.findIndex((l) => l.startsWith(`function ${name}(`));
+      assert.notStrictEqual(start, -1, `web/app.js no longer defines ${name}`);
+      let end = start;
+      while (end < lines.length && lines[end] !== '}') end++;
+      return lines.slice(start, end + 1).join('\n');
+    };
+    const constBlock = (name) => {
+      const m = new RegExp(`^const ${name} = \\{[\\s\\S]*?^\\};`, 'm').exec(src);
+      assert.ok(m, `web/app.js no longer defines ${name}`);
+      return m[0];
+    };
+    const ui = new Function(`
+      const toasts = [];
+      const state = { threads: {}, conversations: [{ wa_id: 'W', profile_name: 'Sara' }], activeWaId: 'W', forward: null };
+      const els = { forwardError: {}, forwardSearch: { focus() {} }, forwardModal: {} };
+      function thread(waId) {
+        if (!state.threads[waId]) state.threads[waId] = { byId: new Map(), order: [] };
+        return state.threads[waId];
+      }
+      function toast(msg) { toasts.push(msg); }
+      function renderForwardList() {}
+      function updateForwardSubmit() {}
+      function setTimeout() {}
+      function displayName(c) { return c.profile_name; }
+      function formatPhone(w) { return '+' + w; }
+      function escapeHtml(s) { return String(s); }
+      ${lift('stripCaption')}
+      ${lift('labelForType')}
+      ${lift('replyToOf')}
+      ${lift('quotedMessage')}
+      ${lift('senderName')}
+      ${lift('snippetOf')}
+      ${constBlock('NOT_FORWARDABLE')}
+      ${lift('openForwardModal')}
+      return { state, thread, toasts, quotedMessage, senderName, snippetOf, openForwardModal };
+    `)();
+
+    await test('a reply finds the message it quotes by wa_message_id', async () => {
+      const t = ui.thread('W');
+      t.byId.set(1, { id: 1, wa_id: 'W', wa_message_id: 'wamid.A', direction: 'in', type: 'text', body: 'Can I change my plan?' });
+      t.byId.set(2, { id: 2, wa_id: 'W', wa_message_id: 'wamid.B', direction: 'out', type: 'text', body: 'Sure', media_meta: { reply_to: 'wamid.A' } });
+      t.byId.set(3, { id: 3, wa_id: 'W', direction: 'in', type: 'text', body: 'old', media_meta: { reply_to: 'wamid.GONE' } });
+      const q = ui.quotedMessage(t.byId.get(2));
+      assert.strictEqual(q && q.id, 1);
+      assert.strictEqual(ui.senderName(q), 'Sara');
+      assert.strictEqual(ui.senderName(t.byId.get(2)), 'You');
+      assert.strictEqual(ui.quotedMessage(t.byId.get(3)), null);
+      assert.strictEqual(ui.snippetOf({ type: 'audio', body: '🎤 Voice message', media_meta: { voice: true } }), '🎤 Voice message');
+    });
+
+    await test('forward: stored media opens the picker without media_path', async () => {
+      ui.openForwardModal({ id: 9, wa_id: 'W', type: 'audio', media_status: 'stored', media_meta: {} });
+      assert.ok(ui.state.forward && ui.state.forward.msgId === 9, 'picker did not open');
+      assert.deepStrictEqual(ui.toasts, []);
+    });
+
+    await test('forward: unstored media says why', async () => {
+      ui.state.forward = null;
+      ui.openForwardModal({ id: 10, type: 'image', media_status: 'expired' });
+      ui.openForwardModal({ id: 11, type: 'image', media_status: 'pending' });
+      assert.strictEqual(ui.state.forward, null);
+      assert.ok(/deleted/.test(ui.toasts[0]) && /downloading/.test(ui.toasts[1]), ui.toasts.join(' | '));
     });
   }
 
