@@ -37,8 +37,8 @@ function seed() {
     { wa_message_id: 'm1', wa_id: T, direction: 'in',  type: 'text', body: 'Hi! I wanted to ask about my order #4471.', status: 'received', wa_timestamp: iso(40), created_at: iso(40) },
     { wa_message_id: 'm2', wa_id: T, direction: 'out', type: 'text', body: 'Hello Ada! Of course — let me pull that up for you.', status: 'read', wa_timestamp: iso(38), created_at: iso(38) },
     { wa_message_id: 'm3', wa_id: T, direction: 'out', type: 'text', body: 'Your order shipped this morning and should arrive Thursday. 📦', status: 'read', reaction: '❤️', wa_timestamp: iso(37), created_at: iso(37) },
-    { wa_message_id: 'm4', wa_id: T, direction: 'in',  type: 'text', body: 'Oh wonderful! Is there a tracking number?', status: 'received', wa_timestamp: iso(6), created_at: iso(6) },
-    { wa_message_id: 'm5', wa_id: T, direction: 'out', type: 'text', body: 'Yes — it’s 1Z-998-ADA-2026. You’ll get email updates too.', status: 'delivered', wa_timestamp: iso(4), created_at: iso(4) },
+    { wa_message_id: 'm4', wa_id: T, direction: 'in',  type: 'text', body: 'Oh wonderful! Is there a tracking number?', media_meta: { reply_to: 'm3' }, status: 'received', wa_timestamp: iso(6), created_at: iso(6) },
+    { wa_message_id: 'm5', wa_id: T, direction: 'out', type: 'text', body: 'Yes — it’s 1Z-998-ADA-2026. You’ll get email updates too.', media_meta: { reply_to: 'm4' }, status: 'delivered', wa_timestamp: iso(4), created_at: iso(4) },
     { wa_message_id: 'm6', wa_id: T, direction: 'in',  type: 'image', body: '📷 Image', media_status: 'stored', media_path: 'x/image/m6.png', media_meta: { caption: 'My delivery just arrived 🎉' }, status: 'received', wa_timestamp: iso(3), created_at: iso(3) },
     { wa_message_id: 'm7', wa_id: T, direction: 'in',  type: 'document', body: '📄 Document', media_status: 'stored', media_path: 'x/document/m7.pdf', media_meta: { filename: 'warranty-card.pdf' }, status: 'received', wa_timestamp: iso(2.5), created_at: iso(2.5) },
     { wa_message_id: 'm7b', wa_id: T, direction: 'in', type: 'audio', body: '🎤 Voice message', media_status: 'stored', media_path: 'x/out/m7b.ogg', media_meta: { voice: true, mime_type: 'audio/ogg' }, status: 'received', wa_timestamp: iso(2.3), created_at: iso(2.3) },
@@ -119,11 +119,15 @@ seed();
   await shot('desktop-forward-picker.png', 1280, 832, async (p) => {
     await p.click('.conv-row');
     await p.waitForSelector('.bubble');
-    // The forward control only shows on :hover; fire its click handler directly
-    // (a CSS-hidden element can't be clicked via the pointer), then wait for the
-    // picker to populate.
-    await p.$eval('.bubble .bubble-forward', (el) => el.click());
+    await p.$eval('.bubble .bubble-action[title="Forward"]', (el) => el.click());
     await p.waitForSelector('#forward-modal .forward-opt');
+  });
+  // Replying to a customer message: the quote bar sits above the composer.
+  await shot('desktop-reply.png', 1280, 832, async (p) => {
+    await p.click('.conv-row');
+    await p.waitForSelector('.bubble');
+    await p.$eval('.bubble.in .bubble-action[title="Reply"]', (el) => el.click());
+    await p.waitForSelector('#reply-bar:not([hidden])');
   });
   // Mobile: list view, then the open thread (single-pane + back arrow).
   await shot('mobile-list.png', 390, 780, null);
