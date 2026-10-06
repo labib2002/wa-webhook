@@ -129,6 +129,26 @@ seed();
     await p.$eval('.bubble.in .bubble-action[title="Reply"]', (el) => el.click());
     await p.waitForSelector('#reply-bar:not([hidden])');
   });
+  // Media viewer over the thread: photo, filmstrip, caption.
+  await shot('desktop-viewer.png', 1280, 832, async (p) => {
+    await p.click('.conv-row');
+    await p.waitForSelector('.bubble [data-view]');
+    await p.$eval('.bubble [data-view]', (el) => el.click());
+    await p.waitForSelector('#viewer:not([hidden]) .viewer-img');
+  });
+  await shot('desktop-viewer-pdf.png', 1280, 832, async (p) => {
+    await p.click('.conv-row');
+    await p.waitForSelector('.bubble [data-view]');
+    await p.$eval('.bubble [data-view]', (el) => el.click());
+    await p.keyboard.press('ArrowRight');
+    await p.waitForSelector('#viewer .viewer-pdf');
+  });
+  await shot('mobile-viewer.png', 390, 780, async (p) => {
+    await p.click('.conv-row');
+    await p.waitForSelector('.bubble [data-view]');
+    await p.$eval('.bubble [data-view]', (el) => el.click());
+    await p.waitForSelector('#viewer:not([hidden]) .viewer-img');
+  });
   // Mobile: list view, then the open thread (single-pane + back arrow).
   await shot('mobile-list.png', 390, 780, null);
   await shot('mobile-thread.png', 390, 780, async (p) => {
