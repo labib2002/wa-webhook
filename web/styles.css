@@ -651,31 +651,58 @@ a.media-frame:focus-visible { outline: 2px solid var(--pine); outline-offset: 2p
 .bubble.out .forwarded-tag { color: #4d7a6d; }
 
 /* ---- forward control on a bubble (hover desktop, tappable mobile) ---- */
-.bubble-forward {
+/* Reply + Forward beside each bubble. Always visible but quiet, so they can be
+   found without hovering; full strength when the bubble is hovered. */
+.bubble-actions {
   position: absolute; top: 50%; transform: translateY(-50%);
+  display: flex; gap: 4px; white-space: normal;
+  opacity: 0.45; transition: opacity 0.13s;
+}
+.bubble.out .bubble-actions { right: calc(100% + 8px); flex-direction: row-reverse; }
+.bubble.in  .bubble-actions { left: calc(100% + 8px); }
+.bubble:hover .bubble-actions,
+.bubble-actions:hover,
+.bubble-actions:focus-within { opacity: 1; }
+.bubble-action {
   width: 30px; height: 30px; border-radius: 50%;
   border: none; background: var(--card); color: var(--ink-2);
-  display: none; place-content: center;
+  display: grid; place-content: center; cursor: pointer;
   box-shadow: var(--sh-1);
   transition: background 0.13s, color 0.13s;
 }
-.bubble.out .bubble-forward { left: -38px; }
-.bubble.in  .bubble-forward { right: -38px; }
-/* Invisible bridge spanning the gap between the bubble and the button, so the
-   pointer never crosses an un-hoverable strip on its way to the control (which
-   would drop :hover and hide it). Sits behind the button, transparent. */
-.bubble-forward::before {
-  content: ''; position: absolute; top: -6px; bottom: -6px; width: 44px;
+.bubble-action:hover { background: var(--paper-2); color: var(--pine-deep); }
+.bubble-action:focus-visible { outline: 2px solid var(--pine); outline-offset: 1px; }
+
+/* Quoted message at the top of a reply, WhatsApp-style. */
+.bubble-quote {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
+  width: 100%; margin: 0 0 5px; padding: 5px 9px;
+  border: none; border-left: 3px solid var(--pine); border-radius: 7px;
+  background: rgba(0, 0, 0, 0.055); color: inherit;
+  font: inherit; text-align: left; white-space: normal; cursor: pointer;
 }
-.bubble.out .bubble-forward::before { left: 0; }   /* extend toward the bubble (to the right) */
-.bubble.in  .bubble-forward::before { right: 0; }
-.bubble-forward:hover { background: var(--paper-2); color: var(--pine-deep); }
-.bubble-forward:focus-visible { outline: 2px solid var(--pine); outline-offset: 1px; display: grid; }
-/* Show the control whenever the bubble OR the control itself is hovered/focused
-   — the latter keeps it up while the pointer is over the gap bridge. */
-.bubble:hover .bubble-forward,
-.bubble-forward:hover,
-.bubble-forward:focus { display: grid; }
+.bubble-quote.is-in { border-left-color: #b07a2a; }
+.bubble-quote.is-missing { cursor: default; border-left-color: var(--ink-3); }
+.bubble-quote:hover:not(.is-missing) { background: rgba(0, 0, 0, 0.085); }
+.quote-name { font-size: 12.5px; font-weight: 600; color: var(--pine-deep); }
+.bubble-quote.is-in .quote-name { color: #8a5d1c; }
+.quote-text {
+  font-size: 13px; color: var(--ink-2); max-width: 100%;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.bubble.flash { animation: quote-flash 1.2s ease-out; }
+@keyframes quote-flash { 0%, 40% { box-shadow: 0 0 0 3px var(--pine-ring); } 100% { box-shadow: var(--sh-1); } }
+
+/* What the next message replies to, above the composer. */
+.reply-bar {
+  display: flex; align-items: center; gap: 10px;
+  background: var(--paper-2); border: 1px solid var(--card-edge);
+  border-left: 3px solid var(--pine);
+  border-radius: var(--r-md); padding: 7px 8px 7px 11px; margin-bottom: 9px;
+}
+.reply-info { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.reply-name { font-weight: 600; font-size: 12.5px; color: var(--pine-deep); }
+.reply-text { font-size: 13px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* ---- forward destination picker ---- */
 .forward-card { display: flex; flex-direction: column; max-height: min(80vh, 620px); }
@@ -787,16 +814,17 @@ a.media-frame:focus-visible { outline: 2px solid var(--pine); outline-offset: 2p
   .app[data-view="thread"] .pane-thread { transform: translateX(0); }
   /* when viewing the thread, the placeholder shouldn't show under it */
   .back-btn { display: inline-grid; }
-  .bubble { max-width: 82%; }
+  .bubble { max-width: 78%; }
   .messages { padding-left: 14px; padding-right: 14px; }
 
   /* On touch screens there's no hover, so keep the inline controls reachable. */
   .conv-row .row-readtoggle { display: grid; }
   .conv-row:hover .row-time { visibility: visible; }
   .row-readtoggle { top: auto; bottom: 8px; }
-  .bubble-forward { display: grid; width: 28px; height: 28px; }
-  .bubble.out .bubble-forward { left: -34px; }
-  .bubble.in  .bubble-forward { right: -34px; }
+  .bubble-actions { opacity: 0.8; gap: 3px; }
+  .bubble.out .bubble-actions { right: calc(100% + 5px); }
+  .bubble.in  .bubble-actions { left: calc(100% + 5px); }
+  .bubble-action { width: 26px; height: 26px; }
 }
 
 /* Reduced motion: drop the flourishes. */

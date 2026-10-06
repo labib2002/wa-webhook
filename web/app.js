@@ -41,6 +41,10 @@ const els = {
   composerForm: $('#composer-form'),
   composerInput: $('#composer-input'),
   composerBanner: $('#composer-banner'),
+  replyBar: $('#reply-bar'),
+  replyName: $('#reply-name'),
+  replyText: $('#reply-text'),
+  replyCancel: $('#reply-cancel'),
   sendBtn: $('#send-btn'),
   attachBtn: $('#attach-btn'),
   fileInput: $('#file-input'),
@@ -94,6 +98,7 @@ const state = {
   listFilter: 'all',      // 'all' | 'unread' — composes WITH the search term
   activeWaId: null,
   forward: null,          // { msgId, selected: Set(wa_id), search } while the picker is open
+  replyTo: null,          // { waId, msg } the next send quotes, set by a bubble's Reply
   followupLang: 'ar',     // template language for the follow-up modal
   threads: {},            // wa_id -> { byId: Map(id->msg), order: [ids], lastMsgId, loaded }
   drafts: {},             // wa_id -> unsent composer text (preserved across chat switches)
@@ -543,6 +548,7 @@ async function openConversation(waId) {
 
   // Preserve the previous chat's unsent text as a per-chat draft before switching.
   saveDraft();
+  if (state.replyTo && state.replyTo.waId !== waId) clearReply();
 
   state.activeWaId = waId;
   const t = thread(waId);
@@ -669,7 +675,52 @@ function renderMessages(force = false) {
 // A cheap signature of everything that affects a bubble's rendering, so we
 // only re-render when something visible actually changed.
 function bubbleSig(m, continued) {
-  return [m.id, m.status, m.error || '', m.reaction, m.media_status, m.forwarded ? 1 : 0, m._optimistic ? 1 : 0, continued ? 1 : 0, m.body].join('|');
+  const quoted = quotedMessage(m);
+  return [m.id, m.status, m.error || '', m.reaction, m.media_status, m.forwarded ? 1 : 0, m._optimistic ? 1 : 0, continued ? 1 : 0, m.body, replyToOf(m) || '', quoted ? quoted.id : ''].join('|');
+}
+
+function replyToOf(m) {
+  return (m.media_meta && m.media_meta.reply_to) || null;
+}
+
+// The message a reply quotes, when it is in the loaded thread.
+function quotedMessage(m) {
+  const wamid = replyToOf(m);
+  if (!wamid) return null;
+  for (const row of thread(m.wa_id || state.activeWaId).byId.values()) {
+    if (row.wa_message_id === wamid) return row;
+  }
+  return null;
+}
+
+function senderName(m) {
+  if (m.direction === 'out') return 'You';
+  const waId = m.wa_id || state.activeWaId;
+  const conv = state.conversations.find((c) => c.wa_id === waId);
+  return conv ? displayName(conv) : formatPhone(waId);
+}
+
+// One line of text standing for a message, for quotes and the reply bar.
+function snippetOf(m) {
+  if (!m.type || m.type === 'text') return m.body || '';
+  const meta = m.media_meta || {};
+  const label = stripCaption(m.body) || labelForType(m.type);
+  return meta.caption ? `${label} · ${meta.caption}` : label;
+}
+
+function quoteHtml(m) {
+  if (!replyToOf(m)) return '';
+  const q = quotedMessage(m);
+  if (!q) return '<span class="bubble-quote is-missing"><span class="quote-text">Replying to an earlier message</span></span>';
+  const who = q.direction === 'out' ? 'is-out' : 'is-in';
+  return `<button type="button" class="bubble-quote ${who}" data-quote="${q.id}"><span class="quote-name">${escapeHtml(senderName(q))}</span><span class="quote-text">${escapeHtml(snippetOf(q))}</span></button>`;
+}
+
+// iPhone Safari can't play WhatsApp's OGG/Opus voice notes; the server then
+// hands back an AAC copy (?compat=1).
+const audioProbe = document.createElement('audio');
+function canPlayAudio(mime) {
+  return Boolean(mime) && audioProbe.canPlayType(mime) !== '';
 }
 
 function renderBubble(m, continued) {
@@ -685,7 +736,7 @@ function renderBubble(m, continued) {
 
   const iso = m.wa_timestamp || m.created_at;
 
-  let inner = '';
+  let inner = quoteHtml(m);
 
   // Dashboard-only "Forwarded" tag (the Cloud API can't set WhatsApp's native
   // forwarded label, so this shows only here).
@@ -716,8 +767,10 @@ function renderBubble(m, continued) {
     } else if (stored && (m.type === 'audio' || m.type === 'voice')) {
       const isVoice = m.type === 'voice' || meta.voice === true;
       div.classList.add(isVoice ? 'is-voice' : 'is-audio');
+      const compat = m._localUrl ? '' : `/api/media/${m.id}?compat=1`;
+      const audioSrc = compat && !canPlayAudio(meta.mime_type) ? compat : src;
       inner += `<span class="media-label">${isVoice ? '🎤 Voice message' : '🎵 Audio'}</span>
-        <audio class="media-audio" controls preload="metadata" src="${src}"></audio>`;
+        <audio class="media-audio" controls preload="metadata" src="${audioSrc}" data-compat="${compat}"></audio>`;
     } else if (stored && m.type === 'document') {
       const fname = escapeHtml(meta.filename || 'Document');
       inner += `<a class="media-doc" href="${src}" target="_blank" rel="noopener" download>
@@ -747,6 +800,17 @@ function renderBubble(m, continued) {
 
   div.innerHTML = inner + metaHtml;
 
+  // A browser can claim it plays a format and still fail on it; fall back once.
+  const audio = div.querySelector('audio[data-compat]');
+  if (audio && audio.dataset.compat) {
+    audio.addEventListener('error', () => {
+      const compat = audio.dataset.compat;
+      if (!audio.src.endsWith(compat)) audio.src = compat;
+    });
+  }
+  const quote = div.querySelector('.bubble-quote[data-quote]');
+  if (quote) quote.addEventListener('click', (e) => { e.stopPropagation(); jumpToMessage(Number(quote.dataset.quote)); });
+
   if (m.status === 'failed') {
     const reason = document.createElement('span');
     reason.className = 'fail-reason';
@@ -774,20 +838,64 @@ function renderBubble(m, continued) {
     div.appendChild(r);
   }
 
-  // Forward control — on every persisted message (in/out, any type). Not shown
-  // on optimistic bubbles (no real id yet to forward).
+  // Reply + Forward sit beside every persisted message. Optimistic bubbles
+  // have no real id yet; only a message WhatsApp gave an id can be quoted.
   if (!m._optimistic && typeof m.id === 'number') {
-    const fwd = document.createElement('button');
-    fwd.type = 'button';
-    fwd.className = 'bubble-forward';
-    fwd.title = 'Forward';
-    fwd.setAttribute('aria-label', 'Forward message');
-    fwd.innerHTML = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 17 20 12 15 7"/><path d="M4 18v-2a4 4 0 0 1 4-4h12"/></svg>';
-    fwd.addEventListener('click', (e) => { e.stopPropagation(); openForwardModal(m); });
-    div.appendChild(fwd);
+    const actions = document.createElement('span');
+    actions.className = 'bubble-actions';
+    if (m.wa_message_id && m.status !== 'failed') {
+      actions.appendChild(actionButton('Reply', '<polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/>', () => startReply(m)));
+    }
+    actions.appendChild(actionButton('Forward', '<polyline points="15 17 20 12 15 7"/><path d="M4 18v-2a4 4 0 0 1 4-4h12"/>', () => openForwardModal(m)));
+    div.appendChild(actions);
   }
   return div;
 }
+
+function actionButton(label, paths, onClick) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'bubble-action';
+  b.title = label;
+  b.setAttribute('aria-label', `${label} message`);
+  b.innerHTML = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`;
+  b.addEventListener('click', (e) => { e.stopPropagation(); onClick(); });
+  return b;
+}
+
+function jumpToMessage(id) {
+  const node = els.messages.querySelector(`.bubble[data-mid="${id}"]`);
+  if (!node) return;
+  node.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  node.classList.remove('flash');
+  void node.offsetWidth;
+  node.classList.add('flash');
+}
+
+/* ----------------------------- reply ----------------------------- */
+
+function startReply(m) {
+  state.replyTo = { waId: m.wa_id || state.activeWaId, msg: m };
+  els.replyName.textContent = senderName(m);
+  els.replyText.textContent = snippetOf(m);
+  els.replyBar.hidden = false;
+  els.composerInput.focus();
+}
+
+function clearReply() {
+  state.replyTo = null;
+  els.replyBar.hidden = true;
+}
+
+// The quote for a send to waId, consumed by that send.
+function takeReply(waId) {
+  const r = state.replyTo;
+  if (!r || r.waId !== waId) return null;
+  clearReply();
+  return r.msg.wa_message_id || null;
+}
+
+els.replyCancel.addEventListener('click', () => { clearReply(); els.composerInput.focus(); });
 
 function stripCaption(body) {
   // body may be "📷 Image · caption"; show only the label part in the bubble
@@ -923,6 +1031,11 @@ els.composerInput.addEventListener('input', () => {
 });
 
 els.composerInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && state.replyTo) {
+    e.preventDefault();
+    clearReply();
+    return;
+  }
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
     els.composerForm.requestSubmit();
@@ -995,15 +1108,16 @@ async function sendPendingFile() {
 
   // optimistic bubble — show the local preview immediately for images + voice
   const localPlayable = kind === 'image' || kind === 'audio';
+  const replyTo = takeReply(waId);
   const opt = addOptimistic(waId, {
     type: kind,
     body: caption ? `${label} · ${caption}` : label,
     media_status: localPlayable ? 'stored' : null,
-    media_meta: { filename: f.name, mime_type: f.mime, caption: caption || null, voice: isVoice || null },
+    media_meta: { filename: f.name, mime_type: f.mime, caption: caption || null, voice: isVoice || null, reply_to: replyTo },
     _localUrl: localPlayable ? f.dataUrl : null,
   });
 
-  const payload = { wa_id: waId, file_base64: f.base64, mime: f.mime, filename: f.name, caption, voice: isVoice };
+  const payload = { wa_id: waId, file_base64: f.base64, mime: f.mime, filename: f.name, caption, voice: isVoice, reply_to: replyTo };
   resetComposer();
   state.sending = true;
   els.sendBtn.disabled = true;
@@ -1270,7 +1384,8 @@ els.composerForm.addEventListener('submit', async (e) => {
   const text = els.composerInput.value.trim();
   if (!text) return;
 
-  const opt = addOptimistic(waId, { type: 'text', body: text });
+  const replyTo = takeReply(waId);
+  const opt = addOptimistic(waId, { type: 'text', body: text, media_meta: replyTo ? { reply_to: replyTo } : null });
   els.composerInput.value = '';
   delete state.drafts[waId]; // sent → no lingering draft
   autoGrow();
@@ -1282,7 +1397,7 @@ els.composerForm.addEventListener('submit', async (e) => {
   const { ok, status, data } = await api('/api/send', {
     method: 'POST',
     headers: { 'x-idempotency-key': sendKey },
-    body: JSON.stringify({ wa_id: waId, text }),
+    body: JSON.stringify({ wa_id: waId, text, reply_to: replyTo }),
   });
 
   state.sending = false;
@@ -1301,7 +1416,7 @@ els.composerForm.addEventListener('submit', async (e) => {
     // carrying the SAME idempotency key so the server can dedupe
     settleOptimistic(waId, opt, {
       _optimistic: false, status: 'failed', error: data.error || 'Failed to send.',
-      _retry: { endpoint: '/api/send', payload: { wa_id: waId, text }, key: sendKey },
+      _retry: { endpoint: '/api/send', payload: { wa_id: waId, text, reply_to: replyTo }, key: sendKey },
     });
     setBanner(data.error || 'Failed to send. Check the connection and try again.');
   }
@@ -1330,6 +1445,7 @@ function isNearBottom() {
 
 els.backBtn.addEventListener('click', () => {
   saveDraft(); // keep the unsent text for when this chat is reopened
+  clearReply();
   els.app.dataset.view = 'list';
   state.activeWaId = null;
   stopThreadPolling();
@@ -1504,11 +1620,16 @@ els.renameForm.addEventListener('submit', async (e) => {
 /* ----------------------- forward message ----------------------- */
 
 // Open the destination picker for a message. Media must be stored to forward;
-// if it isn't (pending/failed), show a clear inline message instead.
+// if it isn't, say why. The thread API never sends media_path, so media_status
+// is the signal here and /api/forward re-checks the stored path.
+const NOT_FORWARDABLE = {
+  pending: 'This media is still downloading. Try again in a moment.',
+  failed: 'This media couldn’t be downloaded from WhatsApp, so it can’t be forwarded.',
+  expired: 'This media is past the storage window and was deleted, so it can’t be forwarded.',
+};
 function openForwardModal(m) {
-  if (m.type && m.type !== 'text' && (m.media_status !== 'stored' || (!m.media_path && !m._localUrl))) {
-    // _localUrl alone (optimistic) has no server-stored copy yet either.
-    toast('This media isn’t stored yet, so it can’t be forwarded.', true);
+  if (m.type && m.type !== 'text' && m.media_status !== 'stored') {
+    toast(NOT_FORWARDABLE[m.media_status] || 'This message has no stored media to forward.', true);
     return;
   }
   state.forward = { msgId: m.id, srcWaId: m.wa_id || state.activeWaId, selected: new Set(), search: '' };
