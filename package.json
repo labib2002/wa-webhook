@@ -7,6 +7,7 @@
     "start": "node app.js",
     "dev": "node app.js",
     "shots": "node scripts/screenshots.js",
+    "paste-check": "node scripts/paste-check.js",
     "test": "node scripts/test-webhook.js",
     "adapter-check": "node scripts/adapter-check.js",
     "live-check": "node scripts/live-check.js",
