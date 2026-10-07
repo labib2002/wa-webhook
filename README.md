@@ -189,6 +189,8 @@ npm test          # 15 checks: handshake 200/403, signature reject, inbound
 
 npm run shots     # drives headless Chromium over a seeded dashboard and writes
                   # screenshots/{desktop,mobile}-{list,thread}.png
+npm run paste-check  # headless Chromium: paste, drag-drop and the clip button
+                     # stage attachments; big or WebP images become JPEG <= 5 MB
 ```
 
 The send path is exercised against a mocked Graph call. **End-to-end sending can

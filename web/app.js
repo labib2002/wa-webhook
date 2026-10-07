@@ -1056,18 +1056,64 @@ els.composerInput.addEventListener('keydown', (e) => {
 
 /* ----------------------------- attachments ----------------------------- */
 
+// Meta takes images only as JPEG or PNG, up to 5 MB.
+const IMAGE_MAX_BYTES = 5 * 1000 * 1000;
+
 els.attachBtn.addEventListener('click', () => els.fileInput.click());
 
 els.fileInput.addEventListener('change', () => {
   const file = els.fileInput.files && els.fileInput.files[0];
   els.fileInput.value = ''; // allow re-selecting the same file later
-  if (!file) return;
+  if (file) stageFile(file);
+});
+
+function canStageFileFrom(target) {
+  if (els.app.hidden || !state.activeWaId || state.rec) return false;
+  if (document.querySelector('.modal-overlay:not([hidden]), .viewer:not([hidden])')) return false;
+  const el = target instanceof Element ? target : null;
+  return el === els.composerInput || !(el && el.closest('input, textarea, select, [contenteditable]'));
+}
+
+const canDropOn = (target) => els.thread.contains(target) && canStageFileFrom(target);
+const draggingFiles = (e) => Boolean(e.dataTransfer && e.dataTransfer.types.includes('Files'));
+
+function stageFirstFile(files) {
+  if (files.length > 1) toast('One file at a time: attached the first.');
+  stageFile(files[0]);
+}
+
+document.addEventListener('paste', (e) => {
+  const data = e.clipboardData;
+  if (!data || !data.files.length || !canStageFileFrom(e.target)) return;
+  // Office copies put a picture of the selection next to its text; keep the text.
+  if (data.types.includes('text/rtf') && data.getData('text/plain').trim()) return;
+  e.preventDefault();
+  stageFirstFile(data.files);
+});
+
+// Unhandled, a dropped file makes the browser navigate away to open it.
+document.addEventListener('dragover', (e) => {
+  if (!draggingFiles(e)) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = canDropOn(e.target) ? 'copy' : 'none';
+});
+document.addEventListener('drop', (e) => {
+  if (!draggingFiles(e)) return;
+  e.preventDefault();
+  if (e.dataTransfer.files.length && canDropOn(e.target)) stageFirstFile(e.dataTransfer.files);
+});
+
+async function stageFile(file) {
+  const waId = state.activeWaId;
+  file = await fitImageForWhatsApp(file);
+  if (state.activeWaId !== waId) return;
   if (file.size > 25 * 1024 * 1024) {
     setBanner('File too large (max 25 MB).');
     return;
   }
   const reader = new FileReader();
   reader.onload = () => {
+    if (state.activeWaId !== waId) return;
     const dataUrl = reader.result; // data:<mime>;base64,XXXX
     const base64 = String(dataUrl).split(',')[1] || '';
     state.pendingFile = { name: file.name, mime: file.type || 'application/octet-stream', size: file.size, base64, dataUrl };
@@ -1076,7 +1122,32 @@ els.fileInput.addEventListener('change', () => {
     els.composerInput.focus();
   };
   reader.readAsDataURL(file);
-});
+}
+
+// Pasted screenshots and photos are often PNGs well over the cap: re-encode as
+// a JPEG that fits. Anything the browser cannot decode is left as it was.
+async function fitImageForWhatsApp(file) {
+  if (!file.type.startsWith('image/')) return file;
+  if (/^image\/(jpeg|png)$/.test(file.type) && file.size <= IMAGE_MAX_BYTES) return file;
+  let bitmap;
+  try { bitmap = await createImageBitmap(file); } catch (_) { return file; }
+  let scale = Math.min(1, 4096 / Math.max(bitmap.width, bitmap.height));
+  let jpeg = null;
+  for (let i = 0; i < 6 && !jpeg; i++, scale *= 0.75) {
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#fff'; // JPEG has no alpha, so transparent pixels would turn black
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.9));
+    if (blob && blob.size <= IMAGE_MAX_BYTES) jpeg = blob;
+  }
+  bitmap.close();
+  if (!jpeg) return file;
+  return new File([jpeg], `${(file.name || 'image').replace(/\.[^.]*$/, '')}.jpg`, { type: 'image/jpeg' });
+}
 
 els.attachRemove.addEventListener('click', clearPendingFile);
 
