@@ -7,6 +7,7 @@
 
 const $ = (sel) => document.querySelector(sel);
 const { toWaId, formatWaId, searchKeys } = window.WaPhone;
+const WaTpl = window.WaTpl;
 
 const els = {
   body: document.body,
@@ -107,6 +108,7 @@ const state = {
   threadTimer: null,
   optimisticSeq: -1,      // negative ids for optimistic bubbles
   pendingFile: null,      // { name, mime, size, base64, dataUrl } staged to send
+  templates: [],          // approved template copy from /api/templates
   rec: null,              // active voice recorder { mediaRecorder, stream, chunks, timer, startedAt }
 };
 
@@ -340,6 +342,15 @@ function showApp() {
   els.app.hidden = false;
   startListPolling();
   refreshConversations(true);
+  loadTemplates();
+}
+
+async function loadTemplates() {
+  const { ok, data } = await api('/api/templates');
+  if (!ok || !Array.isArray(data.templates) || !data.templates.length) return;
+  state.templates = data.templates;
+  renderConversations(true);
+  if (state.activeWaId) renderMessages(true);
 }
 
 els.loginForm.addEventListener('submit', async (e) => {
@@ -453,7 +464,7 @@ function renderConversations(forceRender = false) {
         <span class="avatar">${escapeHtml(initials(knownName(c), c.wa_id))}</span>
         <span class="row-name"><span class="row-name-text">${name}</span>${coTag}</span>
         <span class="row-time">${escapeHtml(fmtListTime(c.last_message_at))}</span>
-        <span class="row-preview">${outTick}${escapeHtml(c.last_message_text || '')}</span>
+        <span class="row-preview">${outTick}${escapeHtml(WaTpl.previewText(c.last_message_text, state.templates))}</span>
         <span class="row-badge">${badge}</span>
         <span class="row-readtoggle" role="button" tabindex="0" data-read="${hasUnread ? 'read' : 'unread'}" title="${toggleTitle}" aria-label="${toggleTitle}">${toggleIco}</span>
       </button>`;
@@ -676,7 +687,7 @@ function renderMessages(force = false) {
 // only re-render when something visible actually changed.
 function bubbleSig(m, continued) {
   const quoted = quotedMessage(m);
-  return [m.id, m.status, m.error || '', m.reaction, m.media_status, m.forwarded ? 1 : 0, m._optimistic ? 1 : 0, continued ? 1 : 0, m.body, replyToOf(m) || '', quoted ? quoted.id : ''].join('|');
+  return [m.id, m.status, m.error || '', m.reaction, m.media_status, m.forwarded ? 1 : 0, m._optimistic ? 1 : 0, continued ? 1 : 0, m.body, replyToOf(m) || '', quoted ? quoted.id : '', state.templates.length].join('|');
 }
 
 function replyToOf(m) {
@@ -702,7 +713,7 @@ function senderName(m) {
 
 // One line of text standing for a message, for quotes and the reply bar.
 function snippetOf(m) {
-  if (!m.type || m.type === 'text') return m.body || '';
+  if (!m.type || m.type === 'text') return WaTpl.messageText(m, state.templates);
   const meta = m.media_meta || {};
   const label = stripCaption(m.body) || labelForType(m.type);
   return meta.caption ? `${label} · ${meta.caption}` : label;
@@ -794,13 +805,15 @@ function renderBubble(m, continued) {
       const note =
         m.media_status === 'pending' && isDownloadable ? ' <span class="media-pending">· loading…</span>'
         : m.media_status === 'failed' ? ' <span class="media-pending">· unavailable</span>'
+        : m.media_status === 'expired' ? ' <span class="media-pending">· file deleted after 90 days</span>'
         : '';
       inner += `<span class="media-label">${label}${note}</span>`;
     }
 
     if (meta.caption) inner += `<span class="caption">${escapeHtml(meta.caption)}</span>`;
   } else {
-    inner += escapeHtml(m.body || '');
+    const sentTpl = WaTpl.render(WaTpl.sentTemplate(m), state.templates);
+    inner += sentTpl ? templateHtml(sentTpl) : escapeHtml(m.body || '');
   }
 
   const metaClass = div.classList.contains('has-media') ? 'meta meta-block' : 'meta';
@@ -914,6 +927,16 @@ function stripCaption(body) {
   if (!body) return '';
   const idx = body.indexOf(' · ');
   return idx > -1 ? body.slice(0, idx) : body;
+}
+
+function templateHtml(t) {
+  let html = '<span class="tpl-tag">📋 Template</span><span class="tpl" dir="auto">';
+  if (t.header) html += `<strong class="tpl-header">${escapeHtml(t.header)}</strong>`;
+  html += escapeHtml(t.body);
+  if (t.footer) html += `<span class="tpl-footer">${escapeHtml(t.footer)}</span>`;
+  html += '</span>';
+  if (t.buttons.length) html += `<span class="tpl-buttons">${t.buttons.map((b) => `<span class="tpl-button">${escapeHtml(b)}</span>`).join('')}</span>`;
+  return html;
 }
 
 function labelForType(type) {

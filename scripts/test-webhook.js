@@ -1455,12 +1455,14 @@ function sign(body) {
       });
       const env = process.env.CRON_SECRET;
       process.env.CRON_SECRET = 'cron-test';
+      process.env.MEDIA_RETENTION_DAYS = '90';
       const res = { status() { return this; }, json(b) { this.body = b; return this; } };
       try {
         await maintenance({ headers: { authorization: 'Bearer cron-test' }, query: {} }, res);
       } finally {
         fdb.storage.from = realFrom;
         if (env === undefined) delete process.env.CRON_SECRET; else process.env.CRON_SECRET = env;
+        delete process.env.MEDIA_RETENTION_DAYS;
       }
       assert.ok(removed.includes('old/audio/v.ogg'), `removed ${JSON.stringify(removed)}`);
       assert.ok(removed.includes('old/audio/v.ogg.m4a'), 'AAC copy left behind');
@@ -1627,9 +1629,9 @@ function sign(body) {
       assert.ok(m, `web/app.js no longer defines ${name}`);
       return m[0];
     };
-    const ui = new Function(`
+    const ui = new Function('WaTpl', `
       const toasts = [];
-      const state = { threads: {}, conversations: [{ wa_id: 'W', profile_name: 'Sara' }], activeWaId: 'W', forward: null };
+      const state = { threads: {}, conversations: [{ wa_id: 'W', profile_name: 'Sara' }], activeWaId: 'W', forward: null, templates: [] };
       const els = { forwardError: {}, forwardSearch: { focus() {} }, forwardModal: {} };
       function thread(waId) {
         if (!state.threads[waId]) state.threads[waId] = { byId: new Map(), order: [] };
@@ -1651,7 +1653,7 @@ function sign(body) {
       ${constBlock('NOT_FORWARDABLE')}
       ${lift('openForwardModal')}
       return { state, thread, toasts, quotedMessage, senderName, snippetOf, openForwardModal };
-    `)();
+    `)(require('../web/tpl'));
 
     await test('a reply finds the message it quotes by wa_message_id', async () => {
       const t = ui.thread('W');
@@ -1678,6 +1680,45 @@ function sign(body) {
       ui.openForwardModal({ id: 11, type: 'image', media_status: 'pending' });
       assert.strictEqual(ui.state.forward, null);
       assert.ok(/deleted/.test(ui.toasts[0]) && /downloading/.test(ui.toasts[1]), ui.toasts.join(' | '));
+    });
+  }
+
+  console.log('\n\x1b[1mTEMPLATE COPY\x1b[0m');
+  {
+    const WaTpl = require('../web/tpl');
+    const templates = require('../lib/templates');
+    const list = [
+      { name: 'ops_station_call', language: 'en', header: '', body: "Hi {{1}}, you're up. Please go to {{2}} ({{3}}). {{4}} is expecting you now.", footer: '', buttons: [] },
+      { name: 'ops_station_call', language: 'ar', header: '', body: 'أهلاً {{1}}، دورك. روح {{2}} ({{3}}). {{4}} مستنيك.', footer: '', buttons: [] },
+      { name: 'ops_app_open', language: 'en', header: '', body: 'Hi {{1}}, open the app for {{2}}.', footer: '', buttons: ['Open app'] },
+    ];
+    const comps = (...p) => [{ type: 'body', parameters: p.map((text) => ({ type: 'text', text })) }];
+
+    await test('a stored template renders the approved copy in its language', async () => {
+      const m = { type: 'text', body: 'x', media_meta: { template: { name: 'ops_station_call', language: 'ar', components: comps('سارة', 'InBody', 'الدور 2', 'ندى') } } };
+      assert.strictEqual(WaTpl.render(WaTpl.sentTemplate(m), list).body, 'أهلاً سارة، دورك. روح InBody (الدور 2). ندى مستنيك.');
+    });
+
+    await test('legacy "📋 [name] a · b" rows render, language guessed from the text', async () => {
+      const en = WaTpl.render(WaTpl.sentTemplate({ body: '📋 [ops_station_call] Yassin · Blood test · Quantum · Nada' }), list);
+      assert.strictEqual(en.body, "Hi Yassin, you're up. Please go to Blood test (Quantum). Nada is expecting you now.");
+      const ar = WaTpl.render(WaTpl.sentTemplate({ body: '📋 [ops_station_call] Mohamed · تحليل الدم · الاستقبال · ندى' }), list);
+      assert.strictEqual(ar.language, 'ar');
+      assert.strictEqual(WaTpl.previewText('📋 [ops_app_open] Ali · Nawy · extra', list), '📋 Hi Ali, open the app for Nawy · extra.');
+    });
+
+    await test('unknown templates and plain text fall back to the stored body', async () => {
+      assert.strictEqual(WaTpl.messageText({ body: '📋 [gone_template] a · b' }, list), '📋 [gone_template] a · b');
+      assert.strictEqual(WaTpl.messageText({ body: 'hello' }, list), 'hello');
+      assert.strictEqual(WaTpl.render(WaTpl.sentTemplate({ body: 'hello' }), list), null);
+    });
+
+    await test('buttons come through, and the send preview uses the cached copy', async () => {
+      const r = WaTpl.render(WaTpl.sentTemplate({ media_meta: { template: { name: 'ops_app_open', language: 'en', components: comps('Ali', 'Nawy') } } }), list);
+      assert.deepStrictEqual(r.buttons, ['Open app']);
+      templates.__setCacheForTesting(list);
+      assert.strictEqual(templates.renderCached('ops_app_open', 'en', comps('Ali', 'Nawy')), 'Hi Ali, open the app for Nawy.');
+      templates.__setCacheForTesting(null);
     });
   }
 
