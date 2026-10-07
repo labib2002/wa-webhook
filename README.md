@@ -114,6 +114,7 @@ Copy `.env.example` → `.env` and fill in. In production this is an on-box
 | `WHATSAPP_TOKEN` | Meta dashboard → WhatsApp → **API Setup** (see Tokens). |
 | `PHONE_NUMBER_ID` | Same **API Setup** page. Shared with the backend OTP sender. |
 | `GRAPH_API_VERSION` | Defaults to `v23.0`. |
+| `WABA_ID` | WhatsApp Business Account id. The inbox reads the approved template copy with it, so template bubbles show the text that was sent. |
 | `APP_SECRET` | Meta dashboard → **App Settings → Basic → App secret**. |
 | `DATABASE_URL` | `postgres://wa_app:<pw>@<aurora-writer>:5432/byteplus` |
 | `WA_DB_SCHEMA` | Schema every table is qualified with. Defaults to `wa`. |
@@ -253,7 +254,7 @@ What the cron does each run:
 | Variable | Meaning | Default |
 |---|---|---|
 | `CRON_SECRET` | Cron auth; Vercel sends `Authorization: Bearer <CRON_SECRET>` on cron calls. If unset, the endpoint requires `x-service-token` = `SERVICE_SEND_TOKEN` instead (never open). | unset |
-| `MEDIA_RETENTION_DAYS` | Days to keep stored media bytes; `0` disables retention. | `90` |
+| `MEDIA_RETENTION_DAYS` | Days to keep stored media bytes; `0` keeps them forever. | `0` |
 | `MEDIA_CAP_MB` | Media usage cap the 70% alert is measured against. | `1000` |
 | `MESSAGES_CAP_ROWS` | `messages` row-count cap for the alert. | `400000` |
 | `WA_USAGE_ALERT_TO` | Comma-separated WhatsApp numbers (international digits) that receive the alert; empty = no alert. | unset |
