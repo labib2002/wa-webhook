@@ -1,6 +1,7 @@
 // Drives the inbox in headless Chromium (in-memory DB) and checks the tab
 // alerts: unread count in the title, favicon dot, chime, desktop notification,
-// and auto-read of the open chat. npm run alert-check
+// auto-read of the open chat, live push over /api/events, and the polling
+// fallback when that stream is unavailable. npm run alert-check
 const http = require('http');
 
 Object.assign(process.env, {
@@ -12,6 +13,7 @@ Object.assign(process.env, {
 const { chromium } = require('playwright');
 const { makeFakeDb } = require('./fake-db');
 const db = require('../lib/db');
+const live = require('../lib/live');
 const fake = makeFakeDb();
 db.__setDbForTesting(fake);
 
@@ -29,6 +31,7 @@ fake._tables.messages.push(
 function inbound(waId, text) {
   const c = fake._tables.conversations.find((r) => r.wa_id === waId);
   Object.assign(c, { last_message_text: text, last_message_at: new Date().toISOString(), last_message_direction: 'in', unread_count: (c.unread_count || 0) + 1 });
+  live.publish('messages');
 }
 
 const results = [];
@@ -65,6 +68,9 @@ function check(name, ok, detail = '') {
     };
   });
 
+  const listCalls = [];
+  page.on('request', (r) => { if (r.url().endsWith('/api/conversations')) listCalls.push(Date.now()); });
+
   const marked = [];
   await page.route('**/api/mark-read', (route) => {
     const waId = JSON.parse(route.request().postData()).wa_id;
@@ -82,10 +88,20 @@ function check(name, ok, detail = '') {
   const icon = () => page.$eval('link[rel="icon"]', (l) => l.getAttribute('href'));
   const plainIcon = await icon();
 
+  await page.waitForFunction(() => true);
+  check('stream connected', live._clients.size === 1, `clients=${live._clients.size}`);
+  const quietFrom = Date.now();
+  await page.waitForTimeout(9000);
+  const quietCalls = listCalls.filter((t) => t > quietFrom).length;
+  check('no list polling while live', quietCalls === 0, `calls in 9s=${quietCalls}`);
+
   check('title plain with nothing unread', (await page.title()) === 'Inbox · WhatsApp Agent', await page.title());
 
+  const pushedAt = Date.now();
   inbound(B, 'are you there?');
   await page.waitForFunction(() => document.title.startsWith('(1)'), null, { timeout: 8000 }).catch(() => {});
+  const lag = Date.now() - pushedAt;
+  check('pushed to the tab in under a second', lag < 1000, `${lag}ms`);
   check('title counts unread from another chat', (await page.title()) === '(1) Inbox · WhatsApp Agent', await page.title());
   check('favicon gets a dot', (await icon()) !== plainIcon && (await icon()).includes('circle'));
   check('chime played', (await page.evaluate(() => window.__tones)) === 2);
@@ -104,7 +120,7 @@ function check(name, ok, detail = '') {
   inbound(A, 'while you were away');
   await page.waitForFunction(() => window.__notes.length > 0, null, { timeout: 15000 }).catch(() => {});
   const notes = await page.evaluate(() => window.__notes);
-  check('background tab still polls and notifies', notes.length === 1 && notes[0].title === 'Ada Lovelace' && notes[0].body === 'while you were away', JSON.stringify(notes));
+  check('background tab gets the push and notifies', notes.length === 1 && notes[0].title === 'Ada Lovelace' && notes[0].body === 'while you were away', JSON.stringify(notes));
   check('background chime', (await page.evaluate(() => window.__tones)) === 4);
   check('open chat not read while away', !marked.includes(A));
   check('title counts the open chat while away', (await page.title()) === '(2) Inbox · WhatsApp Agent', await page.title());
@@ -120,6 +136,17 @@ function check(name, ok, detail = '') {
   check('favicon back to plain', (await icon()) === plainIcon);
 
   check('no page errors', pageErrors.length === 0, pageErrors.join(' | '));
+
+  // Fallback: the stream is refused, so the tab must poll as before.
+  const page2 = await browser.newPage();
+  await page2.route('**/api/events', (route) => route.fulfill({ status: 503, body: '' }));
+  await page2.goto(base + '/app');
+  await page2.fill('#passcode', 'demo');
+  await page2.click('#login-btn');
+  await page2.waitForSelector('.conv-row');
+  inbound(B, 'fallback works');
+  await page2.waitForFunction(() => document.body.innerText.includes('fallback works'), null, { timeout: 9000 }).catch(() => {});
+  check('falls back to polling without the stream', (await page2.content()).includes('fallback works'));
 
   await browser.close();
   srv.close();
