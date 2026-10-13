@@ -179,6 +179,7 @@ function threadMessages(t) {
 }
 
 const LIST_POLL_MS = 4000;
+const HIDDEN_LIST_POLL_MS = 10000;
 // Thread poll is cheap now (it fetches only rows changed since the high-water
 // mark — usually nothing), so we can poll faster for snappy reactions/ticks.
 const THREAD_POLL_MS = 1500;
@@ -332,6 +333,8 @@ async function boot() {
 }
 
 function showLogin() {
+  alerts.seen = null;
+  updateTabBadge();
   els.app.hidden = true;
   els.login.hidden = false;
   els.passcode.focus();
@@ -400,6 +403,7 @@ async function refreshConversations(initial = false) {
     return;
   }
   state.conversations = data.conversations || [];
+  noteIncoming(state.conversations);
   state.membersAvailable = Boolean(data.members_available);
   els.convLoading.hidden = true;
   renderConversations();
@@ -411,6 +415,7 @@ function renderConversations(forceRender = false) {
   const q = state.filter.trim().toLowerCase();
   const onlyUnread = state.listFilter === 'unread';
   let list = state.conversations;
+  updateTabBadge();
   // Filter first, then search WITHIN the active filter.
   if (onlyUnread) list = list.filter((c) => c.unread_count > 0);
   if (q) {
@@ -1562,15 +1567,31 @@ els.backBtn.addEventListener('click', () => {
 
 /* ----------------------------- polling ----------------------------- */
 
+// The list keeps polling in a background tab (slower) so new messages can
+// still alert. A worker drives it because browsers throttle page timers in
+// hidden tabs to once a minute.
 function startListPolling() {
   stopListPolling();
-  state.listTimer = setInterval(() => {
-    if (document.hidden) return;
+  state.listPolling = true;
+  state.lastListPoll = Date.now();
+  const tick = () => {
+    if (!state.listPolling) return;
+    if (document.hidden && Date.now() - state.lastListPoll < HIDDEN_LIST_POLL_MS) return;
+    state.lastListPoll = Date.now();
     refreshConversations();
-  }, LIST_POLL_MS);
+  };
+  try {
+    const src = `setInterval(() => postMessage(0), ${LIST_POLL_MS})`;
+    state.listTimer = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
+    state.listTimer.onmessage = tick;
+  } catch (_) {
+    state.listTimer = setInterval(tick, LIST_POLL_MS);
+  }
 }
 function stopListPolling() {
-  if (state.listTimer) clearInterval(state.listTimer);
+  state.listPolling = false;
+  if (state.listTimer instanceof Worker) state.listTimer.terminate();
+  else if (state.listTimer) clearInterval(state.listTimer);
   state.listTimer = null;
 }
 function startThreadPolling() {
@@ -1590,8 +1611,121 @@ document.addEventListener('visibilitychange', () => {
   if (!document.hidden && !els.app.hidden) {
     refreshConversations();
     if (state.activeWaId) loadThread(false);
+    readActiveIfMissed();
   }
 });
+window.addEventListener('focus', readActiveIfMissed);
+
+/* ----------------------------- tab alerts ----------------------------- */
+
+// New inbound messages show as "(3) Inbox" in the tab title, a red dot on the
+// favicon, a short chime, and a desktop notification when the tab isn't in
+// front. The chat that is open and in front is read on arrival instead.
+const BASE_TITLE = document.title;
+const iconLink = document.querySelector('link[rel="icon"]');
+const BASE_ICON = iconLink.getAttribute('href');
+const DOT_ICON = BASE_ICON.replace(/%3C\/svg%3E$/,
+  "%3Ccircle cx='78' cy='22' r='20' fill='%23e5484d' stroke='%23fff' stroke-width='6'/%3E%3C/svg%3E");
+const alerts = { seen: null, audio: null, missedActive: false };
+
+function inboxInFront() {
+  return !document.hidden && document.hasFocus();
+}
+
+function updateTabBadge() {
+  const total = els.app.hidden ? 0
+    : state.conversations.reduce((n, c) => n + (c.unread_count || 0), 0);
+  const title = total ? `(${total > 99 ? '99+' : total}) ${BASE_TITLE}` : BASE_TITLE;
+  if (document.title !== title) document.title = title;
+  const icon = total ? DOT_ICON : BASE_ICON;
+  if (iconLink.getAttribute('href') !== icon) iconLink.setAttribute('href', icon);
+}
+
+function noteIncoming(conversations) {
+  const prev = alerts.seen;
+  alerts.seen = new Map(conversations.map((c) => [c.wa_id, c.last_message_at]));
+  if (!prev) return;
+  const fresh = conversations.filter((c) => c.last_message_direction === 'in'
+    && c.last_message_at && c.last_message_at !== prev.get(c.wa_id));
+  if (!fresh.length) return;
+
+  const front = inboxInFront();
+  const others = [];
+  for (const c of fresh) {
+    if (c.wa_id === state.activeWaId && front) {
+      c.unread_count = 0;
+      api('/api/mark-read', { method: 'POST', body: JSON.stringify({ wa_id: c.wa_id }) }).catch(() => {});
+    } else {
+      if (c.wa_id === state.activeWaId) alerts.missedActive = true;
+      others.push(c);
+    }
+  }
+  if (!others.length) return;
+  chime();
+  if (!front) others.forEach(notify);
+}
+
+function readActiveIfMissed() {
+  if (!alerts.missedActive || !state.activeWaId || !inboxInFront()) return;
+  alerts.missedActive = false;
+  const conv = state.conversations.find((c) => c.wa_id === state.activeWaId);
+  if (conv) { conv.unread_count = 0; renderConversations(); }
+  api('/api/mark-read', { method: 'POST', body: JSON.stringify({ wa_id: state.activeWaId }) }).catch(() => {});
+}
+
+function notify(c) {
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  try {
+    const n = new Notification(displayName(c), {
+      body: c.last_message_text || 'New message',
+      tag: `wa-${c.wa_id}`,
+      icon: DOT_ICON,
+    });
+    n.onclick = () => {
+      window.focus();
+      n.close();
+      if (els.app.hidden) return;
+      openConversation(c.wa_id);
+      alerts.missedActive = false;
+    };
+  } catch (_) {}
+}
+
+function chime() {
+  const ctx = alerts.audio;
+  if (!ctx) return;
+  try {
+    if (ctx.state === 'suspended') ctx.resume();
+    const t = ctx.currentTime;
+    [[880, 0], [1320, 0.13]].forEach(([freq, delay]) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, t + delay);
+      gain.gain.exponentialRampToValueAtTime(0.2, t + delay + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + delay + 0.35);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(t + delay);
+      osc.stop(t + delay + 0.4);
+    });
+  } catch (_) {}
+}
+
+// Browsers only allow sound and the notification prompt after the user has
+// interacted with the page, so both are set up on the first click or key.
+function unlockAlerts() {
+  document.removeEventListener('pointerdown', unlockAlerts, true);
+  document.removeEventListener('keydown', unlockAlerts, true);
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (Ctx && !alerts.audio) alerts.audio = new Ctx();
+  } catch (_) {}
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission().catch(() => {});
+  }
+}
+document.addEventListener('pointerdown', unlockAlerts, true);
+document.addEventListener('keydown', unlockAlerts, true);
 
 function handleAuthLost() {
   stopListPolling();
