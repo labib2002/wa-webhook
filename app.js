@@ -2,6 +2,7 @@
 const app = require('./api/index');
 const boot = require('./lib/boot');
 const db = require('./lib/db');
+const live = require('./lib/live');
 
 const PORT = process.env.PORT || 3000;
 // Must stay under PM2's kill_timeout (60s) or the drain is SIGKILLed anyway.
@@ -31,6 +32,7 @@ const DRAIN_MS = 55000;
         process.exit(1);
       }, DRAIN_MS);
       timer.unref();
+      live.closeAll();
       server.close(async () => {
         await db.close().catch(() => {});
         console.log('drained cleanly');

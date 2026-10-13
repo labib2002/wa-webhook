@@ -178,8 +178,11 @@ function threadMessages(t) {
   return out;
 }
 
+// Updates are pushed over /api/events; these polls are only the fallback
+// while that stream is down, plus a slow safety net while it is up.
 const LIST_POLL_MS = 4000;
 const HIDDEN_LIST_POLL_MS = 10000;
+const SAFETY_POLL_MS = 60000;
 // Thread poll is cheap now (it fetches only rows changed since the high-water
 // mark — usually nothing), so we can poll faster for snappy reactions/ticks.
 const THREAD_POLL_MS = 1500;
@@ -333,6 +336,7 @@ async function boot() {
 }
 
 function showLogin() {
+  stopLive();
   alerts.seen = null;
   updateTabBadge();
   els.app.hidden = true;
@@ -343,6 +347,7 @@ function showLogin() {
 function showApp() {
   els.login.hidden = true;
   els.app.hidden = false;
+  startLive();
   startListPolling();
   refreshConversations(true);
   loadTemplates();
@@ -1567,18 +1572,57 @@ els.backBtn.addEventListener('click', () => {
 
 /* ----------------------------- polling ----------------------------- */
 
-// The list keeps polling in a background tab (slower) so new messages can
-// still alert. A worker drives it because browsers throttle page timers in
-// hidden tabs to once a minute.
+// Server push: every write on the server sends a "change" and the tab fetches
+// only what changed. EventSource reconnects by itself; each (re)connect sends
+// "ready", which catches up on anything missed while the stream was down.
+function startLive() {
+  stopLive();
+  if (!window.EventSource) return;
+  const es = new EventSource('/api/events');
+  state.events = es;
+  es.addEventListener('ready', () => { state.live = true; liveRefresh(); });
+  es.addEventListener('change', liveRefresh);
+  es.onerror = () => {
+    state.live = false;
+    if (es.readyState === EventSource.CLOSED && state.events === es) {
+      state.events = null;
+      setTimeout(() => { if (!state.events && !els.app.hidden) startLive(); }, 15000);
+    }
+  };
+}
+function stopLive() {
+  if (state.events) state.events.close();
+  state.events = null;
+  state.live = false;
+}
+
+let liveBusy = false;
+let liveAgain = false;
+async function liveRefresh() {
+  if (liveBusy) { liveAgain = true; return; }
+  liveBusy = true;
+  try {
+    await Promise.all([refreshConversations(), state.activeWaId ? loadThread(false) : null]);
+  } finally {
+    liveBusy = false;
+    if (liveAgain) { liveAgain = false; liveRefresh(); }
+  }
+}
+
+// Fallback polling, and a once-a-minute safety net while the stream is up. It
+// keeps running in a background tab so new messages can still alert; a worker
+// drives it because browsers throttle page timers in hidden tabs.
 function startListPolling() {
   stopListPolling();
   state.listPolling = true;
   state.lastListPoll = Date.now();
   const tick = () => {
     if (!state.listPolling) return;
-    if (document.hidden && Date.now() - state.lastListPoll < HIDDEN_LIST_POLL_MS) return;
+    const gap = state.live ? SAFETY_POLL_MS : document.hidden ? HIDDEN_LIST_POLL_MS : LIST_POLL_MS;
+    if (Date.now() - state.lastListPoll < gap - 500) return;
     state.lastListPoll = Date.now();
-    refreshConversations();
+    if (state.live) liveRefresh();
+    else refreshConversations();
   };
   try {
     const src = `setInterval(() => postMessage(0), ${LIST_POLL_MS})`;
@@ -1597,7 +1641,7 @@ function stopListPolling() {
 function startThreadPolling() {
   stopThreadPolling();
   state.threadTimer = setInterval(() => {
-    if (document.hidden || !state.activeWaId) return;
+    if (document.hidden || !state.activeWaId || state.live) return;
     loadThread(false);
   }, THREAD_POLL_MS);
 }
