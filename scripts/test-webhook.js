@@ -292,6 +292,14 @@ function sign(body) {
     assert.strictEqual(body, "⚠️ Message that can't be shown");
   });
 
+  await test('what WhatsApp says about a message it cannot hand over is kept with the row', async () => {
+    const said = describeMessage({ type: 'unsupported', unsupported: { type: 'album' }, errors: [{ code: 131051, title: 'Message type unknown' }] }).media_meta.said;
+    assert.deepStrictEqual(said, { unsupported: { type: 'album' }, errors: [{ code: 131051, title: 'Message type unknown' }] });
+    assert.deepStrictEqual(describeMessage({ type: 'unsupported' }).media_meta.said, { unsupported: null, errors: null });
+    const huge = describeMessage({ type: 'unsupported', errors: [{ title: 'x'.repeat(2000) }] });
+    assert.ok(!huge.media_meta || !huge.media_meta.said, 'an oversized payload is not stored');
+  });
+
   await test('plain audio (no voice flag) labels as Audio', async () => {
     const { body, media_meta } = describeMessage({
       type: 'audio', audio: { id: 'AUD2', mime_type: 'audio/mpeg' },
@@ -1773,6 +1781,40 @@ function sign(body) {
       for (const r of rows) { t.byId.set(r.id, r); t.order.push(r.id); }
       assert.deepStrictEqual(ui.threadMessages(t).map((m) => m.id), [4176, 4177, 4179, 4180],
         'the one that came with the photos is gone; the one on its own stays, text beside it does not hide it');
+    });
+
+    await test('album: photos that take a minute to arrive still hide their marker, later or unrelated ones do not', async () => {
+      const inRow = (id, type, at) => ({ id, wa_id: WA, direction: 'in', type, body: 'x', wa_timestamp: at });
+      const shown = (rows) => {
+        ui.state.threads = {};
+        const t = ui.thread(WA);
+        for (const r of rows) { t.byId.set(r.id, r); t.order.push(r.id); }
+        return ui.threadMessages(t).map((m) => m.id);
+      };
+      // nine screenshots, the first 68 seconds after the marker (a real case)
+      assert.deepStrictEqual(shown([
+        inRow(1, 'text', '2026-11-22T11:02:19Z'),
+        { id: 2, wa_id: WA, direction: 'out', type: 'text', body: 'can you take a screen shot', wa_timestamp: '2026-11-22T13:45:47Z' },
+        inRow(3, 'unsupported', '2026-11-22T13:52:46Z'),
+        inRow(4, 'image', '2026-11-22T13:53:54Z'),
+        inRow(5, 'image', '2026-11-22T13:53:55Z'),
+      ]), [1, 2, 4, 5]);
+      // their next message is text: it was something else, keep the notice
+      assert.deepStrictEqual(shown([
+        inRow(3, 'unsupported', '2026-11-22T13:52:46Z'),
+        inRow(4, 'text', '2026-11-22T13:53:00Z'),
+        inRow(5, 'image', '2026-11-22T13:53:55Z'),
+      ]), [3, 4, 5]);
+      // a photo five minutes later is not that album
+      assert.deepStrictEqual(shown([
+        inRow(3, 'unsupported', '2026-11-22T13:52:46Z'),
+        inRow(4, 'image', '2026-11-22T13:57:50Z'),
+      ]), [3, 4]);
+      // an agent's own photo in between does not count as the member's
+      assert.deepStrictEqual(shown([
+        inRow(3, 'unsupported', '2026-11-22T13:52:46Z'),
+        { id: 4, wa_id: WA, direction: 'out', type: 'image', body: 'x', wa_timestamp: '2026-11-22T13:53:00Z' },
+      ]), [3, 4]);
     });
 
     const liftConst = (name) => {
