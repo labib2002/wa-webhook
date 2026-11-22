@@ -113,3 +113,23 @@ CREATE TABLE IF NOT EXISTS wa.login_attempts (
 
 CREATE INDEX IF NOT EXISTS login_attempts_ip_attempted_idx
   ON wa.login_attempts (ip, attempted_at);
+
+-- ---------------------------------------------------------------------------
+--  Notifications on a phone or a closed tab (migration 010, lib/push.js).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS wa.push_subscriptions (
+  endpoint    text PRIMARY KEY,
+  p256dh      text NOT NULL,
+  auth        text NOT NULL,
+  user_agent  text,
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  seen_at     timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS wa.push_keys (
+  id          int PRIMARY KEY CHECK (id = 1),
+  public_key  text NOT NULL,
+  private_key text NOT NULL,
+  subject     text NOT NULL,
+  created_at  timestamptz NOT NULL DEFAULT now()
+);
