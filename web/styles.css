@@ -164,7 +164,9 @@ input, textarea, button { font-family: inherit; }
 
 /* ============================== APP SHELL ============================== */
 .app {
-  height: 100dvh;
+  /* --app-h and --app-top follow the on-screen keyboard on a phone (web/app.js) */
+  height: var(--app-h, 100dvh);
+  position: relative; top: var(--app-top, 0px);
   display: grid;
   grid-template-columns: var(--list-w) 1fr;
   background: var(--paper);
@@ -205,6 +207,8 @@ input, textarea, button { font-family: inherit; }
   transition: background 0.14s, color 0.14s;
 }
 .icon-btn:hover { background: var(--paper-2); color: var(--ink); }
+.notify-btn.is-on { color: var(--pine); }
+.notify-btn.is-on .bell-slash { display: none; }
 .icon-btn:focus-visible { outline: 2px solid var(--pine); outline-offset: 2px; }
 
 /* ---- search ---- */
@@ -911,6 +915,7 @@ body.viewer-open { overflow: hidden; }
   .pane-thread {
     /* overlay the thread on top of the list area */
     position: fixed; inset: 0; z-index: 10;
+    bottom: auto; top: var(--app-top, 0px); height: var(--app-h, 100dvh);
     transform: translateX(100%);
     transition: transform 0.26s cubic-bezier(0.22, 1, 0.36, 1);
   }
@@ -928,7 +933,29 @@ body.viewer-open { overflow: hidden; }
   .bubble.out .bubble-actions { right: calc(100% + 5px); }
   .bubble.in  .bubble-actions { left: calc(100% + 5px); }
   .bubble-action { width: 26px; height: 26px; }
+
+  /* iOS zooms the page into any field with text smaller than 16px. */
+  input, textarea, select { font-size: 16px !important; }
+  .search-ico { top: 11px; }
+
+  /* Clear the notch and the home bar when it runs as a Home Screen app. */
+  .list-header { padding-top: calc(16px + env(safe-area-inset-top)); }
+  .thread-header { padding-top: calc(11px + env(safe-area-inset-top)); }
+  .conv-list { padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
+
+  /* Scrolling a list to its end must not drag the whole page with it. */
+  .conv-list, .messages { overscroll-behavior: contain; }
+  .icon-btn { width: 40px; height: 40px; }
+  .toast {
+    border-radius: 16px; width: max-content; text-align: center; line-height: 1.4;
+    bottom: calc(22px + env(safe-area-inset-bottom));
+  }
 }
+
+/* Touch: no double-tap zoom delay, no grey flash, no text inflation. */
+html { -webkit-text-size-adjust: 100%; }
+body { overscroll-behavior: none; }
+button, a, .conv-row { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
 
 /* Reduced motion: drop the flourishes. */
 @media (prefers-reduced-motion: reduce) {

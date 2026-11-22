@@ -9,6 +9,7 @@
     "shots": "node scripts/screenshots.js",
     "paste-check": "node scripts/paste-check.js",
     "alert-check": "node scripts/alert-check.js",
+    "phone-check": "node scripts/phone-check.js",
     "test": "node scripts/test-webhook.js",
     "adapter-check": "node scripts/adapter-check.js",
     "live-check": "node scripts/live-check.js",
@@ -26,7 +27,8 @@
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "ffmpeg-static": "^5.3.0",
-    "pg": "^8.13.1"
+    "pg": "^8.13.1",
+    "web-push": "^3.6.7"
   },
   "devDependencies": {
     "playwright": "^1.61.0"

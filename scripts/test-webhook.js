@@ -543,6 +543,196 @@ function sign(body) {
     assert.strictEqual(fdb._tables.conversations.length, before);
   });
 
+  console.log('\n\x1b[1mNOTIFICATIONS ON A PHONE OR CLOSED TAB (fake DB)\x1b[0m');
+  const push = require('../lib/push');
+  const pushed = [];
+  push.__setSender(async (sub, payload, opts) => {
+    if (sub.endpoint.endsWith('/gone')) throw Object.assign(new Error('gone'), { statusCode: 410 });
+    pushed.push({ endpoint: sub.endpoint, payload: JSON.parse(payload), opts });
+  });
+  const subKeys = { p256dh: 'B'.repeat(87), auth: 'a'.repeat(22) };
+  const APPLE = 'https://web.push.apple.com/QABCdevice1';
+
+  await test('push routes are gated: no cookie → 401', async () => {
+    assert.strictEqual((await req(srv2, 'GET', '/api/push/key')).status, 401);
+    assert.strictEqual((await req(srv2, 'POST', '/api/push/subscribe', { body: { endpoint: APPLE, keys: subKeys } })).status, 401);
+  });
+
+  await test('the key route makes one key pair and keeps handing out the same one', async () => {
+    const a = JSON.parse((await authed('GET', '/api/push/key')).text);
+    const b = JSON.parse((await authed('GET', '/api/push/key')).text);
+    assert.strictEqual(a.on, true);
+    assert.ok(a.key.length > 80);
+    assert.strictEqual(a.key, b.key);
+    assert.strictEqual(fdb._tables.push_keys.length, 1);
+    assert.match(fdb._tables.push_keys[0].subject, /^https:\/\//);
+  });
+
+  await test('subscribe stores a real push endpoint and refuses anything else', async () => {
+    for (const endpoint of ['https://evil.example.com/x', 'http://web.push.apple.com/x', 'https://push.apple.com.evil.io/x', 'not a url']) {
+      const r = await authed('POST', '/api/push/subscribe', { endpoint, keys: subKeys });
+      assert.strictEqual(r.status, 400, endpoint);
+    }
+    assert.strictEqual((await authed('POST', '/api/push/subscribe', { endpoint: APPLE, keys: { p256dh: 'x', auth: 'y' } })).status, 400);
+    assert.strictEqual((await authed('POST', '/api/push/subscribe', { endpoint: APPLE, keys: subKeys })).status, 200);
+    assert.strictEqual((await authed('POST', '/api/push/subscribe', { endpoint: APPLE, keys: subKeys })).status, 200);
+    assert.strictEqual(fdb._tables.push_subscriptions.length, 1);
+  });
+
+  await test('a new member message is pushed with the saved name, the text and the unread total', async () => {
+    await authed('PATCH', '/api/conversations/201001234567', { name: 'Sara (NIS)' });
+    pushed.length = 0;
+    const n = await push.deliver('201001234567', 'Is my plan ready?');
+    assert.strictEqual(n, 1);
+    assert.strictEqual(pushed[0].endpoint, APPLE);
+    assert.strictEqual(pushed[0].payload.title, 'Sara (NIS)');
+    assert.strictEqual(pushed[0].payload.body, 'Is my plan ready?');
+    assert.strictEqual(pushed[0].payload.wa_id, '201001234567');
+    assert.ok(Number.isInteger(pushed[0].payload.unread));
+    assert.ok(pushed[0].opts.vapidDetails.privateKey);
+    await authed('PATCH', '/api/conversations/201001234567', { name: '' });
+  });
+
+  await test('an album from one member becomes one push, a second member gets their own', async () => {
+    push.__reset(); // drop pushes still queued by the earlier ingest tests
+    pushed.length = 0;
+    const album = (id, type) => {
+      const p = inboundImage(id);
+      p.entry[0].changes[0].value.messages[0].type = type;
+      if (type === 'unsupported') delete p.entry[0].changes[0].value.messages[0].image;
+      return p;
+    };
+    await ingestWebhook(album('wamid.ALB0', 'unsupported'), fdb);
+    await ingestWebhook(album('wamid.ALB1', 'image'), fdb);
+    await ingestWebhook(album('wamid.ALB1', 'image'), fdb); // Meta retry: no second push
+    const other = inboundText('hello from someone else', 'wamid.OTHER1');
+    other.entry[0].changes[0].value.messages[0].from = '201119998877';
+    other.entry[0].changes[0].value.contacts[0].wa_id = '201119998877';
+    await ingestWebhook(other, fdb);
+    await new Promise((r) => setTimeout(r, push.COALESCE_MS + 300));
+    assert.strictEqual(pushed.length, 2);
+    const mine = pushed.find((p) => p.payload.wa_id === '201001234567');
+    assert.match(mine.payload.body, /Image/);
+    assert.ok(pushed.some((p) => p.payload.wa_id === '201119998877' && p.payload.body === 'hello from someone else'));
+  });
+
+  await test('a device the push service says is gone is forgotten, one not seen for 7 days is skipped', async () => {
+    await authed('POST', '/api/push/subscribe', { endpoint: 'https://fcm.googleapis.com/fcm/send/gone', keys: subKeys });
+    await authed('POST', '/api/push/subscribe', { endpoint: 'https://fcm.googleapis.com/fcm/send/stale', keys: subKeys });
+    fdb._tables.push_subscriptions.find((s) => s.endpoint.endsWith('/stale')).seen_at = new Date(Date.now() - 8 * 86400000).toISOString();
+    pushed.length = 0;
+    const n = await push.deliver('201001234567', 'ping');
+    assert.strictEqual(n, 1);
+    assert.deepStrictEqual(pushed.map((p) => p.endpoint), [APPLE]);
+    assert.ok(!fdb._tables.push_subscriptions.some((s) => s.endpoint.endsWith('/gone')));
+  });
+
+  await test('unsubscribe removes the device', async () => {
+    assert.strictEqual((await authed('POST', '/api/push/unsubscribe', { endpoint: APPLE })).status, 200);
+    assert.ok(!fdb._tables.push_subscriptions.some((s) => s.endpoint === APPLE));
+    pushed.length = 0;
+    await push.deliver('201001234567', 'ping');
+    assert.strictEqual(pushed.length, 0);
+  });
+
+  {
+    const vm = require('vm');
+    const swSrc = require('fs').readFileSync(require('path').join(__dirname, '..', 'web', 'sw.js'), 'utf8');
+    const CHROME = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36';
+    const IPHONE_APP = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148';
+    const loadWorker = (userAgent, wins) => {
+      const out = { handlers: {}, shown: [], badge: [], opened: [] };
+      const self = {
+        navigator: { userAgent, setAppBadge: async (n) => out.badge.push(n), clearAppBadge: async () => out.badge.push(0) },
+        addEventListener: (type, fn) => { out.handlers[type] = fn; },
+        skipWaiting() {},
+        clients: { matchAll: async () => wins, claim: async () => {}, openWindow: async (u) => { out.opened.push(u); } },
+        registration: { showNotification: async (title, opts) => { out.shown.push({ title, ...opts }); } },
+      };
+      vm.runInNewContext(swSrc, { self, URL });
+      out.fire = async (type, event) => {
+        const waits = [];
+        out.handlers[type]({ ...event, waitUntil: (pr) => waits.push(pr) });
+        await Promise.all(waits);
+      };
+      return out;
+    };
+    const payload = { title: 'Sara (NIS)', body: 'Is my plan ready?', wa_id: '201001234567', unread: 3 };
+    const pushEvent = { data: { json: () => payload } };
+    const front = { focused: true, visibilityState: 'visible', url: 'https://inbox.example/app' };
+    const behind = { focused: false, visibilityState: 'hidden', url: 'https://inbox.example/app' };
+
+    await test('worker: with the inbox behind another window a push shows the name, the text, one per chat', async () => {
+      const w = loadWorker(CHROME, [behind]);
+      await w.fire('push', pushEvent);
+      assert.strictEqual(w.shown.length, 1);
+      assert.strictEqual(w.shown[0].title, 'Sara (NIS)');
+      assert.strictEqual(w.shown[0].body, 'Is my plan ready?');
+      assert.strictEqual(w.shown[0].tag, 'wa-201001234567');
+      assert.deepStrictEqual(w.badge, [3]);
+    });
+
+    await test('worker: on a desktop browser the inbox in front is not notified twice', async () => {
+      const w = loadWorker(CHROME, [front]);
+      await w.fire('push', pushEvent);
+      assert.strictEqual(w.shown.length, 0);
+    });
+
+    await test('worker: an iPhone always shows it, or iOS drops the subscription', async () => {
+      const w = loadWorker(IPHONE_APP, [front]);
+      await w.fire('push', pushEvent);
+      assert.strictEqual(w.shown.length, 1);
+    });
+
+    await test('worker: a push it cannot read still shows a notification', async () => {
+      const w = loadWorker(IPHONE_APP, []);
+      await w.fire('push', { data: { json: () => { throw new Error('bad'); } } });
+      assert.strictEqual(w.shown.length, 1);
+      assert.strictEqual(w.shown[0].title, 'New message');
+    });
+
+    await test('worker: tapping it opens the chat in the open inbox, or opens the inbox on that chat', async () => {
+      const posted = [];
+      const win = { ...behind, focus: async () => {}, postMessage: (m) => posted.push(m) };
+      const note = { close() {}, data: { wa_id: '201001234567' } };
+      const open = loadWorker(CHROME, [win]);
+      await open.fire('notificationclick', { notification: note });
+      assert.strictEqual(JSON.stringify(posted), JSON.stringify([{ type: 'open-chat', wa_id: '201001234567' }]));
+      assert.strictEqual(open.opened.length, 0);
+      const closed = loadWorker(CHROME, []);
+      await closed.fire('notificationclick', { notification: note });
+      assert.strictEqual(closed.opened.join(), '/app#chat=201001234567');
+    });
+  }
+
+  await test('before migration 010 the key route says off and a new message is still stored', async () => {
+    const realFrom = fdb.from;
+    const missing = { code: '42P01', message: 'relation "wa.push_keys" does not exist' };
+    const gone = () => {
+      const f = {
+        eq: () => f, gte: () => f, gt: () => f, select: () => f, delete: () => f,
+        upsert: () => f,
+        maybeSingle: () => Promise.resolve({ data: null, error: missing }),
+        then: (res) => res({ data: null, error: missing }),
+      };
+      return f;
+    };
+    fdb.from = (table) => (table.startsWith('push_') ? gone() : realFrom(table));
+    push.__reset();
+    try {
+      const k = JSON.parse((await authed('GET', '/api/push/key')).text);
+      assert.strictEqual(k.on, false);
+      assert.strictEqual((await authed('POST', '/api/push/subscribe', { endpoint: APPLE, keys: subKeys })).status, 503);
+      const before = fdb._tables.messages.length;
+      await ingestWebhook(inboundText('still works', 'wamid.NOPUSH1'), fdb);
+      assert.strictEqual(fdb._tables.messages.length, before + 1);
+      assert.strictEqual(await push.deliver('201001234567', 'x'), 0);
+    } finally {
+      fdb.from = realFrom;
+      push.__reset();
+    }
+  });
+
   await test('before migration 008 the list still loads, chats still open, renaming says so', async () => {
     const realFrom = fdb.from;
     const missing = { code: '42703', message: 'column "display_name" does not exist' };
