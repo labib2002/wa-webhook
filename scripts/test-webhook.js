@@ -287,6 +287,11 @@ function sign(body) {
     assert.strictEqual(media_meta.voice, true);
   });
 
+  await test('a message WhatsApp cannot hand over is labelled as one that cannot be shown', async () => {
+    const { body } = describeMessage({ type: 'unsupported', errors: [{ code: 131051 }] });
+    assert.strictEqual(body, "⚠️ Message that can't be shown");
+  });
+
   await test('plain audio (no voice flag) labels as Audio', async () => {
     const { body, media_meta } = describeMessage({
       type: 'audio', audio: { id: 'AUD2', mime_type: 'audio/mpeg' },
@@ -1500,6 +1505,7 @@ function sign(body) {
       function scrollMessagesToBottom() {}
       ${lift('mergeMessages')}
       ${lift('threadMessages')}
+      ${lift('isAlbumWrapper')}
       ${lift('addOptimistic')}
       ${lift('settleOptimistic')}
       return { state, thread, mergeMessages, threadMessages, addOptimistic, settleOptimistic };
@@ -1561,6 +1567,22 @@ function sign(body) {
       t.byId.set(591, srvRow(591, 'yo'));
       t.order.push(591, 591, 591);
       assert.strictEqual(ui.threadMessages(t).length, 1);
+    });
+
+    await test('album: the extra "unsupported" message WhatsApp sends with several photos is left out', async () => {
+      ui.state.threads = {};
+      const t = ui.thread(WA);
+      const inRow = (id, type, at) => ({ id, wa_id: WA, direction: 'in', type, body: 'x', wa_timestamp: at });
+      const rows = [
+        inRow(4175, 'unsupported', '2026-11-22T11:28:53.000000Z'),
+        inRow(4176, 'image', '2026-11-22T11:28:53.000000Z'),
+        inRow(4177, 'image', '2026-11-22T11:28:53.000000Z'),
+        inRow(4179, 'unsupported', '2026-11-22T13:52:10.000000Z'),
+        inRow(4180, 'text', '2026-11-22T13:52:11.000000Z'),
+      ];
+      for (const r of rows) { t.byId.set(r.id, r); t.order.push(r.id); }
+      assert.deepStrictEqual(ui.threadMessages(t).map((m) => m.id), [4176, 4177, 4179, 4180],
+        'the one that came with the photos is gone; the one on its own stays, text beside it does not hide it');
     });
 
     const liftConst = (name) => {
@@ -1645,6 +1667,7 @@ function sign(body) {
       function formatPhone(w) { return '+' + w; }
       function escapeHtml(s) { return String(s); }
       ${lift('stripCaption')}
+      const UNSUPPORTED_LABEL = "can't be shown";
       ${lift('labelForType')}
       ${lift('replyToOf')}
       ${lift('quotedMessage')}
