@@ -175,7 +175,17 @@ function threadMessages(t) {
     const m = t.byId.get(id);
     if (m) out.push(m);
   }
-  return out;
+  return out.filter((m) => !isAlbumWrapper(m, out));
+}
+
+// When a member sends several photos or videos at once, WhatsApp also delivers
+// one "unsupported" message that stands for the album. The photos arrive as
+// their own messages, so that one is left out of the thread.
+function isAlbumWrapper(m, msgs) {
+  if (m.type !== 'unsupported' || m.direction !== 'in') return false;
+  const at = Date.parse(m.wa_timestamp || m.created_at);
+  return msgs.some((o) => o !== m && o.direction === 'in' && (o.type === 'image' || o.type === 'video')
+    && Math.abs(Date.parse(o.wa_timestamp || o.created_at) - at) <= 2000);
 }
 
 // Updates are pushed over /api/events; these polls are only the fallback
@@ -725,7 +735,7 @@ function senderName(m) {
 function snippetOf(m) {
   if (!m.type || m.type === 'text') return WaTpl.messageText(m, state.templates);
   const meta = m.media_meta || {};
-  const label = stripCaption(m.body) || labelForType(m.type);
+  const label = m.type === 'unsupported' ? UNSUPPORTED_LABEL : stripCaption(m.body) || labelForType(m.type);
   return meta.caption ? `${label} · ${meta.caption}` : label;
 }
 
@@ -811,7 +821,8 @@ function renderBubble(m, continued) {
     } else {
       // pending / failed / unsupported / non-downloadable → labeled placeholder
       const isVoice = m.type === 'voice' || meta.voice === true;
-      const label = escapeHtml(stripCaption(m.body) || (isVoice ? '🎤 Voice message' : labelForType(m.type)));
+      const label = escapeHtml(m.type === 'unsupported' ? UNSUPPORTED_LABEL
+        : stripCaption(m.body) || (isVoice ? '🎤 Voice message' : labelForType(m.type)));
       const note =
         m.media_status === 'pending' && isDownloadable ? ' <span class="media-pending">· loading…</span>'
         : m.media_status === 'failed' ? ' <span class="media-pending">· unavailable</span>'
@@ -948,6 +959,9 @@ function templateHtml(t) {
   if (t.buttons.length) html += `<span class="tpl-buttons">${t.buttons.map((b) => `<span class="tpl-button">${escapeHtml(b)}</span>`).join('')}</span>`;
   return html;
 }
+
+// WhatsApp could not hand this message over (a poll, a view-once photo and the like).
+const UNSUPPORTED_LABEL = "⚠️ This message can't be shown here. Ask the member to send it again.";
 
 function labelForType(type) {
   const map = {
