@@ -15,6 +15,10 @@ process.env.VERIFY_TOKEN = 'vibecode123';
 process.env.SESSION_SECRET = 'demo_session_secret_0123456789';
 process.env.DASHBOARD_PASSCODE = 'demo';
 process.env.NODE_ENV = 'test';
+// Blank, not unset: dotenv must not load the real token from a local .env,
+// or opening a chat here calls Meta's mark-as-read for real.
+process.env.WHATSAPP_TOKEN = '';
+process.env.PHONE_NUMBER_ID = '';
 
 const db = require('../lib/db');
 const fake = makeFakeDb();

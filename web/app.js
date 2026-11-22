@@ -184,9 +184,16 @@ function threadMessages(t) {
 // their own messages, so that one is left out of the thread.
 function isAlbumWrapper(m, msgs) {
   if (m.type !== 'unsupported' || m.direction !== 'in') return false;
-  const at = Date.parse(m.wa_timestamp || m.created_at);
-  return msgs.some((o) => o !== m && o.direction === 'in' && (o.type === 'image' || o.type === 'video')
-    && Math.abs(Date.parse(o.wa_timestamp || o.created_at) - at) <= 2000);
+  const timeOf = (o) => Date.parse(o.wa_timestamp || o.created_at);
+  const isMedia = (o) => o.type === 'image' || o.type === 'video';
+  const at = timeOf(m);
+  const theirs = msgs.filter((o) => o !== m && o.direction === 'in');
+  if (theirs.some((o) => isMedia(o) && Math.abs(timeOf(o) - at) <= 2000)) return true;
+  // A big album can take a minute or more to upload. The marker is stamped
+  // when the member pressed send, so the photos are their next messages.
+  let next = null;
+  for (const o of theirs) if (timeOf(o) > at && (!next || timeOf(o) < timeOf(next))) next = o;
+  return Boolean(next && isMedia(next) && timeOf(next) - at <= 180000);
 }
 
 // Updates are pushed over /api/events; these polls are only the fallback
@@ -608,6 +615,7 @@ async function openConversation(waId) {
   // then only show the spinner if we have nothing yet.
   els.messages.querySelectorAll('.bubble, .day-sep').forEach((n) => n.remove());
   renderMessages(true);
+  scrollMessagesToBottom(true);
   els.threadLoading.hidden = t.loaded || t.order.length > 0;
 
   renderConversations(); // reflect active highlight
@@ -645,9 +653,10 @@ async function loadThread(initial = false) {
   t.loaded = true;
   const changed = mergeMessages(t, data.messages || []);
   if (changed || initial) {
-    const atBottom = isNearBottom();
+    const atBottom = pin.stick || isNearBottom();
     renderMessages();
-    if (atBottom || initial) scrollMessagesToBottom();
+    if (initial) scrollMessagesToBottom(true);
+    else if (atBottom) scrollMessagesToBottom();
   }
 }
 
@@ -977,7 +986,22 @@ function labelForType(type) {
   return map[type] || '💬 Message';
 }
 
-function scrollMessagesToBottom() {
+// `stick` is true while the agent is reading the newest messages. Photos,
+// videos and voice notes get their height only once they load, which pushed
+// the newest message out of view after the jump; while stick is on, each one
+// that finishes loading re-pins the chat to its end.
+const pin = { stick: true };
+
+function scrollMessagesToBottom(instant = false) {
+  pin.stick = true;
+  if (instant) {
+    // The smooth glide from the top of a long chat was cut short by the next
+    // render and left the chat part-way down.
+    els.messages.style.scrollBehavior = 'auto';
+    els.messages.scrollTop = els.messages.scrollHeight;
+    els.messages.style.scrollBehavior = '';
+    return;
+  }
   els.messages.scrollTop = els.messages.scrollHeight;
 }
 
@@ -1576,6 +1600,15 @@ function isNearBottom() {
   return el.scrollHeight - el.scrollTop - el.clientHeight < 120;
 }
 
+// Scrolling up to read lets go of the end of the chat; coming back takes it again.
+els.messages.addEventListener('scroll', () => { pin.stick = isNearBottom(); }, { passive: true });
+for (const type of ['load', 'loadedmetadata', 'error']) {
+  // These events do not bubble, so they are caught on the way down.
+  els.messages.addEventListener(type, (e) => {
+    if (pin.stick && e.target !== els.messages) scrollMessagesToBottom(true);
+  }, true);
+}
+
 /* --------------------------- back (mobile) --------------------------- */
 
 const phoneLayout = window.matchMedia('(max-width: 720px)');
@@ -1781,9 +1814,18 @@ function readActiveIfMissed() {
 function notify(c) {
   if (pushCtl.on) return; // this device gets it from the server instead
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  const body = c.last_message_text || 'New message';
+  if (pushCtl.reg) {
+    // Chrome on Android refuses a notification made by the page itself; the
+    // worker's works there and on desktop, and web/sw.js opens the chat on tap.
+    pushCtl.reg.showNotification(displayName(c), {
+      body, tag: `wa-${c.wa_id}`, icon: '/static/icon-192.png', data: { wa_id: c.wa_id },
+    }).catch(() => {});
+    return;
+  }
   try {
     const n = new Notification(displayName(c), {
-      body: c.last_message_text || 'New message',
+      body,
       tag: `wa-${c.wa_id}`,
       icon: DOT_ICON,
     });
@@ -1826,9 +1868,9 @@ function unlockAlerts() {
     const Ctx = window.AudioContext || window.webkitAudioContext;
     if (Ctx && !alerts.audio) alerts.audio = new Ctx();
   } catch (_) {}
-  // A Home Screen app asks from the bell, where the answer also subscribes it.
-  if ('Notification' in window && Notification.permission === 'default' && !IS_HOME_SCREEN_APP) {
-    Notification.requestPermission().catch(() => {});
+  // A Home Screen app on an iPhone may only ask from a tap on the bell itself.
+  if ('Notification' in window && Notification.permission === 'default' && !(IS_IOS && IS_HOME_SCREEN_APP)) {
+    Notification.requestPermission().then((perm) => { if (perm === 'granted') autoSubscribe(); }).catch(() => {});
   }
 }
 document.addEventListener('pointerdown', unlockAlerts, true);
@@ -1845,6 +1887,11 @@ const IS_IOS = /iPhone|iPad|iPod/.test(navigator.userAgent)
 const IS_HOME_SCREEN_APP = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 const PUSH_OK = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
 const BELL_HINT_KEY = 'wa_bell_hint';
+const BELL_OFF_KEY = 'wa_bell_off'; // set when the agent turned the bell off on this device
+const lsGet = (key) => { try { return localStorage.getItem(key); } catch (_) { return null; } };
+const lsSet = (key, value) => {
+  try { if (value == null) localStorage.removeItem(key); else localStorage.setItem(key, value); } catch (_) {}
+};
 
 function setBell(on) {
   pushCtl.on = on;
@@ -1889,14 +1936,43 @@ async function initPush() {
       if (sameKey(sub, data.key)) setBell((await saveSub(sub)).ok);
       else await sub.unsubscribe();
     }
-    if (!pushCtl.on && IS_HOME_SCREEN_APP) {
-      let hinted = true;
-      try { hinted = Boolean(localStorage.getItem(BELL_HINT_KEY)); localStorage.setItem(BELL_HINT_KEY, '1'); } catch (_) {}
-      if (!hinted) toast('Tap the bell to get notifications on this phone.', false, 6000);
+    await autoSubscribe();
+    if (!pushCtl.on && IS_HOME_SCREEN_APP && !lsGet(BELL_HINT_KEY)) {
+      lsSet(BELL_HINT_KEY, '1');
+      toast('Tap the bell to get notifications on this phone.', false, 6000);
     }
   } catch (_) {
     els.notifyBtn.hidden = true;
   }
+}
+
+// One sign-up at a time: a tap on the bell while the automatic one is still
+// running would otherwise make a second subscription and kill the first.
+let subscribing = null;
+function subscribeDevice() {
+  if (!subscribing) {
+    subscribing = (async () => {
+      const reg = await navigator.serviceWorker.ready;
+      const sub = (await reg.pushManager.getSubscription())
+        || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(pushCtl.key) });
+      const saved = await saveSub(sub);
+      if (!saved.ok) {
+        await sub.unsubscribe().catch(() => {});
+        throw new Error('not saved');
+      }
+      setBell(true);
+    })().finally(() => { subscribing = null; });
+  }
+  return subscribing;
+}
+
+// Once notifications are allowed, the device is signed up without a tap on
+// the bell, unless the agent turned the bell off here. So a phone or a closed
+// tab gets them the same way an open desktop tab always did.
+async function autoSubscribe() {
+  if (!pushCtl.reg || !pushCtl.key || pushCtl.on || lsGet(BELL_OFF_KEY)) return;
+  if (Notification.permission !== 'granted') return;
+  try { await subscribeDevice(); } catch (_) {}
 }
 
 async function pushOff() {
@@ -1918,6 +1994,7 @@ els.notifyBtn.addEventListener('click', async () => {
   }
   if (pushCtl.on) {
     await pushOff();
+    lsSet(BELL_OFF_KEY, '1');
     toast('Notifications are off on this device.');
     return;
   }
@@ -1927,17 +2004,11 @@ els.notifyBtn.addEventListener('click', async () => {
       toast('Notifications are blocked for the inbox. Allow them in the settings, then tap the bell again.', true, 7000);
       return;
     }
-    const reg = await navigator.serviceWorker.ready;
-    const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(pushCtl.key) });
-    const saved = await saveSub(sub);
-    if (!saved.ok) {
-      await sub.unsubscribe().catch(() => {});
-      throw new Error('not saved');
-    }
-    setBell(true);
+    lsSet(BELL_OFF_KEY, null);
+    await subscribeDevice();
     toast('Notifications are on for this device.');
-  } catch (_) {
-    toast("Couldn't turn notifications on. Try again.", true);
+  } catch (e) {
+    toast(`Couldn't turn notifications on (${(e && e.message) || 'unknown'}). Try again.`, true, 7000);
   }
 });
 

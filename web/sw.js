@@ -38,6 +38,22 @@ self.addEventListener('push', (event) => {
   event.waitUntil(showFor(d));
 });
 
+// The browser can swap a device's subscription by itself. Hand the new one to
+// the server, or that device goes quiet until the inbox is next opened.
+self.addEventListener('pushsubscriptionchange', (event) => {
+  event.waitUntil((async () => {
+    const old = event.oldSubscription;
+    const sub = event.newSubscription || (old && old.options && await self.registration.pushManager.subscribe({
+      userVisibleOnly: true, applicationServerKey: old.options.applicationServerKey,
+    }));
+    if (!sub) return;
+    await fetch('/api/push/subscribe', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(sub.toJSON()),
+    });
+  })().catch(() => {}));
+});
+
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   const waId = event.notification.data && event.notification.data.wa_id;
