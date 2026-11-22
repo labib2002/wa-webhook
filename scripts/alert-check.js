@@ -62,6 +62,12 @@ function check(name, ok, detail = '') {
       static requestPermission() { return Promise.resolve('granted'); }
     };
     window.Notification.permission = 'granted';
+    if (window.ServiceWorkerRegistration) {
+      ServiceWorkerRegistration.prototype.showNotification = function (title, opts) {
+        window.__notes.push({ title, ...opts });
+        return Promise.resolve();
+      };
+    }
     const Real = window.AudioContext;
     window.AudioContext = class extends Real {
       createOscillator() { window.__tones++; return super.createOscillator(); }
