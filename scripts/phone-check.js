@@ -25,7 +25,8 @@ fake._tables.conversations.push(
   { wa_id: B, profile_name: 'Marcus Chen', last_message_text: 'yo', last_message_at: iso(18), last_message_direction: 'in', unread_count: 0, created_at: iso(999) },
 );
 for (let i = 1; i <= 30; i++) {
-  fake._tables.messages.push({ id: i, wa_message_id: `m${i}`, wa_id: A, direction: i % 2 ? 'in' : 'out', type: 'text', body: `message ${i}`, status: 'received', wa_timestamp: iso(60 - i), created_at: iso(60 - i), media_meta: null, error: null, forwarded: false });
+  const photo = i % 4 === 0;
+  fake._tables.messages.push({ id: i, wa_message_id: `m${i}`, wa_id: A, direction: i % 2 ? 'in' : 'out', type: photo ? 'image' : 'text', body: photo ? '📷 Image' : `message ${i}`, status: 'received', wa_timestamp: iso(60 - i), created_at: iso(60 - i), media_meta: photo ? { id: `p${i}`, mime_type: 'image/png' } : null, media_status: photo ? 'stored' : null, media_path: photo ? `x/image/p${i}.png` : null, error: null, forwarded: false });
 }
 
 const results = [];
@@ -45,6 +46,11 @@ async function login(page, url) {
 
 (async () => {
   const app = require('../api/index');
+  // The media route redirects here. Each photo takes a moment and is tall, as
+  // real ones are, so the chat grows after it first opens.
+  app.get('/_sample.svg', (_req, res) => setTimeout(() => {
+    res.set('Content-Type', 'image/svg+xml').send('<svg xmlns="http://www.w3.org/2000/svg" width="360" height="300"><rect width="360" height="300" fill="#8fd0ba"/></svg>');
+  }, 350));
   const srv = http.createServer(app).listen(0);
   const base = `http://127.0.0.1:${srv.address().port}`;
   const browser = await chromium.launch();
@@ -57,6 +63,8 @@ async function login(page, url) {
   });
   await phone.addInitScript(() => {
     // Headless Chromium has no push service, so the subscription is faked.
+    // and it reports notifications as not yet asked whatever the context grants
+    try { Object.defineProperty(Notification, 'permission', { get: () => 'granted' }); } catch (_) {}
     if (!('PushManager' in window)) return;
     let sub = null;
     const make = () => ({
@@ -96,13 +104,26 @@ async function login(page, url) {
   const scope = await page.evaluate(async () => (await navigator.serviceWorker.ready).scope);
   check('the worker registers for the whole inbox', scope === `${base}/`, scope);
 
-  await page.click('#notify-btn');
   await page.waitForFunction(() => document.querySelector('#notify-btn').classList.contains('is-on'), null, { timeout: 5000 }).catch(() => {});
-  check('tapping the bell stores this device on the server',
+  check('notifications already allowed: the device is signed up without a tap on the bell',
     fake._tables.push_subscriptions.length === 1 && await page.evaluate(() => document.querySelector('#notify-btn').getAttribute('aria-pressed') === 'true'));
   // chat as its own screen + back gesture
   await page.click('.conv-row');
   await page.waitForSelector('.bubble');
+  await page.waitForTimeout(2500); // let every photo arrive
+  const land = await page.evaluate(() => {
+    const m = document.querySelector('#messages');
+    const last = [...m.querySelectorAll('.bubble')].pop().getBoundingClientRect();
+    const box = m.getBoundingClientRect();
+    return { gap: Math.round(m.scrollHeight - m.scrollTop - m.clientHeight), lastVisible: last.bottom <= box.bottom + 1 && last.top >= box.top, photos: m.querySelectorAll('img').length };
+  });
+  check('a chat with photos opens at its newest message and stays there as they load',
+    land.gap <= 2 && land.lastVisible && land.photos > 0, JSON.stringify(land));
+  await page.evaluate(() => { const m = document.querySelector('#messages'); m.style.scrollBehavior = 'auto'; m.scrollTop = 0; m.style.scrollBehavior = ''; });
+  await page.waitForTimeout(1200);
+  check('scrolling up to read is not pulled back down',
+    await page.evaluate(() => document.querySelector('#messages').scrollTop < 200));
+  await page.evaluate(() => { const m = document.querySelector('#messages'); m.scrollTop = m.scrollHeight; });
   const opened = await page.evaluate(() => ({ view: document.querySelector('#app').dataset.view, chat: Boolean(history.state && history.state.chat) }));
   check('opening a chat on a phone adds a step the back gesture can undo', opened.view === 'thread' && opened.chat);
   await page.goBack();
@@ -159,7 +180,15 @@ async function login(page, url) {
   await page.click('#back-btn').catch(() => {});
   await page.evaluate(() => document.querySelector('#notify-btn').click());
   await page.waitForFunction(() => !document.querySelector('#notify-btn').classList.contains('is-on'), null, { timeout: 5000 }).catch(() => {});
-  check('tapping the bell again removes this device', fake._tables.push_subscriptions.length === 0);
+  check('tapping the bell removes this device', fake._tables.push_subscriptions.length === 0);
+  await page.reload({ waitUntil: 'load' });
+  await page.waitForSelector('.conv-row');
+  await page.waitForTimeout(1500);
+  check('and it stays off after a reload, because the agent chose off',
+    fake._tables.push_subscriptions.length === 0 && await page.evaluate(() => !document.querySelector('#notify-btn').classList.contains('is-on')));
+  await page.evaluate(() => document.querySelector('#notify-btn').click());
+  await page.waitForFunction(() => document.querySelector('#notify-btn').classList.contains('is-on'), null, { timeout: 5000 }).catch(() => {});
+  check('tapping it again signs the device up', fake._tables.push_subscriptions.length === 1);
   await phone.close();
 
   // ----------------------------------------------------------- desktop
@@ -169,6 +198,9 @@ async function login(page, url) {
   await login(d, `${base}/app`);
   await d.click('.conv-row');
   await d.waitForSelector('.bubble');
+  await d.waitForTimeout(2500);
+  const dland = await d.evaluate(() => { const m = document.querySelector('#messages'); return Math.round(m.scrollHeight - m.scrollTop - m.clientHeight); });
+  check('on desktop too the chat opens at its newest message', dland <= 2, `gap ${dland}`);
   const dk = await d.evaluate(() => ({
     appH: document.documentElement.style.getPropertyValue('--app-h'),
     chat: Boolean(history.state && history.state.chat),
