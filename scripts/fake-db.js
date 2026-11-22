@@ -5,7 +5,7 @@
 // Tables: { conversations: [...rows], messages: [...rows] }
 
 function makeFakeDb() {
-  const tables = { conversations: [], messages: [] };
+  const tables = { conversations: [], messages: [], push_subscriptions: [], push_keys: [] };
   let messageSeq = 0;
 
   function from(tableName) {
@@ -101,6 +101,15 @@ function makeFakeDb() {
               }),
               then: (res) => res({ data: null, error: null }),
             };
+          },
+        };
+      },
+
+      delete() {
+        return {
+          eq(col, val) {
+            for (let i = rows.length - 1; i >= 0; i--) if (rows[i][col] === val) rows.splice(i, 1);
+            return { then: (res) => res({ data: null, error: null }) };
           },
         };
       },

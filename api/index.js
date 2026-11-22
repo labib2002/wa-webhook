@@ -113,7 +113,16 @@ app.use('/api', smallJson, apiRouter);
 // Mounting assets under /static keeps every path unambiguous and routed through
 // Express, so the GET / handshake and /api/* stay on the function.
 const webDir = path.join(__dirname, '..', 'web');
-app.use('/static', express.static(webDir));
+app.use('/static', express.static(webDir, {
+  setHeaders(res, file) {
+    // The worker lives under /static but has to cover /app to open a chat
+    // from a notification, and must never be served stale.
+    if (path.basename(file) === 'sw.js') {
+      res.setHeader('Service-Worker-Allowed', '/');
+      res.setHeader('Cache-Control', 'no-cache');
+    }
+  },
+}));
 
 // The dashboard HTML lives at /app (the gate is the API; the page shows a login
 // screen until /api/login succeeds).

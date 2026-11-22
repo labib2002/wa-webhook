@@ -64,6 +64,7 @@ const els = {
   recDot: $('#rec-dot'),
   recHint: $('#rec-hint'),
   newChatBtn: $('#new-chat-btn'),
+  notifyBtn: $('#notify-btn'),
   newChatModal: $('#new-chat-modal'),
   newChatForm: $('#new-chat-form'),
   newChatNumber: $('#new-chat-number'),
@@ -320,7 +321,7 @@ function tickGlyph(status) {
 }
 
 let toastTimer = null;
-function toast(msg, danger = false) {
+function toast(msg, danger = false, ms = 3200) {
   els.toast.textContent = msg;
   els.toast.classList.toggle('danger', danger);
   els.toast.hidden = false;
@@ -329,7 +330,7 @@ function toast(msg, danger = false) {
   toastTimer = setTimeout(() => {
     els.toast.classList.remove('show');
     setTimeout(() => { els.toast.hidden = true; }, 220);
-  }, 3200);
+  }, ms);
 }
 
 /* ----------------------------- auth flow ----------------------------- */
@@ -359,8 +360,9 @@ function showApp() {
   els.app.hidden = false;
   startLive();
   startListPolling();
-  refreshConversations(true);
+  refreshConversations(true).then(openChatFromLink);
   loadTemplates();
+  initPush();
 }
 
 async function loadTemplates() {
@@ -393,6 +395,7 @@ els.loginForm.addEventListener('submit', async (e) => {
 });
 
 els.logoutBtn.addEventListener('click', async () => {
+  await pushOff(); // a logged-out device must not keep showing member messages
   await api('/api/logout', { method: 'POST' });
   stopListPolling();
   stopThreadPolling();
@@ -590,6 +593,8 @@ async function openConversation(waId) {
   els.placeholder.hidden = true;
   els.thread.hidden = false;
   els.app.dataset.view = 'thread';
+  // On a phone the chat is its own screen, so the back gesture returns to the list.
+  if (phoneLayout.matches && !(history.state && history.state.chat)) history.pushState({ chat: true }, '');
   els.messagesEmpty.hidden = true;
   clearBanner();
   // Restore this chat's draft (don't blow away unsent text). Clears any staged
@@ -1573,7 +1578,9 @@ function isNearBottom() {
 
 /* --------------------------- back (mobile) --------------------------- */
 
-els.backBtn.addEventListener('click', () => {
+const phoneLayout = window.matchMedia('(max-width: 720px)');
+
+function closeThread() {
   saveDraft(); // keep the unsent text for when this chat is reopened
   clearReply();
   els.app.dataset.view = 'list';
@@ -1582,7 +1589,44 @@ els.backBtn.addEventListener('click', () => {
   els.thread.hidden = true;
   els.placeholder.hidden = false;
   renderConversations();
+}
+
+els.backBtn.addEventListener('click', () => {
+  if (history.state && history.state.chat) history.back();
+  else closeThread();
 });
+
+window.addEventListener('popstate', () => {
+  if (!phoneLayout.matches) return;
+  const viewer = document.getElementById('viewer');
+  if (viewer && !viewer.hidden) {
+    closeViewer();
+    history.pushState({ chat: true }, '');
+    return;
+  }
+  if (els.app.dataset.view === 'thread') closeThread();
+});
+
+// The on-screen keyboard covers the bottom of the page without resizing it.
+// Size the app to what is really visible, so the composer sits on top of the
+// keyboard and the chat header stays on screen.
+if (window.visualViewport && window.matchMedia('(pointer: coarse)').matches) {
+  const vv = window.visualViewport;
+  const root = document.documentElement;
+  let lastH = 0;
+  const fit = () => {
+    if (vv.scale > 1.01) return; // pinch zoom, not the keyboard
+    const h = Math.round(vv.height);
+    root.style.setProperty('--app-h', `${h}px`);
+    if (window.scrollY || window.scrollX) window.scrollTo(0, 0);
+    root.style.setProperty('--app-top', `${Math.round(vv.offsetTop)}px`);
+    if (lastH && h < lastH && !els.thread.hidden) els.messages.scrollTop += lastH - h;
+    lastH = h;
+  };
+  vv.addEventListener('resize', fit);
+  vv.addEventListener('scroll', fit);
+  fit();
+}
 
 /* ----------------------------- polling ----------------------------- */
 
@@ -1697,6 +1741,9 @@ function updateTabBadge() {
   if (document.title !== title) document.title = title;
   const icon = total ? DOT_ICON : BASE_ICON;
   if (iconLink.getAttribute('href') !== icon) iconLink.setAttribute('href', icon);
+  if (navigator.setAppBadge) {
+    try { (total ? navigator.setAppBadge(total) : navigator.clearAppBadge()).catch(() => {}); } catch (_) {}
+  }
 }
 
 function noteIncoming(conversations) {
@@ -1732,6 +1779,7 @@ function readActiveIfMissed() {
 }
 
 function notify(c) {
+  if (pushCtl.on) return; // this device gets it from the server instead
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
   try {
     const n = new Notification(displayName(c), {
@@ -1778,12 +1826,141 @@ function unlockAlerts() {
     const Ctx = window.AudioContext || window.webkitAudioContext;
     if (Ctx && !alerts.audio) alerts.audio = new Ctx();
   } catch (_) {}
-  if ('Notification' in window && Notification.permission === 'default') {
+  // A Home Screen app asks from the bell, where the answer also subscribes it.
+  if ('Notification' in window && Notification.permission === 'default' && !IS_HOME_SCREEN_APP) {
     Notification.requestPermission().catch(() => {});
   }
 }
 document.addEventListener('pointerdown', unlockAlerts, true);
 document.addEventListener('keydown', unlockAlerts, true);
+
+/* ---------------- notifications on a phone or a closed tab ---------------- */
+
+// The alerts above need the inbox open in a tab. A phone freezes the page as
+// soon as it leaves the screen, so there the server sends the notification
+// (lib/push.js) and web/sw.js shows it. Each device opts in from the bell.
+const pushCtl = { reg: null, key: null, on: false };
+const IS_IOS = /iPhone|iPad|iPod/.test(navigator.userAgent)
+  || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const IS_HOME_SCREEN_APP = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+const PUSH_OK = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+const BELL_HINT_KEY = 'wa_bell_hint';
+
+function setBell(on) {
+  pushCtl.on = on;
+  const label = on ? 'Notifications are on for this device' : 'Turn on notifications for this device';
+  els.notifyBtn.classList.toggle('is-on', on);
+  els.notifyBtn.title = label;
+  els.notifyBtn.setAttribute('aria-label', label);
+  els.notifyBtn.setAttribute('aria-pressed', String(on));
+}
+
+function keyBytes(b64url) {
+  const b64 = b64url.replace(/-/g, '+').replace(/_/g, '/');
+  return Uint8Array.from(atob(b64), (ch) => ch.charCodeAt(0));
+}
+
+function sameKey(sub, key) {
+  const k = sub.options && sub.options.applicationServerKey;
+  if (!k) return true;
+  const have = btoa(String.fromCharCode(...new Uint8Array(k))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  return have === key.replace(/=+$/, '');
+}
+
+function saveSub(sub) {
+  return api('/api/push/subscribe', { method: 'POST', body: JSON.stringify(sub.toJSON()) });
+}
+
+async function initPush() {
+  setBell(false);
+  if (!PUSH_OK) {
+    // An iPhone only allows notifications from the Home Screen copy.
+    els.notifyBtn.hidden = !(IS_IOS && !IS_HOME_SCREEN_APP);
+    return;
+  }
+  try {
+    const { ok, data } = await api('/api/push/key');
+    if (!ok || !data.on) { els.notifyBtn.hidden = true; return; }
+    pushCtl.key = data.key;
+    pushCtl.reg = await navigator.serviceWorker.register('/static/sw.js', { scope: '/' });
+    els.notifyBtn.hidden = false;
+    const sub = await pushCtl.reg.pushManager.getSubscription();
+    if (sub && Notification.permission === 'granted') {
+      if (sameKey(sub, data.key)) setBell((await saveSub(sub)).ok);
+      else await sub.unsubscribe();
+    }
+    if (!pushCtl.on && IS_HOME_SCREEN_APP) {
+      let hinted = true;
+      try { hinted = Boolean(localStorage.getItem(BELL_HINT_KEY)); localStorage.setItem(BELL_HINT_KEY, '1'); } catch (_) {}
+      if (!hinted) toast('Tap the bell to get notifications on this phone.', false, 6000);
+    }
+  } catch (_) {
+    els.notifyBtn.hidden = true;
+  }
+}
+
+async function pushOff() {
+  if (!pushCtl.reg) return;
+  try {
+    const sub = await pushCtl.reg.pushManager.getSubscription();
+    if (sub) {
+      await api('/api/push/unsubscribe', { method: 'POST', body: JSON.stringify({ endpoint: sub.endpoint }) });
+      await sub.unsubscribe();
+    }
+  } catch (_) {}
+  setBell(false);
+}
+
+els.notifyBtn.addEventListener('click', async () => {
+  if (!pushCtl.reg) {
+    toast('On iPhone: tap Share, then "Add to Home Screen". Open Inbox from that icon and tap the bell.', false, 9000);
+    return;
+  }
+  if (pushCtl.on) {
+    await pushOff();
+    toast('Notifications are off on this device.');
+    return;
+  }
+  try {
+    const perm = await Notification.requestPermission();
+    if (perm !== 'granted') {
+      toast('Notifications are blocked for the inbox. Allow them in the settings, then tap the bell again.', true, 7000);
+      return;
+    }
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(pushCtl.key) });
+    const saved = await saveSub(sub);
+    if (!saved.ok) {
+      await sub.unsubscribe().catch(() => {});
+      throw new Error('not saved');
+    }
+    setBell(true);
+    toast('Notifications are on for this device.');
+  } catch (_) {
+    toast("Couldn't turn notifications on. Try again.", true);
+  }
+});
+
+// A tapped notification opens its chat: by message when the inbox is already
+// open, by #chat= in the address when it had to be opened.
+async function openChatIfKnown(waId) {
+  if (!state.conversations.some((c) => c.wa_id === waId)) await refreshConversations();
+  if (state.conversations.some((c) => c.wa_id === waId)) openConversation(waId);
+}
+
+function openChatFromLink() {
+  const m = /^#chat=(\d{6,20})$/.exec(location.hash);
+  if (!m) return;
+  history.replaceState(history.state, '', location.pathname);
+  openChatIfKnown(m[1]);
+}
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.addEventListener('message', (e) => {
+    const d = e.data || {};
+    if (d.type === 'open-chat' && d.wa_id && !els.app.hidden) openChatIfKnown(String(d.wa_id));
+  });
+}
 
 function handleAuthLost() {
   stopListPolling();
