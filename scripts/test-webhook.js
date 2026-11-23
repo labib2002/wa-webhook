@@ -2979,6 +2979,36 @@ function sign(body) {
     });
   }
 
+  // ---- phone video with the audio track first ----
+  {
+    const transcode = require('../lib/transcode');
+    if (transcode.isAvailable()) {
+      await test('a video whose audio track comes first is rewritten with the picture first, nothing re-encoded', async () => {
+        const { execFileSync } = require('child_process');
+        const fs = require('fs');
+        const os = require('os');
+        const path = require('path');
+        const src = path.join(os.tmpdir(), `wa-test-vid-${process.pid}.mp4`);
+        execFileSync(transcode.ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-y',
+          '-f', 'lavfi', '-i', 'sine=frequency=440:duration=1', '-f', 'lavfi', '-i', 'color=c=blue:s=160x120:d=1',
+          '-map', '0:a', '-map', '1:v', '-c:a', 'aac', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', src]);
+        const before = fs.readFileSync(src);
+        fs.unlinkSync(src);
+        const out = await transcode.videoFirst(before, 'mp4');
+        assert.strictEqual(out.ok, true);
+        const tmp = path.join(os.tmpdir(), `wa-test-vid-out-${process.pid}.mp4`);
+        fs.writeFileSync(tmp, out.buffer);
+        let probe = '';
+        try { execFileSync(transcode.ffmpegPath, ['-hide_banner', '-i', tmp], { stdio: 'pipe' }); } catch (e) { probe = String(e.stderr || ''); }
+        fs.unlinkSync(tmp);
+        const streams = probe.split(/\r?\n/).filter((l) => /Stream #0:/.test(l));
+        assert.ok(/Video: h264/.test(streams[0] || ''), streams.join(' | '));
+        assert.ok(/Audio: aac/.test(streams[1] || ''), streams.join(' | '));
+        assert.ok(out.buffer.indexOf('moov') < out.buffer.indexOf('mdat'), 'the index is at the front');
+      });
+    }
+  }
+
   // ---- voice note file ----
   {
     const transcode = require('../lib/transcode');
