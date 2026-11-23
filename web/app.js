@@ -29,7 +29,7 @@ const els = {
   threadAvatar: $('#thread-avatar'),
   threadName: $('#thread-name-text'),
   threadNameBtn: $('#thread-name'),
-  threadSub: $('#thread-sub'),
+  threadPeer: $('#thread-peer'),
   threadMember: $('#thread-member'),
   renameModal: $('#rename-modal'),
   renameForm: $('#rename-form'),
@@ -113,6 +113,10 @@ const els = {
   sheet: $('#sheet'),
   sheetReactions: $('#sheet-reactions'),
   sheetActions: $('#sheet-actions'),
+  peerSheet: $('#peer-sheet'),
+  peerAvatar: $('#peer-avatar'),
+  peerName: $('#peer-name'),
+  peerRows: $('#peer-rows'),
 };
 
 const state = {
@@ -793,23 +797,80 @@ function renderThreadHeader() {
   const waId = state.activeWaId;
   if (!waId) return;
   const conv = convOf(waId) || { wa_id: waId };
-  const name = knownName(conv);
-  const waName = (conv.profile_name || '').trim();
-  els.threadName.textContent = name || formatPhone(waId);
-  els.threadSub.textContent = name
-    ? [formatPhone(waId), waName && waName !== name ? `WhatsApp: ${waName}` : ''].filter(Boolean).join(' · ')
-    : 'WhatsApp';
+  const f = peerFacts(conv);
+  els.threadName.textContent = f.title;
   const avatar = avatarParts(conv);
   if (els.threadAvatar.dataset.sig !== avatar.inner) {
     els.threadAvatar.dataset.sig = avatar.inner;
     els.threadAvatar.innerHTML = avatar.inner;
     els.threadAvatar.classList.toggle('has-photo', avatar.photo);
   }
-  const label = conv.member ? memberLabel(conv.member) : 'Not on a roster';
-  els.threadMember.hidden = !state.membersAvailable || !label;
-  els.threadMember.textContent = label;
-  els.threadMember.classList.toggle('none', !conv.member);
+  els.threadMember.hidden = !f.label;
+  els.threadMember.textContent = f.label;
+  // One line in the header; the rest shows on hover and in the sheet a tap opens.
+  els.threadPeer.title = f.rows.map((r) => `${r.label}: ${r.value}`).join('\n');
   els.doneBtn.hidden = !(state.teamwork && waiting(conv));
+  fitThreadHeader();
+  if (!els.peerSheet.hidden) fillPeerSheet(conv);
+}
+
+// The name is never cut for the sake of the company: it takes a second line
+// first, then the chip narrows, then the chip goes (its text is in the sheet),
+// then the name is set smaller on three lines.
+function fitThreadHeader() {
+  const sig = `${els.threadName.textContent}|${els.threadMember.textContent}|${els.doneBtn.hidden}|${window.innerWidth}`;
+  if (!els.threadPeer.offsetWidth || els.threadPeer.dataset.fit === sig) return;
+  els.threadPeer.dataset.fit = sig;
+  const cut = () => els.threadName.scrollHeight > els.threadName.clientHeight + 1;
+  els.threadPeer.classList.remove('tight', 'tighter', 'small');
+  for (const step of ['tight', 'tighter', 'small']) {
+    if (!cut()) return;
+    els.threadPeer.classList.add(step);
+  }
+}
+window.addEventListener('resize', () => { if (state.activeWaId) fitThreadHeader(); });
+
+// What is known about the person in a chat. The header shows the best name
+// and the company; the phone, the WhatsApp name and the roster name wait in
+// the sheet.
+function peerFacts(conv) {
+  const name = knownName(conv);
+  const phone = formatPhone(conv.wa_id);
+  const waName = (conv.profile_name || '').trim();
+  const rosterName = ((conv.member && conv.member.name) || '').trim();
+  const label = conv.member ? memberLabel(conv.member) : '';
+  const rows = [{ key: 'phone', label: 'Phone', value: phone }];
+  if (waName && waName !== name) rows.push({ key: 'wa', label: 'On WhatsApp', value: waName });
+  if (rosterName && rosterName !== name) rows.push({ key: 'roster', label: 'On the roster', value: rosterName });
+  if (label) rows.push({ key: 'company', label: 'Company', value: label });
+  else if (state.membersAvailable) rows.push({ key: 'company', label: 'Company', value: 'Not on a roster' });
+  return { title: name || phone, label, rows };
+}
+
+function fillPeerSheet(conv) {
+  const f = peerFacts(conv);
+  const avatar = avatarParts(conv);
+  els.peerAvatar.innerHTML = avatar.inner;
+  els.peerAvatar.classList.toggle('has-photo', avatar.photo);
+  els.peerName.textContent = f.title;
+  els.peerRows.innerHTML = f.rows.map((r) => r.key === 'phone'
+    ? `<button type="button" class="peer-row" data-peer="copy" title="Copy number"><span class="peer-label">${escapeHtml(r.label)}</span><bdi class="peer-value" dir="ltr">${escapeHtml(r.value)}</bdi></button>`
+    : `<div class="peer-row"><span class="peer-label">${escapeHtml(r.label)}</span><bdi class="peer-value">${escapeHtml(r.value)}</bdi></div>`).join('');
+}
+
+function openPeerSheet() {
+  const waId = state.activeWaId;
+  if (!waId || !els.peerSheet.hidden) return;
+  fillPeerSheet(convOf(waId) || { wa_id: waId });
+  // On a computer the card hangs under the name instead of covering the chat.
+  const at = els.threadPeer.getBoundingClientRect();
+  const bar = els.threadPeer.closest('.thread-header').getBoundingClientRect();
+  els.peerSheet.style.setProperty('--peer-x', `${Math.round(at.left)}px`);
+  els.peerSheet.style.setProperty('--peer-y', `${Math.round(bar.bottom + 4)}px`);
+  els.peerSheet.hidden = false;
+}
+function closePeerSheet() {
+  els.peerSheet.hidden = true;
 }
 
 async function openConversation(waId, jumpTo = null) {
@@ -829,6 +890,7 @@ async function openConversation(waId, jumpTo = null) {
   els.placeholder.hidden = true;
   els.thread.hidden = false;
   els.app.dataset.view = 'thread';
+  fitThreadHeader();
   // On a phone the chat is its own screen, so the back gesture returns to the list.
   if (phoneLayout.matches && !(history.state && history.state.chat)) history.pushState({ chat: true }, '');
   els.messagesEmpty.hidden = true;
@@ -2063,6 +2125,7 @@ const phoneLayout = window.matchMedia('(max-width: 720px)');
 function closeThread() {
   saveDraft(); // keep the unsent text for when this chat is reopened
   clearReply();
+  closePeerSheet();
   els.app.dataset.view = 'list';
   state.activeWaId = null;
   stopThreadPolling();
@@ -2084,6 +2147,13 @@ window.addEventListener('popstate', () => {
     history.pushState({ chat: true }, '');
     return;
   }
+  // The back gesture closes what is on top first, then the chat.
+  if (!els.peerSheet.hidden || !els.sheet.hidden) {
+    closePeerSheet();
+    closeSheet();
+    history.pushState({ chat: true }, '');
+    return;
+  }
   if (els.app.dataset.view === 'thread') closeThread();
 });
 
@@ -2094,9 +2164,18 @@ if (window.visualViewport && (navigator.maxTouchPoints > 0 || window.matchMedia(
   const vv = window.visualViewport;
   const root = document.documentElement;
   let lastH = 0;
+  let fullH = 0;
+  let fullW = 0;
   const fit = () => {
     if (vv.scale > 1.01) return; // pinch zoom, not the keyboard
     const h = Math.round(vv.height);
+    // The tallest the screen has been at this width is the screen without the
+    // keyboard. While the keyboard is up it covers the home bar, so the
+    // composer needs no room for it.
+    const w = Math.round(vv.width);
+    if (w !== fullW) { fullW = w; fullH = h; }
+    fullH = Math.max(fullH, h);
+    root.classList.toggle('kb-open', fullH - h > 120);
     root.style.setProperty('--app-h', `${h}px`);
     if (window.scrollY || window.scrollX) window.scrollTo(0, 0);
     root.style.setProperty('--app-top', `${Math.round(vv.offsetTop)}px`);
@@ -2598,7 +2677,14 @@ function closeRenameModal() {
   state.renameWaId = null;
 }
 
-els.threadNameBtn.addEventListener('click', openRenameModal);
+els.threadPeer.addEventListener('click', openPeerSheet);
+els.threadAvatar.addEventListener('click', openPeerSheet);
+els.peerSheet.addEventListener('click', (e) => {
+  const act = e.target.closest('[data-peer]');
+  if (act && act.dataset.peer === 'copy') { copyText(`+${String(state.activeWaId || '').replace(/\D/g, '')}`); return; }
+  if (act && act.dataset.peer === 'rename') { closePeerSheet(); openRenameModal(); return; }
+  if (e.target === els.peerSheet) closePeerSheet();
+});
 els.renameCancel.addEventListener('click', closeRenameModal);
 els.renameModal.addEventListener('click', (e) => {
   if (e.target === els.renameModal) closeRenameModal();
@@ -3409,6 +3495,7 @@ els.sheet.addEventListener('click', (e) => {
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   if (!els.sheet.hidden) closeSheet();
+  else if (!els.peerSheet.hidden) closePeerSheet();
   else if (!els.repliesModal.hidden) closeRepliesModal();
 });
 
