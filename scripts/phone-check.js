@@ -37,6 +37,20 @@ for (let i = 1; i <= 45; i++) {
   if (photo) photos++;
 }
 fake._tables.messages.push({ id: 46, wa_message_id: 'm46', wa_id: A, direction: 'in', type: 'text', body: 'تمام، هبعت screenshot من ال app دلوقتي', status: 'received', wa_timestamp: iso(1), created_at: iso(1), media_meta: null, media_status: null, media_path: null, error: null, forwarded: false });
+// Members with long names and companies, one with a picture from the app,
+// a chat whose 24-hour window has closed, and two saved replies.
+const members = require('../lib/members');
+const PICTURE = 'https://storage.bytepluslife.com/uploads/profiles/7';
+members.__setLookupForTesting(async (ids) => [
+  { wa_id: A, source: 'app', kind: 'member', name: 'Ada Lovelace Abdelrahman Mostafa', company: 'Nasaym International School (NIS)', active: true, image: PICTURE, image_bg: '#00FFFFFF' },
+  { wa_id: B, source: 'contact', kind: 'hr', name: 'Marcus Chen', company: 'Granite Financial Holding', active: true, image: null, image_bg: null },
+].filter((r) => ids.includes(r.wa_id)));
+fake._tables.messages.push({ id: 60, wa_message_id: 'b1', wa_id: B, direction: 'in', type: 'text', body: 'Is the refund done? See https://bytepluslife.com/help.', status: 'received', wa_timestamp: iso(60 * 30), created_at: iso(60 * 30), media_meta: null, media_status: null, media_path: null, error: null, forwarded: false });
+fake._tables.saved_replies.push(
+  { id: 1, title: 'How to sync', body: 'Open the app and pull down on Home to sync.' },
+  { id: 2, title: 'Points question', body: 'I am checking your points and will get back to you today.' },
+);
+Object.assign(fake._tables.conversations.find((c) => c.wa_id === A), { unread_count: 2 });
 const storage = fake.storage.from();
 fake.storage.from = () => ({ ...storage, createSignedUrl: async (p) => ({ data: { signedUrl: `/_photo/${p}?n=${Math.random()}` }, error: null }) });
 
@@ -53,6 +67,12 @@ async function login(page, url) {
     await page.click('#login-btn');
   }
   await page.waitForSelector('.conv-row', { state: 'visible', timeout: 5000 });
+  // First time on a device the inbox asks who is using it.
+  if (await page.waitForSelector('#agent-modal:not([hidden])', { timeout: 1500 }).catch(() => null)) {
+    await page.fill('#agent-input', 'Naglaa');
+    await page.click('#agent-form button[type="submit"]');
+    await page.waitForSelector('#agent-modal', { state: 'hidden' });
+  }
 }
 
 (async () => {
@@ -125,9 +145,36 @@ async function login(page, url) {
     PushManager.prototype.subscribe = async () => { sub = make(); return sub; };
     PushManager.prototype.getSubscription = async () => sub;
   });
+  const picture = { contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96"><rect width="96" height="96" fill="#c9b"/></svg>' };
+  await phone.route('https://storage.bytepluslife.com/**', (route) => route.fulfill(picture));
   const page = await phone.newPage();
   page.on('pageerror', (e) => pageErrors.push(e.message));
   await login(page, `${base}/app`);
+
+  // ---- the list on a phone
+  const fits = async (pg) => pg.evaluate(() => ({ page: document.documentElement.scrollWidth, screen: document.documentElement.clientWidth, inner: window.innerWidth }));
+  const w390 = await fits(page);
+  check('the page is exactly as wide as the screen (the chat waiting off to the side used to double it)',
+    w390.page === w390.screen && w390.inner === w390.screen, JSON.stringify(w390));
+  const row = await page.evaluate(() => {
+    const r = document.querySelector('.conv-row');
+    const cut = (el) => el && el.scrollWidth > el.clientWidth + 1;
+    return {
+      name: r.querySelector('.row-name-text').textContent, nameCut: cut(r.querySelector('.row-name-text')),
+      company: r.querySelector('.row-co').textContent, companyCut: cut(r.querySelector('.row-co')),
+      badge: r.querySelector('.row-badge').textContent, unread: r.classList.contains('has-unread'),
+      photo: Boolean(r.querySelector('.avatar img')),
+    };
+  });
+  check('a long name and a long company are shown whole in the list',
+    row.name === 'Ada Lovelace Abdelrahman Mostafa' && !row.nameCut && row.company === 'Nasaym International School (NIS)' && !row.companyCut, JSON.stringify(row));
+  check("the member's picture from the app stands in for the initials", row.photo);
+  const targets = await page.evaluate(() => ['#notify-btn', '#agent-btn', '#new-chat-btn', '#logout-btn', '.filter-chip']
+    .map((s) => { const b = document.querySelector(s).getBoundingClientRect(); return `${s} ${Math.round(b.width)}x${Math.round(b.height)}`; }));
+  check('the buttons are big enough for a thumb (40px high at least, 44 wide)',
+    targets.every((s) => { const [w, h] = s.split(' ')[1].split('x').map(Number); return h >= 40 && w >= 44; }), targets.join(', '));
+  check('the list says how many chats still need a reply',
+    (await page.textContent('.filter-chip[data-view="needs_reply"] .chip-count')) === '2', await page.textContent('.filter-chip[data-view="needs_reply"]'));
 
   const head = await page.evaluate(() => ({
     manifest: document.querySelector('link[rel="manifest"]').getAttribute('href'),
@@ -189,12 +236,87 @@ async function login(page, url) {
   check('scrolling up to read is not pulled back down',
     await page.evaluate(() => document.querySelector('#messages').scrollTop < 200));
   await page.evaluate(() => { const m = document.querySelector('#messages'); m.scrollTop = m.scrollHeight; });
+  // ---- the chat on a phone
+  // Back at the newest message and at rest: a finger landing mid-glide only stops the glide.
+  await page.evaluate(() => { const m = document.querySelector('#messages'); m.style.scrollBehavior = 'auto'; m.scrollTop = m.scrollHeight; m.style.scrollBehavior = ''; });
+  await page.waitForTimeout(900);
+  const header = await page.evaluate(() => {
+    const cut = (s) => { const el = document.querySelector(s); return el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1; };
+    return { name: document.querySelector('#thread-name').textContent, nameCut: cut('#thread-name-text'), member: document.querySelector('#thread-member').textContent, memberCut: cut('#thread-member') };
+  });
+  check('the chat header shows the whole name and company, and no longer says "Member"',
+    header.name === 'Ada Lovelace Abdelrahman Mostafa' && !header.nameCut && header.member === 'Nasaym International School (NIS)' && !header.memberCut, JSON.stringify(header));
+  check('on a phone the microphone and send share one place', await page.isVisible('#mic-btn') && !(await page.isVisible('#send-btn')));
+  check('the small buttons beside a bubble are gone on a touch screen', await page.evaluate(() => getComputedStyle(document.querySelector('.bubble-actions')).display === 'none'));
+
+  // touch gestures, sent the way a finger sends them
+  const cdp = await phone.newCDPSession(page);
+  const touch = (type, x, y) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: type === 'touchEnd' ? [] : [{ x, y }] });
+  const centre = async (selector) => page.evaluate((s) => {
+    const all = [...document.querySelectorAll(s)];
+    const b = all[all.length - 1].getBoundingClientRect();
+    return { x: Math.round(b.left + Math.min(b.width / 2, 60)), y: Math.round(b.top + b.height / 2) };
+  }, selector);
+
+  let at = await centre('.bubble.in');
+  await touch('touchStart', at.x, at.y);
+  await page.waitForTimeout(650);
+  await touch('touchEnd');
+  check('a long press on a message opens its actions', await page.isVisible('#sheet'));
+  const menu = await page.evaluate(() => ({
+    actions: [...document.querySelectorAll('.sheet-action')].map((b) => b.textContent),
+    reactions: document.querySelectorAll('.sheet-react').length,
+    height: Math.min(...[...document.querySelectorAll('.sheet-action, .sheet-react')].map((b) => b.getBoundingClientRect().height)),
+  }));
+  check('with reactions, Reply, Copy and Forward, each big enough to tap',
+    ['Reply', 'Copy', 'Forward'].every((a) => menu.actions.includes(a)) && menu.reactions === 6 && menu.height >= 44, JSON.stringify(menu));
+  const reacted = page.waitForRequest((r) => r.url().endsWith('/api/react'), { timeout: 3000 }).catch(() => null);
+  await page.click('.sheet-react');
+  const reactReq = await reacted;
+  check('tapping a reaction sends it and closes the menu',
+    Boolean(reactReq) && reactReq.postDataJSON().emoji === '👍' && !(await page.isVisible('#sheet')));
+
+  at = await centre('.bubble.in');
+  await touch('touchStart', at.x, at.y);
+  for (let dx = 12; dx <= 96; dx += 12) { await touch('touchMove', at.x + dx, at.y); await page.waitForTimeout(16); }
+  await touch('touchEnd');
+  await page.waitForTimeout(150);
+  check('swiping a message to the right starts a reply to it',
+    await page.isVisible('#reply-bar') && (await page.textContent('#reply-text')).length > 0 && !(await page.isVisible('#sheet')));
+  await page.click('#reply-cancel');
+
+  at = await centre('.bubble.in');
+  await touch('touchStart', at.x, at.y);
+  for (let dy = 12; dy <= 120; dy += 12) { await touch('touchMove', at.x + 3, at.y - dy); await page.waitForTimeout(16); }
+  await touch('touchEnd');
+  await page.waitForTimeout(600);
+  check('scrolling with a finger on a message does neither', !(await page.isVisible('#reply-bar')) && !(await page.isVisible('#sheet')));
+  await page.evaluate(() => { const m = document.querySelector('#messages'); m.scrollTop = m.scrollHeight; });
   const opened = await page.evaluate(() => ({ view: document.querySelector('#app').dataset.view, chat: Boolean(history.state && history.state.chat) }));
   check('opening a chat on a phone adds a step the back gesture can undo', opened.view === 'thread' && opened.chat);
   await page.goBack();
   await page.waitForFunction(() => document.querySelector('#app').dataset.view === 'list');
   check('the back gesture returns to the list and stays in the inbox',
     await page.evaluate(() => document.querySelector('#thread').hidden && location.pathname === '/app'));
+
+  const waitingRow = await page.evaluate(() => {
+    const r = document.querySelector('.conv-row');
+    return { waiting: r.classList.contains('is-waiting'), bold: r.classList.contains('has-unread'), badge: r.querySelector('.row-badge').textContent };
+  });
+  check('a chat that was opened but not answered still shows its count, calmer, for everyone',
+    waitingRow.waiting && !waitingRow.bold && waitingRow.badge === '2' && fake._tables.conversations.find((c) => c.wa_id === A).unread_count === 2, JSON.stringify(waitingRow));
+  {
+    const r = await page.evaluate(() => { const b = document.querySelector('.conv-row').getBoundingClientRect(); return { x: Math.round(b.right - 40), y: Math.round(b.top + b.height / 2) }; });
+    const done = page.waitForRequest((q) => /\/api\/conversations\/\d+\/read$/.test(q.url()), { timeout: 3000 }).catch(() => null);
+    await touch('touchStart', r.x, r.y);
+    for (let dx = 15; dx <= 135; dx += 15) { await touch('touchMove', r.x - dx, r.y); await page.waitForTimeout(16); }
+    await touch('touchEnd');
+    const doneReq = await done;
+    await page.waitForTimeout(400);
+    check('swiping a chat to the left marks it done, without opening it',
+      Boolean(doneReq) && doneReq.postDataJSON().read === true && await page.evaluate(() => document.querySelector('#thread').hidden)
+      && fake._tables.conversations.find((c) => c.wa_id === A).unread_count === 0);
+  }
   await page.click('.conv-row');
   await page.waitForSelector('.bubble');
   await page.click('#back-btn');
@@ -290,6 +412,48 @@ async function login(page, url) {
       return open;
     })());
 
+  // saved replies with "/"
+  await d.fill('#composer-input', '/poi');
+  await d.waitForSelector('#reply-picker:not([hidden])', { timeout: 3000 }).catch(() => {});
+  const offered = await d.evaluate(() => [...document.querySelectorAll('#reply-picker .reply-opt-title')].map((e) => e.textContent));
+  await d.press('#composer-input', 'Enter');
+  check('typing / offers the saved replies, narrowed by what follows, and Enter puts one in the box',
+    JSON.stringify(offered) === '["Points question"]' && await d.inputValue('#composer-input') === 'I am checking your points and will get back to you today.'
+    && !(await d.isVisible('#reply-picker')), JSON.stringify(offered));
+  await d.fill('#composer-input', '');
+
+  // the 24-hour window, a link, and search
+  await d.click('.conv-row >> nth=1');
+  await d.waitForFunction(() => document.querySelector('#thread-name').textContent.includes('Marcus'));
+  await d.waitForSelector('#window-bar:not([hidden])', { timeout: 3000 }).catch(() => {});
+  check('a chat whose 24 hours have passed says so before anything is sent, and offers the template',
+    /24 hours/.test(await d.textContent('#window-text')) && await d.isVisible('#window-action'), await d.textContent('#window-text'));
+  const link = await d.evaluate(() => { const a = document.querySelector('.bubble .msg-link'); return a && { href: a.getAttribute('href'), target: a.target, rel: a.rel }; });
+  check('a web address in a message is a link that opens in a new tab',
+    Boolean(link) && link.href === 'https://bytepluslife.com/help' && link.target === '_blank' && /noopener/.test(link.rel), JSON.stringify(link));
+  check('an HR contact keeps its label', (await d.textContent('#thread-member')) === 'HR · Granite Financial Holding', await d.textContent('#thread-member'));
+  await d.click('.conv-row >> nth=0');
+  await d.waitForFunction(() => document.querySelector('#thread-name').textContent.includes('Ada'));
+  check('a chat inside its 24 hours shows no warning', !(await d.isVisible('#window-bar')));
+
+  const searched = d.waitForRequest((r) => /\/api\/conversations\?.*q=granite/.test(r.url()), { timeout: 3000 }).catch(() => null);
+  await d.fill('#search', 'granite');
+  const searchReq = await searched;
+  await d.waitForFunction(() => document.querySelectorAll('.conv-row').length === 1, null, { timeout: 3000 }).catch(() => {});
+  check('search asks the server and finds a chat by its company',
+    Boolean(searchReq) && await d.evaluate(() => document.querySelectorAll('.conv-row').length === 1 && document.querySelector('.row-name-text').textContent === 'Marcus Chen'));
+  await d.fill('#search', '');
+  await d.waitForFunction(() => document.querySelectorAll('.conv-row').length === 2, null, { timeout: 3000 }).catch(() => {});
+
+  // who sent it
+  const named = d.waitForRequest((r) => r.url().endsWith('/api/send') && r.method() === 'POST', { timeout: 4000 }).catch(() => null);
+  await d.fill('#composer-input', 'hello from the team');
+  await d.click('#send-btn');
+  const namedReq = await named;
+  check("every message is sent with the agent's name, asked once on this device",
+    Boolean(namedReq) && decodeURIComponent(namedReq.headers()['x-agent-name'] || '') === 'Naglaa'
+    && await d.evaluate(() => [...document.querySelectorAll('.bubble.out .meta-agent')].some((e) => e.textContent === 'Naglaa')));
+
   // one dropped request must not lock the composer
   await d.route('**/api/send', (route) => route.abort());
   await d.fill('#composer-input', 'first try');
@@ -333,6 +497,31 @@ async function login(page, url) {
   check('desktop is as it was: two panes, full height, same text size, no extra back step',
     dk.appH === '' && !dk.chat && dk.search === 14 && dk.panes[0] === 372 && dk.panes[1] === 908 && dk.height === 832, JSON.stringify(dk));
   await desk.close();
+
+  // ------------------------------------------------- a 360px phone
+  const small = await browser.newContext({ viewport: { width: 360, height: 740 }, deviceScaleFactor: 2, hasTouch: true, isMobile: true });
+  await small.route('https://storage.bytepluslife.com/**', (route) => route.fulfill(picture));
+  const n = await small.newPage();
+  n.on('pageerror', (e) => pageErrors.push(e.message));
+  await login(n, `${base}/app`);
+  const w360 = await fits(n);
+  await n.click('.conv-row');
+  await n.waitForSelector('.bubble');
+  await n.waitForTimeout(600);
+  const narrow = await n.evaluate(() => {
+    const inside = (s) => { const el = document.querySelector(s); const b = el.getBoundingClientRect(); return b.left >= 0 && b.right <= window.innerWidth + 0.5 && b.width > 0; };
+    const cut = (s) => { const el = document.querySelector(s); return el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1; };
+    return {
+      inside: ['#back-btn', '#thread-name', '#thread-member', '#followup-btn', '#attach-btn', '#composer-input', '#mic-btn'].filter((s) => !inside(s)),
+      cut: ['#thread-name-text', '#thread-member'].filter(cut),
+      bubbles: [...document.querySelectorAll('.bubble')].filter((b) => b.getBoundingClientRect().right > window.innerWidth).length,
+      input: Math.round(document.querySelector('#composer-input').getBoundingClientRect().width),
+    };
+  });
+  check('at 360px wide the page still fits the screen', w360.page === w360.screen && w360.inner === w360.screen, JSON.stringify(w360));
+  check('and nothing in the chat is cut off or pushed off the edge',
+    narrow.inside.length === 0 && narrow.cut.length === 0 && narrow.bubbles === 0 && narrow.input >= 150, JSON.stringify(narrow));
+  await small.close();
 
   // ------------------------------------------------- Safari's engine
   let safari = null;

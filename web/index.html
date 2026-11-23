@@ -62,6 +62,7 @@
           <button id="notify-btn" class="icon-btn notify-btn" title="Turn on notifications for this device" aria-label="Turn on notifications for this device" aria-pressed="false" hidden>
             <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/><line class="bell-slash" x1="3" y1="3" x2="21" y2="21"/></svg>
           </button>
+          <button id="agent-btn" class="icon-btn agent-btn" title="Your name on the messages you send" aria-label="Change your name" hidden><span id="agent-initials" class="agent-initials"></span></button>
           <button id="new-chat-btn" class="icon-btn" title="New conversation" aria-label="New conversation">
             <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
           </button>
@@ -72,11 +73,12 @@
       </header>
       <div class="search-wrap">
         <svg class="search-ico" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-        <input id="search" type="search" dir="auto" placeholder="Search name or number" aria-label="Search conversations" />
+        <input id="search" type="search" dir="auto" placeholder="Search chats and messages" aria-label="Search conversations and messages" />
       </div>
       <div class="list-filters" role="tablist" aria-label="Filter conversations">
-        <button class="filter-chip active" data-filter="all" role="tab" aria-selected="true">All</button>
-        <button class="filter-chip" data-filter="unread" role="tab" aria-selected="false">Unread</button>
+        <button class="filter-chip active" data-view="chats" role="tab" aria-selected="true">Chats<span class="chip-count" hidden></span></button>
+        <button class="filter-chip" data-view="needs_reply" role="tab" aria-selected="false">Needs reply<span class="chip-count" hidden></span></button>
+        <button class="filter-chip" data-view="templates" role="tab" aria-selected="false" title="Chats that hold only templates we sent" hidden>Templates only<span class="chip-count" hidden></span></button>
       </div>
       <div id="conv-list" class="conv-list" role="list" aria-live="polite">
         <!-- conversation rows injected here -->
@@ -117,6 +119,9 @@
             <div id="thread-member" class="thread-member" hidden></div>
           </div>
           <div class="thread-header-actions">
+            <button id="done-btn" class="icon-btn done-btn" title="Mark as done" aria-label="Mark this chat as done" hidden>
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            </button>
             <button id="followup-btn" class="icon-btn" title="Follow up" aria-label="Send a follow-up template">
               <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><line x1="9" y1="10" x2="15" y2="10"/><line x1="12" y1="7" x2="12" y2="13"/></svg>
             </button>
@@ -134,7 +139,15 @@
         </div>
 
         <footer class="composer">
+          <div id="window-bar" class="window-bar" hidden>
+            <span id="window-text" class="window-text"></span>
+            <button id="window-action" type="button" class="banner-action">Send a follow-up template</button>
+          </div>
           <div id="composer-banner" class="composer-banner" hidden role="alert"></div>
+          <div id="reply-picker" class="reply-picker" role="listbox" aria-label="Saved replies" hidden>
+            <div id="reply-picker-list" class="reply-picker-list"></div>
+            <button id="reply-picker-manage" type="button" class="reply-picker-manage">Add or edit saved replies</button>
+          </div>
           <div id="reply-bar" class="reply-bar" hidden>
             <div class="reply-info"><span id="reply-name" class="reply-name"></span><span id="reply-text" class="reply-text"></span></div>
             <button id="reply-cancel" type="button" class="icon-btn" title="Cancel reply" aria-label="Cancel reply">
@@ -153,6 +166,9 @@
               accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.txt,.csv,.ppt,.pptx" />
             <button id="attach-btn" type="button" class="attach-btn" title="Attach a file" aria-label="Attach a file">
               <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+            </button>
+            <button id="replies-btn" type="button" class="attach-btn replies-btn" title="Saved replies (or type /)" aria-label="Saved replies" hidden>
+              <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 4 14 12 14 11 22 20 10 12 10 13 2"/></svg>
             </button>
             <textarea
               id="composer-input"
@@ -211,6 +227,55 @@
         <button id="new-chat-submit" type="submit" class="btn-primary btn-inline">Open chat</button>
       </div>
     </form>
+  </div>
+
+  <!-- who is using this device -->
+  <div id="agent-modal" class="modal-overlay" hidden>
+    <form id="agent-form" class="modal-card" autocomplete="off">
+      <h2 class="modal-title">Your name</h2>
+      <p class="modal-sub">Everyone logs in with the same passcode, so this is how the team sees who sent a message. It is kept on this device and shown beside the messages you send.</p>
+      <label class="field">
+        <span class="field-label">Name</span>
+        <input id="agent-input" type="text" dir="auto" maxlength="40" placeholder="Naglaa" required />
+      </label>
+      <div class="modal-actions">
+        <button id="agent-cancel" type="button" class="btn-ghost">Not now</button>
+        <button type="submit" class="btn-primary btn-inline">Save</button>
+      </div>
+    </form>
+  </div>
+
+  <!-- saved replies -->
+  <div id="replies-modal" class="modal-overlay" hidden>
+    <div class="modal-card replies-card" role="dialog" aria-modal="true" aria-labelledby="replies-title">
+      <h2 id="replies-title" class="modal-title">Saved replies</h2>
+      <p class="modal-sub">Shared by the whole team. In a chat, press the bolt or type / to use one.</p>
+      <div id="replies-list" class="replies-list"></div>
+      <form id="replies-form" class="replies-form" autocomplete="off">
+        <label class="field">
+          <span class="field-label">Name</span>
+          <input id="replies-title-input" type="text" dir="auto" maxlength="60" placeholder="How to sync" required />
+        </label>
+        <label class="field">
+          <span class="field-label">Reply</span>
+          <textarea id="replies-body-input" dir="auto" rows="4" maxlength="4096" placeholder="The text that goes into the message box" required></textarea>
+        </label>
+        <p id="replies-error" class="login-error" role="alert" hidden></p>
+        <div class="modal-actions">
+          <button id="replies-delete" type="button" class="btn-ghost btn-danger" hidden>Delete</button>
+          <button id="replies-close" type="button" class="btn-ghost">Close</button>
+          <button id="replies-save" type="submit" class="btn-primary btn-inline">Add</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- what can be done with one message: opened by a long press on a phone -->
+  <div id="sheet" class="sheet-overlay" hidden>
+    <div class="sheet-card" role="menu" aria-label="Message actions">
+      <div id="sheet-reactions" class="sheet-reactions" role="group" aria-label="React"></div>
+      <div id="sheet-actions" class="sheet-actions"></div>
+    </div>
   </div>
 
   <!-- contact name modal (reuses the modal styling) -->

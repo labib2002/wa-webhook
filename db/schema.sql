@@ -35,7 +35,8 @@ CREATE TABLE IF NOT EXISTS wa.conversations (
   last_message_direction  text,
   unread_count            integer NOT NULL DEFAULT 0,
   created_at              timestamptz NOT NULL DEFAULT now(),
-  display_name            text                    -- saved in the inbox, never written by the webhook (008)
+  display_name            text,                   -- saved in the inbox, never written by the webhook (008)
+  done_at                 timestamptz             -- marked done; needs a reply again once the member writes after it (011)
 );
 
 -- ---------------------------------------------------------------------------
@@ -65,7 +66,8 @@ CREATE TABLE IF NOT EXISTS wa.messages (
   deleted_at      timestamptz,
   updated_at      timestamptz NOT NULL DEFAULT now(),
   forwarded       boolean NOT NULL DEFAULT false,
-  client_key      text
+  client_key      text,
+  agent           text                    -- who sent it, as typed on their device (011)
 );
 
 CREATE INDEX IF NOT EXISTS messages_wa_id_created_idx ON wa.messages (wa_id, created_at);
@@ -123,7 +125,8 @@ CREATE TABLE IF NOT EXISTS wa.push_subscriptions (
   auth        text NOT NULL,
   user_agent  text,
   created_at  timestamptz NOT NULL DEFAULT now(),
-  seen_at     timestamptz NOT NULL DEFAULT now()
+  seen_at     timestamptz NOT NULL DEFAULT now(),
+  pass_mark   text                    -- a mark of the passcode in force at sign-up (011)
 );
 
 CREATE TABLE IF NOT EXISTS wa.push_keys (
@@ -132,4 +135,16 @@ CREATE TABLE IF NOT EXISTS wa.push_keys (
   private_key text NOT NULL,
   subject     text NOT NULL,
   created_at  timestamptz NOT NULL DEFAULT now()
+);
+
+-- ---------------------------------------------------------------------------
+--  Saved replies, shared by every agent (migration 011).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS wa.saved_replies (
+  id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  title       text NOT NULL,
+  body        text NOT NULL,
+  created_by  text,
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  updated_at  timestamptz NOT NULL DEFAULT now()
 );

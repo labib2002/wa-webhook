@@ -5,8 +5,9 @@
 // Tables: { conversations: [...rows], messages: [...rows] }
 
 function makeFakeDb() {
-  const tables = { conversations: [], messages: [], push_subscriptions: [], push_keys: [] };
+  const tables = { conversations: [], messages: [], push_subscriptions: [], push_keys: [], saved_replies: [] };
   let messageSeq = 0;
+  let replySeq = 0;
 
   function from(tableName) {
     const rows = tables[tableName];
@@ -73,6 +74,7 @@ function makeFakeDb() {
         for (const v of list) {
           const row = { ...v };
           if (tableName === 'messages' && row.id == null) row.id = ++messageSeq;
+          if (tableName === 'saved_replies' && row.id == null) row.id = ++replySeq;
           rows.push(row);
           inserted.push(row);
         }

@@ -883,7 +883,7 @@ function sign(body) {
     const j = JSON.parse((await authed('GET', '/api/conversations')).text);
     assert.strictEqual(j.members_available, true);
     const row = (id) => j.conversations.find((c) => c.wa_id === id);
-    assert.deepStrictEqual(row('201000000020').member, { name: 'Mohamed Ali Hassan', company: 'Nawy Degla', kind: 'member', active: true, more: 0 });
+    assert.deepStrictEqual(row('201000000020').member, { name: 'Mohamed Ali Hassan', company: 'Nawy Degla', kind: 'member', active: true, more: 0, image: null, image_bg: null });
     assert.strictEqual(row('201000000021').member.kind, 'hr');
     assert.strictEqual(row('201000000022').member, null);
   });
@@ -919,9 +919,279 @@ function sign(body) {
       { source: 'roster', kind: 'member', name: 'Moved Person', company: 'Oasis', active: false },
       { source: 'app', kind: 'member', name: 'Moved Person', company: 'Nawy Degla', active: true },
     ]);
-    assert.deepStrictEqual(m, { name: 'Moved Person', company: 'Nawy Degla', kind: 'member', active: true, more: 1 });
+    assert.deepStrictEqual(m, { name: 'Moved Person', company: 'Nawy Degla', kind: 'member', active: true, more: 1, image: null, image_bg: null });
+  });
+  await test("members: the picture from the Byte+ app comes with the member, and only from our own storage", async () => {
+    const app = (image, image_bg) => ({ source: 'app', kind: 'member', name: 'A', company: 'C', active: true, image, image_bg });
+    assert.deepStrictEqual(members.pictureOf([app('https://storage.bytepluslife.com/uploads/profiles/2165', '#00FFFFFF')]),
+      { image: 'https://storage.bytepluslife.com/uploads/profiles/2165', image_bg: null });
+    assert.deepStrictEqual(members.pictureOf([app('https://storage.bytepluslife.com/individual_avatars_png/Number=7.png?', '#FFE8F4D9')]),
+      { image: 'https://storage.bytepluslife.com/individual_avatars_png/Number=7.png', image_bg: '#E8F4D9' });
+    assert.deepStrictEqual(members.pictureOf([app('no image', '#00FFFFFF')]), { image: null, image_bg: null });
+    assert.deepStrictEqual(members.pictureOf([app('https://evil.example/x.png', null)]), { image: null, image_bg: null });
+    assert.deepStrictEqual(members.pictureOf([app('http://storage.bytepluslife.com/x.png', null)]), { image: null, image_bg: null });
+    const picked = members.pick([
+      { source: 'roster', kind: 'member', name: 'Sara Roster', company: 'NIS', active: true },
+      app('https://storage.bytepluslife.com/uploads/profiles/9', '#00FFFFFF'),
+    ]);
+    assert.strictEqual(picked.name, 'Sara Roster');
+    assert.strictEqual(picked.image, 'https://storage.bytepluslife.com/uploads/profiles/9');
   });
   members.__setLookupForTesting(async () => []);
+
+  // --- who answered, what needs a reply, paging and search, saved replies ---
+  console.log('\n\x1b[1mTEAMWORK: NEEDS REPLY, AGENT NAMES, SEARCH, SAVED REPLIES (fake DB)\x1b[0m');
+  {
+    const features = require('../lib/features');
+    const inbox = require('../lib/inbox');
+    const auth = require('../lib/auth');
+    const as = (name) => (method, path, body) => req(srv2, method, path, { body, headers: { cookie, 'x-agent-name': encodeURIComponent(name) } });
+    const list = async (query = '') => JSON.parse((await authed('GET', `/api/conversations${query}`)).text);
+    const conv = (id) => fdb._tables.conversations.find((c) => c.wa_id === id);
+    const T = '201000007001';
+    const minsAgo = (m) => new Date(Date.now() - m * 60000).toISOString();
+    fdb._tables.conversations.push({ wa_id: T, profile_name: 'Team Chat', last_message_text: 'help please', last_message_at: minsAgo(5), last_message_direction: 'in', unread_count: 2 });
+
+    await test('opening a chat does not clear it for the other agents', async () => {
+      assert.strictEqual((await authed('POST', '/api/mark-read', { wa_id: T })).status, 200);
+      assert.strictEqual(conv(T).unread_count, 2);
+      const j = await list('?view=needs_reply');
+      assert.ok(j.conversations.some((c) => c.wa_id === T && c.needs_reply));
+      assert.strictEqual(j.teamwork, true);
+    });
+
+    await test('a reply clears it, and the message carries the name of the agent who sent it', async () => {
+      wa.sendText = async () => ({ ok: true, waMessageId: 'wamid.TEAM1' });
+      const r = await as('Naglaa ناجلاء')('POST', '/api/send', { wa_id: T, text: 'on it', client_key: 'team-1' });
+      assert.strictEqual(r.status, 200);
+      assert.strictEqual(JSON.parse(r.text).message.agent, 'Naglaa ناجلاء');
+      assert.strictEqual(conv(T).unread_count, 0);
+      assert.ok(!(await list('?view=needs_reply')).conversations.some((c) => c.wa_id === T));
+      const thread = JSON.parse((await authed('GET', `/api/messages?wa_id=${T}`)).text);
+      assert.strictEqual(thread.messages.find((m) => m.wa_message_id === 'wamid.TEAM1').agent, 'Naglaa ناجلاء');
+      const keyless = await as('Youssef')('POST', '/api/send', { wa_id: T, text: 'and again' });
+      assert.strictEqual(JSON.parse(keyless.text).message.agent, 'Youssef');
+      const nameless = await authed('POST', '/api/send', { wa_id: T, text: 'no name yet' });
+      assert.strictEqual(JSON.parse(nameless.text).message.agent, null);
+    });
+
+    await test('photos, templates and forwards carry the name too', async () => {
+      wa.uploadMedia = async () => ({ ok: true, mediaId: 'M' });
+      wa.sendMedia = async () => ({ ok: true, waMessageId: 'wamid.TEAMPIC' });
+      const pic = await as('Naglaa')('POST', '/api/send-media', { wa_id: T, file_base64: Buffer.from('x').toString('base64'), mime: 'image/png', filename: 'a.png', client_key: 'team-pic' });
+      assert.strictEqual(JSON.parse(pic.text).message.agent, 'Naglaa');
+      wa.sendTemplate = async () => ({ ok: true, waMessageId: 'wamid.TEAMTPL' });
+      await as('Naglaa')('POST', '/api/send-template', { wa_id: T, template: 'ops_support_followup', language: 'en', params: ['Sara', 'the plan'], client_key: 'team-tpl' });
+      assert.strictEqual(rowsForKey('team-tpl')[0].agent, 'Naglaa');
+      wa.sendText = async () => ({ ok: true, waMessageId: 'wamid.TEAMFWD' });
+      const src = fdb._tables.messages.find((m) => m.wa_message_id === 'wamid.TEAM1');
+      const fwd = JSON.parse((await as('Oufa')('POST', '/api/forward', { message_id: src.id, wa_ids: ['201000000012'] })).text);
+      assert.strictEqual(fwd.results[0].message.agent, 'Oufa');
+    });
+
+    await test('a new message from the member needs a reply again; "done" takes it off the list until they write', async () => {
+      Object.assign(conv(T), { last_message_direction: 'in', last_message_at: minsAgo(2), unread_count: 1 });
+      assert.ok((await list('?view=needs_reply')).conversations.some((c) => c.wa_id === T));
+      const done = JSON.parse((await authed('POST', `/api/conversations/${T}/read`, { read: true })).text);
+      assert.strictEqual(done.unread_count, 0);
+      assert.ok(done.done_at);
+      assert.ok(!(await list('?view=needs_reply')).conversations.some((c) => c.wa_id === T), 'done, though the member wrote last');
+      Object.assign(conv(T), { last_message_at: new Date(Date.now() + 1000).toISOString() });
+      assert.ok((await list('?view=needs_reply')).conversations.some((c) => c.wa_id === T), 'they wrote after it was marked done');
+      await authed('POST', `/api/conversations/${T}/read`, { read: true });
+      const flagged = JSON.parse((await authed('POST', `/api/conversations/${T}/read`, { read: false })).text);
+      assert.strictEqual(flagged.unread_count, 1);
+      assert.strictEqual(conv(T).done_at, null);
+      assert.ok((await list('?view=needs_reply')).conversations.some((c) => c.wa_id === T), 'flagged by hand');
+      await authed('POST', `/api/conversations/${T}/read`, { read: true });
+    });
+
+    await test('needsReply: answered, done, flagged and never-written chats', async () => {
+      const at = '2026-11-23T10:00:00Z';
+      assert.strictEqual(inbox.needsReply({ last_message_direction: 'in', last_message_at: at, unread_count: 0 }), true);
+      assert.strictEqual(inbox.needsReply({ last_message_direction: 'out', last_message_at: at, unread_count: 0 }), false);
+      assert.strictEqual(inbox.needsReply({ last_message_direction: 'out', last_message_at: at, unread_count: 1 }), true);
+      assert.strictEqual(inbox.needsReply({ last_message_direction: 'in', last_message_at: at, unread_count: 0, done_at: '2026-11-23T10:05:00Z' }), false);
+      assert.strictEqual(inbox.needsReply({ last_message_direction: 'in', last_message_at: at, unread_count: 0, done_at: '2026-11-23T09:00:00Z' }), true);
+      assert.strictEqual(inbox.needsReply({ last_message_direction: null, last_message_at: null, unread_count: 0 }), false);
+    });
+
+    await test('chats that hold only our templates stay out of the main list, unless the member answers', async () => {
+      const A = '201000007101';
+      const B = '201000007102';
+      fdb._tables.conversations.push(
+        { wa_id: A, profile_name: 'Bulk One', last_message_text: '📋 hello', last_message_at: minsAgo(1), last_message_direction: 'out', unread_count: 0 },
+        { wa_id: B, profile_name: 'Bulk Two', last_message_text: 'ok thanks', last_message_at: minsAgo(1), last_message_direction: 'in', unread_count: 1 },
+      );
+      inbox.__setForTesting({ templateOnly: async () => new Set([A, B]) });
+      const chats = await list();
+      assert.ok(!chats.conversations.some((c) => c.wa_id === A), 'template-only chat in the main list');
+      assert.ok(chats.conversations.some((c) => c.wa_id === B), 'a chat that needs a reply is always shown');
+      const tpl = await list('?view=templates');
+      assert.deepStrictEqual(tpl.conversations.map((c) => c.wa_id), [A]);
+      assert.strictEqual(chats.counts.templates, 1);
+      assert.ok((await list('?q=Bulk')).conversations.length === 2, 'search looks everywhere');
+      wa.sendText = async () => ({ ok: true, waMessageId: 'wamid.BULKREPLY' });
+      await authed('POST', '/api/send', { wa_id: A, text: 'hi, a real message' });
+      assert.ok((await list()).conversations.some((c) => c.wa_id === A), 'an agent wrote, so it is a real chat now');
+      inbox.__setForTesting();
+    });
+
+    await test('the list comes a page at a time, and search covers the chats beyond the first page', async () => {
+      const made = [];
+      for (let i = 0; i < 130; i++) {
+        const wa_id = `2010099${String(i).padStart(5, '0')}`;
+        made.push(wa_id);
+        fdb._tables.conversations.push({ wa_id, profile_name: i === 129 ? 'Zeinab Far Away' : `Page Person ${i}`, last_message_text: 'x', last_message_at: new Date(Date.UTC(2020, 0, 1, 0, i)).toISOString(), last_message_direction: 'out', unread_count: 0 });
+      }
+      const first = await list();
+      assert.strictEqual(first.conversations.length, 60);
+      assert.strictEqual(first.next, 60);
+      assert.ok(first.total >= 130);
+      const second = await list('?offset=60&limit=60');
+      assert.strictEqual(second.conversations.length, 60);
+      assert.ok(!second.conversations.some((c) => first.conversations.some((d) => d.wa_id === c.wa_id)), 'pages overlap');
+      const big = await list('?limit=1000');
+      assert.ok(big.conversations.length <= 300, 'one request is capped');
+      const far = await list('?q=zeinab');
+      assert.deepStrictEqual(far.conversations.map((c) => c.profile_name), ['Zeinab Far Away']);
+      assert.ok((await list('?q=0100 9900 129')).conversations.some((c) => c.wa_id === '201009900129'), 'a number typed the local way');
+      fdb._tables.conversations = fdb._tables.conversations.filter((c) => !made.includes(c.wa_id));
+    });
+
+    await test('search also finds words inside messages and says where', async () => {
+      inbox.__setForTesting({ messageSearch: async (q) => (q === 'refund' ? [{ wa_id: T, id: 4242, body: 'Hello, I asked about the refund for my watch last week and nobody answered yet', direction: 'in', at: minsAgo(30) }] : []) });
+      const j = await list('?q=refund');
+      assert.strictEqual(j.conversations.length, 0);
+      assert.strictEqual(j.message_hits.length, 1);
+      assert.strictEqual(j.message_hits[0].wa_id, T);
+      assert.strictEqual(j.message_hits[0].hit.message_id, 4242);
+      assert.ok(/refund/.test(j.message_hits[0].hit.text));
+      assert.strictEqual((await list('?q=r')).message_hits.length, 0, 'one letter does not search every message');
+      assert.strictEqual(inbox.snippet('a'.repeat(200) + ' the refund is late ' + 'b'.repeat(200), 'refund').length <= 92, true);
+      inbox.__setForTesting();
+    });
+
+    await test('a long chat opens on its newest 500 messages and says when the member last wrote', async () => {
+      const L = '201000007201';
+      fdb._tables.conversations.push({ wa_id: L, profile_name: 'Long Chat', last_message_at: minsAgo(1), last_message_direction: 'out', unread_count: 0 });
+      for (let i = 0; i < 520; i++) {
+        fdb._tables.messages.push({ id: 900000 + i, wa_id: L, direction: i === 510 ? 'in' : 'out', type: 'text', body: `m${i}`, status: 'sent', created_at: new Date(Date.UTC(2026, 0, 1, 0, 0, i)).toISOString(), wa_timestamp: new Date(Date.UTC(2026, 0, 1, 0, 0, i)).toISOString(), updated_at: new Date(Date.UTC(2026, 0, 1, 0, 0, i)).toISOString() });
+      }
+      const j = JSON.parse((await authed('GET', `/api/messages?wa_id=${L}`)).text);
+      assert.strictEqual(j.messages.length, 500);
+      assert.strictEqual(j.messages[0].body, 'm20');
+      assert.strictEqual(j.messages[499].body, 'm519');
+      assert.strictEqual(j.more, true);
+      assert.strictEqual(j.last_inbound_at, new Date(Date.UTC(2026, 0, 1, 0, 0, 510)).toISOString());
+      fdb._tables.messages = fdb._tables.messages.filter((m) => m.wa_id !== L);
+      fdb._tables.conversations = fdb._tables.conversations.filter((c) => c.wa_id !== L);
+    });
+
+    await test('saved replies: add, change, remove, and refuse an empty one', async () => {
+      const made = JSON.parse((await as('Naglaa')('POST', '/api/saved-replies', { title: 'Sync steps', body: 'Open the app and pull down to sync.' })).text).reply;
+      assert.ok(made.id);
+      assert.strictEqual(made.created_by, 'Naglaa');
+      assert.strictEqual((await authed('POST', '/api/saved-replies', { title: '', body: 'x' })).status, 400);
+      assert.strictEqual((await authed('POST', '/api/saved-replies', { title: 'x', body: '   ' })).status, 400);
+      const changed = JSON.parse((await authed('PATCH', `/api/saved-replies/${made.id}`, { title: 'Sync steps', body: 'Pull down on Home to sync.' })).text).reply;
+      assert.strictEqual(changed.body, 'Pull down on Home to sync.');
+      let all = JSON.parse((await authed('GET', '/api/saved-replies')).text);
+      assert.strictEqual(all.on, true);
+      assert.strictEqual(all.replies.length, 1);
+      assert.strictEqual((await authed('PATCH', '/api/saved-replies/999999', { title: 'a', body: 'b' })).status, 404);
+      assert.strictEqual((await authed('DELETE', `/api/saved-replies/${made.id}`)).status, 200);
+      all = JSON.parse((await authed('GET', '/api/saved-replies')).text);
+      assert.strictEqual(all.replies.length, 0);
+      assert.strictEqual((await req(srv2, 'GET', '/api/saved-replies')).status, 401);
+    });
+
+    await test("reacting to a member's message sends the reaction and shows it; our own messages cannot be reacted to", async () => {
+      const sent = [];
+      wa.sendReaction = async (to, id, emoji) => { sent.push({ to, id, emoji }); return { ok: true }; };
+      fdb._tables.messages.push({ id: 7950, wa_id: T, wa_message_id: 'wamid.THEIRS', direction: 'in', type: 'text', body: 'thanks!', status: 'received' });
+      const r = await authed('POST', '/api/react', { message_id: 7950, emoji: '❤️' });
+      assert.strictEqual(r.status, 200);
+      assert.deepStrictEqual(sent, [{ to: T, id: 'wamid.THEIRS', emoji: '❤️' }]);
+      assert.strictEqual(fdb._tables.messages.find((m) => m.id === 7950).reaction, '❤️');
+      await authed('POST', '/api/react', { message_id: 7950, emoji: '' });
+      assert.strictEqual(fdb._tables.messages.find((m) => m.id === 7950).reaction, null);
+      const ours = fdb._tables.messages.find((m) => m.wa_message_id === 'wamid.TEAM1');
+      assert.strictEqual((await authed('POST', '/api/react', { message_id: ours.id, emoji: '👍' })).status, 400);
+      assert.strictEqual((await authed('POST', '/api/react', { message_id: 7950, emoji: 'lol' })).status, 400);
+      wa.sendReaction = async () => ({ ok: false, error: 'Outside the 24-hour reply window' });
+      assert.strictEqual((await authed('POST', '/api/react', { message_id: 7950, emoji: '👍' })).status, 502);
+    });
+
+    await test('changing the passcode logs every device out and stops its notifications', async () => {
+      const before = (await authed('GET', '/api/conversations')).status;
+      assert.strictEqual(before, 200);
+      await authed('POST', '/api/push/subscribe', { endpoint: 'https://fcm.googleapis.com/fcm/send/old-passcode', keys: subKeys });
+      const mine = fdb._tables.push_subscriptions.find((s) => s.endpoint.endsWith('/old-passcode'));
+      assert.strictEqual(mine.pass_mark, auth.passcodeMark());
+      fdb._tables.push_subscriptions.push({ endpoint: 'https://fcm.googleapis.com/fcm/send/unmarked', p256dh: subKeys.p256dh, auth: subKeys.auth, seen_at: new Date().toISOString(), pass_mark: null });
+
+      process.env.DASHBOARD_PASSCODE = 'a-new-passcode';
+      try {
+        assert.strictEqual((await authed('GET', '/api/conversations')).status, 401, 'the old session still works');
+        pushed.length = 0;
+        await push.deliver(T, 'after the change');
+        assert.ok(!pushed.some((p) => p.endpoint.endsWith('/old-passcode')), 'a device from the old passcode was notified');
+        assert.ok(!fdb._tables.push_subscriptions.some((s) => s.endpoint.endsWith('/old-passcode')), 'and it is forgotten');
+        const relog = await req(srv2, 'POST', '/api/login', { body: { passcode: 'a-new-passcode' } });
+        assert.strictEqual(relog.status, 200);
+      } finally {
+        process.env.DASHBOARD_PASSCODE = 'letmein';
+      }
+      assert.strictEqual((await authed('GET', '/api/conversations')).status, 200, 'the passcode is back, so is the session');
+      fdb._tables.push_subscriptions = fdb._tables.push_subscriptions.filter((s) => !/unmarked|old-passcode/.test(s.endpoint));
+    });
+
+    await test('a session opened before this release still works and is given the mark on its next request', async () => {
+      const crypto = require('crypto');
+      const expires = Date.now() + 3600 * 1000;
+      const old = `${expires}.${crypto.createHmac('sha256', process.env.SESSION_SECRET).update(String(expires)).digest('hex')}`;
+      const r = await req(srv2, 'GET', '/api/conversations', { headers: { cookie: `wa_session=${old}` } });
+      assert.strictEqual(r.status, 200);
+      const fresh = (r.headers.get('set-cookie') || '').split(';')[0].split('=')[1];
+      assert.ok(fresh && decodeURIComponent(fresh).split('.').length === 3, 'no upgraded cookie');
+      assert.strictEqual(Number(decodeURIComponent(fresh).split('.')[0]), expires, 'the upgrade must not extend the session');
+      const forged = `${expires}.${'0'.repeat(64)}`;
+      assert.strictEqual((await req(srv2, 'GET', '/api/conversations', { headers: { cookie: `wa_session=${forged}` } })).status, 401);
+      assert.strictEqual((await authed('GET', '/api/conversations')).headers.get('set-cookie'), null, 'a current session is left alone');
+    });
+
+    await test('a device signed up before devices carried the mark is kept and marked at start-up', async () => {
+      fdb._tables.push_subscriptions.push({ endpoint: 'https://fcm.googleapis.com/fcm/send/adopt-me', p256dh: subKeys.p256dh, auth: subKeys.auth, seen_at: new Date().toISOString() });
+      await push.adoptDevices();
+      assert.strictEqual(fdb._tables.push_subscriptions.find((s) => s.endpoint.endsWith('/adopt-me')).pass_mark, auth.passcodeMark());
+      fdb._tables.push_subscriptions = fdb._tables.push_subscriptions.filter((s) => !s.endpoint.endsWith('/adopt-me'));
+    });
+
+    await test('before migration 011 the inbox works as it did: opening clears the count, no names, no saved replies', async () => {
+      features.__setForTesting({ agent: false, done: false, replies: false, passMark: false });
+      try {
+        Object.assign(conv(T), { unread_count: 3, last_message_direction: 'in' });
+        await authed('POST', '/api/mark-read', { wa_id: T });
+        assert.strictEqual(conv(T).unread_count, 0);
+        wa.sendText = async () => ({ ok: true, waMessageId: 'wamid.PRE011' });
+        const sent = JSON.parse((await as('Naglaa')('POST', '/api/send', { wa_id: T, text: 'before', client_key: 'pre-011' })).text).message;
+        assert.ok(!('agent' in sent), 'wrote a column that is not there yet');
+        const j = await list();
+        assert.strictEqual(j.teamwork, false);
+        assert.ok(j.conversations.length > 0);
+        assert.deepStrictEqual(JSON.parse((await authed('GET', '/api/saved-replies')).text), { on: false, replies: [] });
+        assert.strictEqual((await authed('POST', '/api/saved-replies', { title: 'a', body: 'b' })).status, 503);
+        const read = JSON.parse((await authed('POST', `/api/conversations/${T}/read`, { read: false })).text);
+        assert.strictEqual(read.unread_count, 1);
+        await authed('POST', '/api/push/subscribe', { endpoint: 'https://fcm.googleapis.com/fcm/send/pre-011', keys: subKeys });
+        assert.ok(!('pass_mark' in fdb._tables.push_subscriptions.find((s) => s.endpoint.endsWith('/pre-011'))));
+      } finally {
+        features.__setForTesting(null);
+        fdb._tables.push_subscriptions = fdb._tables.push_subscriptions.filter((s) => !s.endpoint.endsWith('/pre-011'));
+      }
+    });
+  }
 
   // --- service send API (token gate + template allow-list) ---
   console.log('\n\x1b[1mSERVICE SEND API (fake DB, stubbed Graph)\x1b[0m');
@@ -2080,8 +2350,52 @@ function sign(body) {
       assert.deepStrictEqual(failureWords({}), { text: 'Failed to send.', said: '' });
     });
 
+    await test('a web address in a message becomes a link, and nothing else does', async () => {
+      const { linkify, escapeHtml } = new Function(`${lift('escapeHtml')}\n${lift('linkify')}\nreturn { linkify, escapeHtml };`)();
+      const out = (text) => linkify(escapeHtml(text));
+      assert.strictEqual(out('see https://bytepluslife.com/help.'),
+        'see <a class="msg-link" href="https://bytepluslife.com/help" target="_blank" rel="noopener noreferrer">https://bytepluslife.com/help</a>.');
+      assert.ok(out('a http://x.io/a?b=1&c=2 b').includes('href="http://x.io/a?b=1&amp;c=2"'), 'the & stays escaped inside the link');
+      assert.strictEqual(out('<script>alert(1)</script>'), '&lt;script&gt;alert(1)&lt;/script&gt;');
+      assert.strictEqual(out('javascript:alert(1) and ftp://x'), 'javascript:alert(1) and ftp://x');
+      assert.ok(!out('"https://x.io/a" onmouseover="x').includes('onmouseover="'), 'a quote cannot break out of the link');
+      assert.strictEqual((out('https://a.io and https://b.io').match(/<a /g) || []).length, 2);
+    });
+
+    await test('the 24-hour window is said in plain words before a send', async () => {
+      const { windowWords } = new Function(`
+        ${liftConst('WINDOW_SOON_MS')}
+        function fmtTime() { return '14:35'; }
+        ${lift('windowWords')}
+        return { windowWords };`)();
+      assert.strictEqual(windowWords(null), '');
+      assert.ok(/not written to this number yet/.test(windowWords({ open: false, never: true })));
+      assert.ok(/More than 24 hours/.test(windowWords({ open: false, left: -5 })));
+      assert.strictEqual(windowWords({ open: true, left: 5 * 60 * 60 * 1000, until: 0 }), '', 'plenty of time: nothing to say');
+      assert.ok(/until 14:35 \(1 h 20 min left\)/.test(windowWords({ open: true, left: 80 * 60 * 1000, until: 0 })), windowWords({ open: true, left: 80 * 60 * 1000, until: 0 }));
+      assert.ok(/\(9 min left\)/.test(windowWords({ open: true, left: 9 * 60 * 1000, until: 0 })));
+    });
+
+    await test('a chat opened here but not answered is shown as waiting, not as new', async () => {
+      const ui = new Function(`
+        const state = { teamwork: true };
+        const seenHere = { A: '2026-11-23T10:00:00Z' };
+        ${src.split('\n').find((l) => l.startsWith('const waiting ='))}
+        ${src.split('\n').find((l) => l.startsWith('const newHere ='))}
+        return { state, waiting, newHere };`)();
+      const opened = { wa_id: 'A', unread_count: 2, needs_reply: true, last_message_at: '2026-11-23T10:00:00Z' };
+      assert.strictEqual(ui.waiting(opened), true);
+      assert.strictEqual(ui.newHere(opened), false);
+      assert.strictEqual(ui.newHere({ ...opened, last_message_at: '2026-11-23T10:05:00Z' }), true, 'they wrote again after it was seen here');
+      assert.strictEqual(ui.newHere({ wa_id: 'B', unread_count: 1, last_message_at: 'x' }), true);
+      assert.strictEqual(ui.waiting({ wa_id: 'C', unread_count: 0, needs_reply: false }), false);
+      ui.state.teamwork = false;
+      assert.strictEqual(ui.newHere(opened), true, 'before migration 011 unread means unread');
+      assert.strictEqual(ui.waiting({ wa_id: 'D', unread_count: 3 }), true, 'an older server sends no needs_reply');
+    });
+
     await test('a request that never reaches the server answers as a failure instead of throwing', async () => {
-      const make = (fetchImpl) => new Function('fetch', `${cut('async function api(', '// One idempotency key')}\nreturn api;`)(fetchImpl);
+      const make = (fetchImpl) => new Function('fetch', `function agentHeader() { return { 'x-agent-name': 'Naglaa' }; }\n${cut('async function api(', '// The name the agent typed')}\nreturn api;`)(fetchImpl);
       const down = await make(async () => { throw new TypeError('Failed to fetch'); })('/api/send', { method: 'POST' });
       assert.strictEqual(down.ok, false);
       assert.strictEqual(down.status, 0);
@@ -2129,6 +2443,7 @@ function sign(body) {
       }
       function toast(msg) { toasts.push(msg); }
       function renderForwardList() {}
+      function loadForwardRows() {}
       function updateForwardSubmit() {}
       function setTimeout() {}
       function displayName(c) { return c.profile_name; }
@@ -2141,6 +2456,7 @@ function sign(body) {
       ${lift('labelForType')}
       ${lift('replyToOf')}
       ${lift('quotedMessage')}
+      ${lift('convOf')}
       ${lift('senderName')}
       ${lift('snippetOf')}
       ${constBlock('NOT_FORWARDABLE')}

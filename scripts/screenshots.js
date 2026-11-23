@@ -88,6 +88,7 @@ seed();
       viewport: { width, height },
       deviceScaleFactor: 2,
     });
+    await ctx.addInitScript(() => { try { localStorage.setItem('wa_agent', 'Check'); } catch (_) {} });
     const page = await ctx.newPage();
     await page.goto(base, { waitUntil: 'networkidle' });
     // log in
@@ -114,9 +115,9 @@ seed();
     await p.$eval('#messages', (el) => { el.scrollTop = el.scrollHeight; });
     await p.waitForTimeout(200);
   });
-  // Unread filter active: only badged conversations should remain.
-  await shot('desktop-unread-filter.png', 1280, 832, async (p) => {
-    await p.click('.filter-chip[data-filter="unread"]');
+  // Needs reply: only chats waiting for an answer should remain.
+  await shot('desktop-needs-reply.png', 1280, 832, async (p) => {
+    await p.click('.filter-chip[data-view="needs_reply"]');
     await p.waitForTimeout(150);
   });
   // Forward picker open over a thread.
