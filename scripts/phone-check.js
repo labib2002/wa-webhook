@@ -210,6 +210,49 @@ async function login(page, url) {
   check('the list says how many chats still need a reply',
     (await page.textContent('.filter-chip[data-view="needs_reply"] .chip-count')) === '2', await page.textContent('.filter-chip[data-view="needs_reply"]'));
 
+  // the filters tuck away while the list scrolls down and come back on the way up
+  await page.evaluate(() => {
+    const pad = document.createElement('div');
+    pad.id = 'tall-pad'; pad.style.height = '3000px';
+    document.querySelector('#conv-list').appendChild(pad);
+  });
+  const scrollList = async (y) => { await page.evaluate((v) => { document.querySelector('#conv-list').scrollTop = v; }, y); await page.waitForTimeout(320); };
+  const tucked = () => page.evaluate(() => {
+    const pane = document.querySelector('.pane-list');
+    const f = document.querySelector('#list-filters').getBoundingClientRect();
+    const s = document.querySelector('.search-row').getBoundingClientRect();
+    return { tucked: pane.classList.contains('filters-tucked'), hiddenUnderSearch: f.bottom <= s.bottom + 1 };
+  });
+  const shots = process.env.SHOTS_DIR;
+  if (shots) await page.screenshot({ path: `${shots}/filters-top.png` });
+  await scrollList(400);
+  const down = await tucked();
+  if (shots) await page.screenshot({ path: `${shots}/filters-tucked.png` });
+  check('scrolling the list down tucks the filters under the search', down.tucked && down.hiddenUnderSearch, JSON.stringify(down));
+  check('with "Chats" on, nothing extra shows in the search', await page.isHidden('#view-pill'));
+  await scrollList(330);
+  const backUp = await tucked();
+  check('a little scroll up brings the filters back', !backUp.tucked && !backUp.hiddenUnderSearch, JSON.stringify(backUp));
+  await scrollList(900);
+  await scrollList(0);
+  check('at the top of the list the filters are always there', !(await tucked()).tucked);
+  await page.click('.filter-chip[data-view="needs_reply"]');
+  await page.waitForTimeout(300);
+  await page.evaluate(() => {
+    if (!document.querySelector('#tall-pad')) { const pad = document.createElement('div'); pad.id = 'tall-pad'; pad.style.height = '3000px'; document.querySelector('#conv-list').appendChild(pad); }
+  });
+  await scrollList(400);
+  if (shots) await page.screenshot({ path: `${shots}/filters-tucked-needs-reply.png` });
+  const pill = await page.evaluate(() => ({ shown: !document.querySelector('#view-pill').hidden, text: document.querySelector('#view-pill').textContent }));
+  check('with the filters tucked, the active one stays in the search bar', pill.shown && /^Needs reply/.test(pill.text), JSON.stringify(pill));
+  await page.click('#view-pill');
+  await page.waitForTimeout(320);
+  check('tapping it brings the filters back', !(await tucked()).tucked && await page.isHidden('#view-pill'));
+  await page.click('.filter-chip[data-view="chats"]');
+  await page.waitForTimeout(300);
+  await page.evaluate(() => { const pad = document.querySelector('#tall-pad'); if (pad) pad.remove(); document.querySelector('#conv-list').scrollTop = 0; });
+  await page.waitForTimeout(200);
+
   const head = await page.evaluate(() => ({
     manifest: document.querySelector('link[rel="manifest"]').getAttribute('href'),
     touchIcon: document.querySelector('link[rel="apple-touch-icon"]').getAttribute('href'),
