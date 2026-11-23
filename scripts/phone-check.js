@@ -565,6 +565,14 @@ async function login(page, url) {
     && await d.evaluate(() => [...document.querySelectorAll('.bubble.out .meta-agent')].some((e) => e.textContent === 'Naglaa'))
     && await d.evaluate(() => document.querySelector('#me-name').textContent === 'Naglaa' && document.querySelector('#me-initials').textContent === 'N'));
 
+  // the keyboard stays up after a send, as in WhatsApp
+  await d.focus('#composer-input');
+  await d.fill('#composer-input', 'one more line');
+  await d.click('#send-btn');
+  await d.waitForTimeout(400);
+  check('after a send the message box keeps the focus, so the keyboard stays open',
+    await d.evaluate(() => document.activeElement && document.activeElement.id === 'composer-input'));
+
   // one dropped request must not lock the composer
   await d.route('**/api/send', (route) => route.abort());
   await d.fill('#composer-input', 'first try');
