@@ -896,21 +896,24 @@ function renderThreadHeader() {
   if (!els.peerSheet.hidden) fillPeerSheet(conv);
 }
 
-// The name is never cut for the sake of the company: it takes a second line
-// first, then the chip narrows, then the chip goes (its text is in the sheet),
-// then the name is set smaller on three lines.
+// The name stays on one line where it can: the chip narrows, then goes (its
+// text is in the sheet); only then does the name take a second line, and a
+// name that still does not fit is set smaller on three lines.
 function fitThreadHeader() {
-  const sig = `${els.threadName.textContent}|${els.threadMember.textContent}|${els.doneBtn.hidden}|${window.innerWidth}`;
+  const sig = `${els.threadName.textContent}|${els.threadMember.textContent}|${els.doneBtn.hidden}|${els.threadPeer.offsetWidth}`;
   if (!els.threadPeer.offsetWidth || els.threadPeer.dataset.fit === sig) return;
   els.threadPeer.dataset.fit = sig;
+  const lineHeight = parseFloat(getComputedStyle(els.threadName).lineHeight) || 20;
+  const wraps = () => els.threadName.getBoundingClientRect().height > lineHeight * 1.5;
   const cut = () => els.threadName.scrollHeight > els.threadName.clientHeight + 1;
   els.threadPeer.classList.remove('tight', 'tighter', 'small');
-  for (const step of ['tight', 'tighter', 'small']) {
-    if (!cut()) return;
-    els.threadPeer.classList.add(step);
-  }
+  if (wraps()) els.threadPeer.classList.add('tight');
+  if (wraps()) els.threadPeer.classList.add('tighter');
+  if (cut()) els.threadPeer.classList.add('small');
 }
-window.addEventListener('resize', () => { if (state.activeWaId) fitThreadHeader(); });
+window.addEventListener('resize', () => { if (state.activeWaId) { fitThreadHeader(); autoGrow(); } });
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { els.threadPeer.dataset.fit = ''; fitThreadHeader(); });
+if (window.ResizeObserver) new ResizeObserver(() => { if (state.activeWaId) { fitThreadHeader(); if (!els.composerInput.style.height) autoGrow(); } }).observe(els.threadPeer);
 
 // What is known about the person in a chat. The header shows the best name
 // and the company; the phone, the WhatsApp name and the roster name wait in
@@ -1604,6 +1607,7 @@ async function retrySend(m) {
 
 function autoGrow() {
   const ta = els.composerInput;
+  if (!ta.offsetWidth) { ta.style.height = ''; ta.classList.remove('is-scrolling'); return; }
   ta.style.height = 'auto';
   const full = ta.scrollHeight;
   ta.style.height = Math.min(full, 140) + 'px';
@@ -3420,6 +3424,8 @@ function renderWindow() {
     if (typeof closeReplyPicker === 'function') closeReplyPicker();
     clearBanner();
     if (document.activeElement === els.composerInput) els.composerInput.blur();
+  } else {
+    autoGrow();
   }
 }
 els.windowAction.addEventListener('click', () => openFollowupModal());
@@ -3739,6 +3745,15 @@ document.addEventListener('selectstart', (e) => {
   if (el && el.closest('.bubble, .conv-row, .day-sep')) e.preventDefault();
 });
 els.convList.addEventListener('contextmenu', (e) => { if (byTouch) e.preventDefault(); });
+document.addEventListener('contextmenu', (e) => {
+  if (byTouch && !e.target.closest('input, textarea, [contenteditable="true"]')) e.preventDefault();
+});
+document.addEventListener('selectionchange', () => {
+  if (!byTouch || !window.getSelection) return;
+  const sel = window.getSelection();
+  const node = sel.anchorNode && (sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentElement);
+  if (sel.rangeCount && node && !node.closest('input, textarea, [contenteditable="true"]')) sel.removeAllRanges();
+});
 
 const press = { timer: null, bubble: null, x0: 0, y0: 0, swiping: false, dx: 0, fired: false };
 const LONG_PRESS_MS = 450;
