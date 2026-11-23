@@ -1403,3 +1403,7 @@ html.by-touch .row-readtoggle { display: none !important; }
    zoom into them. */
 html, body { touch-action: pan-x pan-y; }
 @media (pointer: coarse) { input, textarea, select { font-size: 16px !important; } }
+
+#forward-modal { z-index: 90; }
+
+.toast { z-index: 95; }
