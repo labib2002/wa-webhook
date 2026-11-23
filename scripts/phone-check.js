@@ -615,7 +615,7 @@ async function login(page, url) {
   const link = await d.evaluate(() => { const a = document.querySelector('.bubble .msg-link'); return a && { href: a.getAttribute('href'), target: a.target, rel: a.rel }; });
   check('a web address in a message is a link that opens in a new tab',
     Boolean(link) && link.href === 'https://bytepluslife.com/help' && link.target === '_blank' && /noopener/.test(link.rel), JSON.stringify(link));
-  check('an HR contact keeps its label', (await d.textContent('#thread-member')) === 'HR · Granite Financial Holding', await d.textContent('#thread-member'));
+  check('an HR contact keeps its label', (await d.textContent('#thread-member')) === 'HR, Granite Financial Holding', await d.textContent('#thread-member'));
   await d.click('.conv-row >> nth=0');
   await d.waitForFunction(() => document.querySelector('#thread-name').textContent.includes('Ada'));
   check('a chat inside its 24 hours shows no warning', !(await d.isVisible('#window-bar')));
