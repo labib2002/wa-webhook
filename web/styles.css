@@ -188,12 +188,17 @@ input, textarea, button { font-family: inherit; }
 .search-row .search-wrap { flex: 1 1 auto; min-width: 0; padding: 0; }
 .search-row .search-ico { left: 12px; top: 50%; transform: translateY(-50%); }
 .me-btn {
-  position: relative; flex: 0 0 auto; display: grid; place-content: center;
-  width: 40px; height: 40px; border-radius: 50%; overflow: hidden;
-  border: none; padding: 0; background: var(--pine-soft); color: var(--pine-deep);
-  font-size: 13px; font-weight: 700; cursor: pointer;
+  flex: 0 0 auto; display: grid; place-items: center;
+  width: 44px; height: 44px; margin: -2px 0; border-radius: 50%;
+  border: none; padding: 0; background: transparent; cursor: pointer;
 }
-.me-btn:focus-visible { outline: 2px solid var(--pine); outline-offset: 2px; }
+.me-initials {
+  position: relative; display: grid; place-content: center;
+  width: 38px; height: 38px; border-radius: 50%; overflow: hidden;
+  background: var(--pine-soft); color: var(--pine-deep);
+  font-size: 13px; font-weight: 700;
+}
+.me-btn:focus-visible { outline: 2px solid var(--pine); outline-offset: 0; }
 .me-btn img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: var(--paper-2); }
 .me-menu {
   position: absolute; z-index: 30; right: 10px; top: 58px; width: min(300px, calc(100% - 20px));
@@ -1048,8 +1053,7 @@ body.viewer-open { overflow: hidden; }
   .bubble .meta { font-size: 11.5px; }
   .filter-chip { font-size: 13.5px; padding: 9px 14px; min-height: 40px; }
   .list-filters { padding: 0 12px 4px; }
-  .search-row { padding: calc(6px + env(safe-area-inset-top)) 8px 6px 12px; gap: 6px; }
-  .me-btn { width: 44px; height: 44px; }
+  .search-row { padding: calc(6px + env(safe-area-inset-top)) 10px 6px 12px; gap: 4px; }
   .me-menu { top: calc(56px + env(safe-area-inset-top)); }
   .send-btn, .attach-btn, .mic-btn { width: 44px; height: 44px; }
   .composer-input { padding: 9px 14px; }
@@ -1063,7 +1067,11 @@ body.viewer-open { overflow: hidden; }
   /* Only what the notch and the home bar need, and nothing on top of it. */
   .thread-header { padding-top: calc(2px + env(safe-area-inset-top)); padding-bottom: 2px; }
   .conv-list { padding-bottom: max(8px, env(safe-area-inset-bottom)); }
-  .composer { padding: 5px 8px max(4px, env(safe-area-inset-bottom)); }
+  /* An app drawn under Android's gesture bar gets that bar's height here. The
+     handle only needs its lower part kept free: the buttons may reach into the
+     upper part, so the message box sits lower and the strip below it is the
+     composer's own colour. */
+  .composer { padding: 5px 8px max(4px, calc(env(safe-area-inset-bottom) - 10px)); }
   /* The keyboard covers the home bar, so nothing is kept free for it. */
   html.kb-open .composer { padding-bottom: 4px; }
   .window-bar, .composer-banner { margin-bottom: 6px; padding: 6px 10px; }
