@@ -459,7 +459,7 @@ button.thread-name {
 
 /* message area — warm woven backdrop instead of stock doodles */
 .messages {
-  flex: 1; min-height: 0; overflow-y: auto;
+  flex: 1; min-height: 0; overflow-y: auto; touch-action: manipulation;
   padding: 18px clamp(14px, 6vw, 64px) 10px;
   display: flex; flex-direction: column; gap: 3px;
   background-color: var(--paper);
@@ -529,6 +529,17 @@ button.thread-name {
   user-select: none;
 }
 .bubble.out .meta { color: #4d7a6d; }
+.bubble .meta-pad { display: none; }
+.bubble.meta-tail .meta-pad {
+  display: inline-flex; align-items: center; gap: 4px;
+  visibility: hidden; pointer-events: none;
+  font-size: 10.5px; line-height: 1; white-space: nowrap;
+  margin-inline-start: 10px; vertical-align: baseline;
+  direction: ltr; unicode-bidi: isolate;
+}
+.bubble.meta-tail .meta { position: absolute; float: none; margin: 0; bottom: 5px; right: 10px; }
+.bubble.meta-tail[data-tail="rtl"] .meta { right: auto; left: 10px; }
+.bubble:not(.meta-tail):not(.has-media) .meta { float: none; display: flex; justify-content: flex-end; margin: 4px 0 -2px; }
 .bubble .tick { font-size: 12px; line-height: 1; letter-spacing: -1px; }
 .bubble .tick.read { color: var(--read-tick); }
 .bubble.failed { background: var(--danger-soft); color: #6e2417; }
@@ -592,6 +603,59 @@ a.media-frame:focus-visible { outline: 2px solid var(--pine); outline-offset: 2p
 }
 .media-pending { font-weight: 400; color: var(--ink-3); font-style: italic; }
 .media-audio { display: block; margin-top: 6px; width: 230px; max-width: 100%; height: 36px; }
+.bubble.is-player { min-width: 236px; }
+.vplayer {
+  display: flex; align-items: center; gap: 10px;
+  width: 260px; max-width: 100%; padding: 2px 0 0;
+  white-space: normal; line-height: 1.2;
+  -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+}
+.vp-play {
+  flex: none; width: 40px; height: 40px; border-radius: 50%;
+  display: grid; place-items: center; padding: 0;
+  border: none; background: var(--pine); color: #fff; cursor: pointer;
+  touch-action: manipulation;
+}
+.bubble.in .vp-play { background: var(--pine-deep); }
+.vp-play:focus-visible, .vp-speed:focus-visible, .vp-track:focus-visible { outline: 2px solid var(--pine); outline-offset: 2px; }
+.vplayer[data-state="loading"] .vp-play { animation: vp-wait 1s ease-in-out infinite; }
+.vplayer[data-state="error"] .vp-play { background: var(--danger); }
+@keyframes vp-wait { 50% { opacity: 0.55; } }
+.vp-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.vp-track {
+  position: relative; height: 26px; cursor: pointer;
+  touch-action: none; display: flex; align-items: center;
+}
+.vp-bars { display: flex; align-items: center; gap: 2px; width: 100%; height: 100%; }
+.vp-bars i {
+  flex: 1; min-width: 2px; border-radius: 2px;
+  background: rgba(20, 58, 49, 0.28); transition: background 0.12s;
+}
+.bubble.in .vp-bars i { background: rgba(33, 48, 44, 0.24); }
+.vp-bars i.on, .bubble.in .vp-bars i.on { background: var(--pine); }
+.vp-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 22px; }
+.vp-time { font-size: 11.5px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.vp-error { font-size: 11.5px; color: var(--danger); font-weight: 600; }
+.vp-speed {
+  flex: none; min-width: 40px; height: 22px; padding: 0 8px; border-radius: 999px;
+  border: none; background: rgba(20, 58, 49, 0.1); color: var(--pine-deep);
+  font: inherit; font-size: 11.5px; font-weight: 700; cursor: pointer;
+  touch-action: manipulation;
+}
+.vp-mark { flex: none; color: var(--ink-3); display: grid; place-items: center; width: 18px; }
+.vplayer.is-voice .vp-mark { color: var(--pine); }
+.bubble.is-player .meta { float: none; display: flex; justify-content: flex-end; margin: 2px 0 -2px; }
+.viewer-speed {
+  position: absolute; right: 14px; top: 14px; z-index: 2;
+  min-width: 48px; height: 32px; font-size: 13px;
+  background: rgba(0, 0, 0, 0.55); color: #fff;
+}
+@media (max-width: 720px) {
+  .vp-play { width: 44px; height: 44px; }
+  .vp-speed { min-width: 44px; height: 28px; font-size: 12.5px; }
+  .vplayer { width: 250px; }
+}
+@media (prefers-reduced-motion: reduce) { .vplayer[data-state="loading"] .vp-play { animation: none; } }
 .media-link {
   display: block; margin-top: 4px; font-size: 13px;
   color: var(--pine-deep); text-decoration: none; word-break: break-all;
@@ -956,7 +1020,7 @@ body.viewer-open { overflow: hidden; }
 .viewer-stage {
   flex: 1; height: 100%; min-width: 0;
   display: flex; align-items: center; justify-content: center;
-  padding: 8px 64px; overflow: hidden;
+  padding: 8px 64px; overflow: hidden; position: relative;
 }
 .viewer-media { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 4px; transition: transform 0.18s ease; }
 .viewer.dragging { animation: none; background: rgba(14, 20, 18, var(--fade, 1)); }
@@ -1057,7 +1121,7 @@ body.viewer-open { overflow: hidden; }
   .bubble { font-size: 15.5px; padding: 6px 10px 5px; }
   .messages { padding-top: 8px; padding-bottom: 6px; }
   .day-sep { margin: 6px 0; padding: 3px 11px; }
-  .bubble .meta { font-size: 11.5px; }
+  .bubble .meta, .bubble.meta-tail .meta-pad { font-size: 11.5px; }
   .filter-chip { font-size: 13.5px; padding: 9px 14px; min-height: 40px; }
   .list-filters { padding: 0 12px 4px; }
   /* The filters tuck under the search row while the list scrolls down and come
@@ -1232,7 +1296,9 @@ button.peer-row:hover { background: var(--paper-2); }
    text selection or the phone's own menu. The class follows the last press
    (web/app.js): a Samsung phone with a pen says its pointer is a mouse. */
 html.by-touch .bubble-actions { display: none; }
-html.by-touch body {
+html.by-touch .messages, html.by-touch .conv-list, html.by-touch .day-sep,
+html.by-touch .sheet-overlay, html.by-touch .me-menu, html.by-touch .list-filters,
+html.by-touch .thread-header {
   -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
 }
 html.by-touch input, html.by-touch textarea, html.by-touch [contenteditable="true"] {
