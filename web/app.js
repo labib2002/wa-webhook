@@ -3786,6 +3786,8 @@ document.addEventListener('contextmenu', (e) => {
 });
 document.addEventListener('selectionchange', () => {
   if (!byTouch || !window.getSelection) return;
+  const typing = document.activeElement && document.activeElement.closest('input, textarea, [contenteditable="true"]');
+  if (typing) return;
   const sel = window.getSelection();
   const node = sel.anchorNode && (sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentElement);
   if (sel.rangeCount && node && !node.closest('input, textarea, [contenteditable="true"]')) sel.removeAllRanges();
