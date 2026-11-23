@@ -67,6 +67,7 @@
         <div class="search-wrap">
           <svg class="search-ico" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
           <input id="search" type="search" dir="auto" placeholder="Search chats and messages" aria-label="Search conversations and messages" />
+          <button id="view-pill" type="button" class="view-pill" hidden aria-label="Show the filters"></button>
         </div>
         <button id="me-btn" type="button" class="me-btn" title="Menu" aria-label="Menu" aria-haspopup="menu" aria-expanded="false"><span id="me-initials" class="me-initials"></span></button>
       </div>
@@ -80,7 +81,7 @@
         <p id="me-notify" class="me-note" hidden></p>
         <button id="logout-btn" type="button" class="me-item me-danger" role="menuitem">Sign out</button>
       </div>
-      <div class="list-filters" role="tablist" aria-label="Filter conversations">
+      <div id="list-filters" class="list-filters" role="tablist" aria-label="Filter conversations">
         <button class="filter-chip active" data-view="chats" role="tab" aria-selected="true">Chats<span class="chip-count" hidden></span></button>
         <button class="filter-chip" data-view="needs_reply" role="tab" aria-selected="false">Needs reply<span class="chip-count" hidden></span></button>
       </div>

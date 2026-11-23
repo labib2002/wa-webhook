@@ -21,6 +21,8 @@ const els = {
   logoutBtn: $('#logout-btn'),
   search: $('#search'),
   convList: $('#conv-list'),
+  listFilters: $('#list-filters'),
+  viewPill: $('#view-pill'),
   convEmpty: $('#conv-empty'),
   convLoading: $('#conv-loading'),
   placeholder: $('#thread-placeholder'),
@@ -123,6 +125,7 @@ const els = {
   peerName: $('#peer-name'),
   peerRows: $('#peer-rows'),
 };
+const filtersBar = { tucked: false, lastTop: 0, frame: 0 };
 
 const state = {
   conversations: [],      // latest list snapshot
@@ -629,6 +632,22 @@ function renderViews() {
     count.textContent = n > 99 ? '99+' : n || '';
     count.hidden = !n;
   });
+  renderViewPill();
+}
+
+function tuckFilters(on) {
+  on = Boolean(on) && phoneLayout.matches;
+  if (on) els.listFilters.parentElement.style.setProperty('--filters-h', `${els.listFilters.offsetHeight || 48}px`);
+  filtersBar.tucked = on;
+  els.listFilters.parentElement.classList.toggle('filters-tucked', on);
+  renderViewPill();
+}
+function renderViewPill() {
+  const chip = document.querySelector(`.list-filters .filter-chip[data-view="${state.view}"]`);
+  const show = filtersBar.tucked && state.view !== 'chats' && Boolean(chip);
+  els.viewPill.hidden = !show;
+  els.viewPill.parentElement.classList.toggle('has-pill', show);
+  if (show) els.viewPill.textContent = chip.textContent.trim().replace(/(\D)(\d)/, '$1 $2');
 }
 
 // The member's picture from the Byte+ app when there is one, over the
@@ -757,6 +776,21 @@ els.convList.addEventListener('scroll', () => {
   if (el.scrollHeight - el.scrollTop - el.clientHeight < 600) loadMoreConversations();
 }, { passive: true });
 
+els.convList.addEventListener('scroll', () => {
+  if (filtersBar.frame) return;
+  filtersBar.frame = requestAnimationFrame(() => {
+    filtersBar.frame = 0;
+    const top = els.convList.scrollTop;
+    const moved = top - filtersBar.lastTop;
+    if (top <= 4) { tuckFilters(false); filtersBar.lastTop = top; return; }
+    if (Math.abs(moved) < 8) return;
+    filtersBar.lastTop = top;
+    if (moved > 0 && !filtersBar.tucked) tuckFilters(true);
+    else if (moved < 0 && filtersBar.tucked) tuckFilters(false);
+  });
+}, { passive: true });
+els.viewPill.addEventListener('click', () => tuckFilters(false));
+
 els.convList.addEventListener('click', (e) => {
   if (rowSwipe.justSwiped) { e.preventDefault(); return; }
   const toggle = e.target.closest('.row-readtoggle');
@@ -807,6 +841,7 @@ document.querySelectorAll('.list-filters .filter-chip').forEach((chip) => {
     els.convLoading.hidden = false;
     els.convEmpty.hidden = true;
     renderViews();
+    tuckFilters(false);
     refreshConversations();
   });
 });
@@ -2291,6 +2326,7 @@ if (document.fonts && document.fonts.ready) {
 /* --------------------------- back (mobile) --------------------------- */
 
 const phoneLayout = window.matchMedia('(max-width: 720px)');
+phoneLayout.addEventListener('change', () => { if (!phoneLayout.matches) tuckFilters(false); });
 
 function closeThread() {
   saveDraft(); // keep the unsent text for when this chat is reopened
