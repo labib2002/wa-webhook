@@ -125,7 +125,7 @@ const els = {
   peerName: $('#peer-name'),
   peerRows: $('#peer-rows'),
 };
-const filtersBar = { tucked: false, lastTop: 0, frame: 0 };
+const filtersBar = { tucked: false, frame: 0, shownAt: 0, pullFrom: null };
 
 const state = {
   conversations: [],      // latest list snapshot
@@ -639,6 +639,7 @@ function tuckFilters(on) {
   on = Boolean(on) && phoneLayout.matches;
   if (on) els.listFilters.parentElement.style.setProperty('--filters-h', `${els.listFilters.offsetHeight || 48}px`);
   filtersBar.tucked = on;
+  if (!on) filtersBar.shownAt = Date.now();
   els.listFilters.parentElement.classList.toggle('filters-tucked', on);
   renderViewPill();
 }
@@ -776,18 +777,27 @@ els.convList.addEventListener('scroll', () => {
   if (el.scrollHeight - el.scrollTop - el.clientHeight < 600) loadMoreConversations();
 }, { passive: true });
 
+// On a phone the filters stay tucked away. A pull down while the list is at the
+// very top brings them out, and scrolling down tucks them away again. Nothing
+// here moves the list while a finger is on it.
 els.convList.addEventListener('scroll', () => {
-  if (filtersBar.frame) return;
+  if (filtersBar.tucked || filtersBar.frame) return;
   filtersBar.frame = requestAnimationFrame(() => {
     filtersBar.frame = 0;
-    const top = els.convList.scrollTop;
-    const moved = top - filtersBar.lastTop;
-    if (top <= 4) { tuckFilters(false); filtersBar.lastTop = top; return; }
-    if (Math.abs(moved) < 8) return;
-    filtersBar.lastTop = top;
-    if (moved > 0 && !filtersBar.tucked) tuckFilters(true);
-    else if (moved < 0 && filtersBar.tucked) tuckFilters(false);
+    if (Date.now() - filtersBar.shownAt > 400 && els.convList.scrollTop > 24) tuckFilters(true);
   });
+}, { passive: true });
+els.convList.addEventListener('touchstart', (e) => {
+  filtersBar.pullFrom = filtersBar.tucked && els.convList.scrollTop <= 0 && e.touches.length === 1 ? e.touches[0].clientY : null;
+}, { passive: true });
+els.convList.addEventListener('touchmove', (e) => {
+  if (filtersBar.pullFrom === null || filtersBar.pullFrom === undefined) return;
+  const dy = e.touches[0].clientY - filtersBar.pullFrom;
+  if (dy < -6) filtersBar.pullFrom = null;
+  else if (dy > 36) { filtersBar.pullFrom = null; tuckFilters(false); }
+}, { passive: true });
+els.convList.addEventListener('wheel', (e) => {
+  if (filtersBar.tucked && els.convList.scrollTop <= 0 && e.deltaY < -20) tuckFilters(false);
 }, { passive: true });
 els.viewPill.addEventListener('click', () => tuckFilters(false));
 
@@ -1352,7 +1362,7 @@ function renderBubble(m, continued) {
   }
 
   const metaClass = div.classList.contains('has-media') ? 'meta meta-block' : 'meta';
-  const by = dir === 'out' && m.agent ? `<span class="meta-agent"><bdi>${escapeHtml(m.agent)}</bdi></span>` : '';
+  const by = dir === 'out' && m.agent ? `<span class="meta-agent" title="${escapeHtml(m.agent)}"><bdi>${escapeHtml(String(m.agent).trim().split(/\s+/)[0])}</bdi></span>` : '';
   let metaHtml = `<span class="${metaClass}">${by}${escapeHtml(fmtTime(iso))}`;
   if (dir === 'out') metaHtml += ' ' + tickGlyph(m._optimistic ? 'pending' : m.status);
   metaHtml += '</span>';
@@ -2326,7 +2336,8 @@ if (document.fonts && document.fonts.ready) {
 /* --------------------------- back (mobile) --------------------------- */
 
 const phoneLayout = window.matchMedia('(max-width: 720px)');
-phoneLayout.addEventListener('change', () => { if (!phoneLayout.matches) tuckFilters(false); });
+phoneLayout.addEventListener('change', () => tuckFilters(phoneLayout.matches));
+tuckFilters(phoneLayout.matches);
 
 function closeThread() {
   saveDraft(); // keep the unsent text for when this chat is reopened

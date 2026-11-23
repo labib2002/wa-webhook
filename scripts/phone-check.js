@@ -210,13 +210,23 @@ async function login(page, url) {
   check('the list says how many chats still need a reply',
     (await page.textContent('.filter-chip[data-view="needs_reply"] .chip-count')) === '2', await page.textContent('.filter-chip[data-view="needs_reply"]'));
 
-  // the filters tuck away while the list scrolls down and come back on the way up
+  // the filters are tucked away on a phone; a pull down at the very top brings them out
   await page.evaluate(() => {
     const pad = document.createElement('div');
     pad.id = 'tall-pad'; pad.style.height = '3000px';
     document.querySelector('#conv-list').appendChild(pad);
   });
   const scrollList = async (y) => { await page.evaluate((v) => { document.querySelector('#conv-list').scrollTop = v; }, y); await page.waitForTimeout(320); };
+  const pullDown = async () => {
+    await page.evaluate(() => {
+      const list = document.querySelector('#conv-list');
+      const t = (y) => new Touch({ identifier: 1, target: list, clientX: 150, clientY: y });
+      list.dispatchEvent(new TouchEvent('touchstart', { touches: [t(200)], bubbles: true }));
+      list.dispatchEvent(new TouchEvent('touchmove', { touches: [t(260)], bubbles: true }));
+      list.dispatchEvent(new TouchEvent('touchend', { touches: [], bubbles: true }));
+    });
+    await page.waitForTimeout(450);
+  };
   const tucked = () => page.evaluate(() => {
     const pane = document.querySelector('.pane-list');
     const f = document.querySelector('#list-filters').getBoundingClientRect();
@@ -224,24 +234,27 @@ async function login(page, url) {
     return { tucked: pane.classList.contains('filters-tucked'), hiddenUnderSearch: f.bottom <= s.bottom + 1 };
   });
   const shots = process.env.SHOTS_DIR;
-  if (shots) await page.screenshot({ path: `${shots}/filters-top.png` });
-  await scrollList(400);
-  const down = await tucked();
-  if (shots) await page.screenshot({ path: `${shots}/filters-tucked.png` });
-  check('scrolling the list down tucks the filters under the search', down.tucked && down.hiddenUnderSearch, JSON.stringify(down));
-  check('with "Chats" on, nothing extra shows in the search', await page.isHidden('#view-pill'));
-  await scrollList(330);
-  const backUp = await tucked();
-  check('a little scroll up brings the filters back', !backUp.tucked && !backUp.hiddenUnderSearch, JSON.stringify(backUp));
-  await scrollList(900);
   await scrollList(0);
-  check('at the top of the list the filters are always there', !(await tucked()).tucked);
+  const start = await tucked();
+  if (shots) await page.screenshot({ path: `${shots}/filters-top.png` });
+  check('on a phone the filters start tucked away, even at the top of the list', start.tucked && start.hiddenUnderSearch, JSON.stringify(start));
+  check('with "Chats" on, nothing extra shows in the search', await page.isHidden('#view-pill'));
+  await scrollList(500);
+  await scrollList(200);
+  check('scrolling the list up and down never brings them out', (await tucked()).tucked);
+  check('the list scrolls freely with them tucked', await page.evaluate(() => document.querySelector('#conv-list').scrollTop) === 200);
+  await scrollList(0);
+  await pullDown();
+  const pulled = await tucked();
+  if (shots) await page.screenshot({ path: `${shots}/filters-pulled.png` });
+  check('a pull down at the very top brings the filters out', !pulled.tucked && !pulled.hiddenUnderSearch, JSON.stringify(pulled));
   await page.click('.filter-chip[data-view="needs_reply"]');
-  await page.waitForTimeout(300);
+  await page.waitForTimeout(500);
   await page.evaluate(() => {
     if (!document.querySelector('#tall-pad')) { const pad = document.createElement('div'); pad.id = 'tall-pad'; pad.style.height = '3000px'; document.querySelector('#conv-list').appendChild(pad); }
   });
   await scrollList(400);
+  check('scrolling down tucks them away again', (await tucked()).tucked);
   if (shots) await page.screenshot({ path: `${shots}/filters-tucked-needs-reply.png` });
   const pill = await page.evaluate(() => ({ shown: !document.querySelector('#view-pill').hidden, text: document.querySelector('#view-pill').textContent }));
   check('with the filters tucked, the active one stays in the search bar', pill.shown && /^Needs reply/.test(pill.text), JSON.stringify(pill));
