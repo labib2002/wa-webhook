@@ -196,7 +196,12 @@ function mergeMessages(t, rows) {
       for (let i = t.order.length - 1; i >= 0; i--) {
         const o = t.byId.get(t.order[i]);
         const local = o && (o._optimistic || (typeof o.id === 'number' && o.id < 0));
-        if (local && o.direction === m.direction && o.body === m.body && o.type === m.type) {
+        if (!local) continue;
+        const twin = o.client_key && m.client_key
+          ? o.client_key === m.client_key
+          : o.direction === m.direction && o.body === m.body && o.type === m.type;
+        if (twin) {
+          takeOver(o, m);
           t.byId.delete(o.id); t.order.splice(i, 1); break;
         }
       }
@@ -228,6 +233,13 @@ function mergeMessages(t, rows) {
     return a - b;
   });
   return changed;
+}
+
+// The saved row takes the place of the bubble drawn before the send answered:
+// same spot on screen, same photo or recording, so nothing is drawn twice.
+function takeOver(local, row) {
+  row._key = local._key || String(local.id);
+  if (local._localUrl && !row._localUrl) row._localUrl = local._localUrl;
 }
 
 // byId is the source of truth; order is just the ordering index. Render each id
@@ -696,13 +708,48 @@ function renderConversations(forceRender = false) {
   els.convEmpty.hidden = true;
 
   const keepScroll = els.convList.scrollTop;
-  let html = list.map((c) => rowHtml(c)).join('');
+  const items = list.map((c) => ({ key: `c:${c.wa_id}`, html: rowHtml(c) }));
   if (hits.length) {
-    html += `<div class="list-section">In messages</div>${hits.map((h) => rowHtml(h, h.hit)).join('')}`;
+    items.push({ key: 'section', html: '<div class="list-section">In messages</div>' });
+    for (const h of hits) items.push({ key: `h:${h.wa_id}:${h.hit.message_id}`, html: rowHtml(h, h.hit) });
   }
-  if (state.list.next != null) html += '<div class="list-more" id="list-more">Loading more…</div>';
-  els.convList.innerHTML = html;
-  els.convList.scrollTop = keepScroll;
+  if (state.list.next != null) items.push({ key: 'more', html: '<div class="list-more" id="list-more">Loading more…</div>' });
+  patchList(els.convList, items);
+  if (els.convList.scrollTop !== keepScroll) els.convList.scrollTop = keepScroll;
+}
+
+// Keeps every chat row whose content is unchanged (its photo is not loaded
+// again), redraws only rows that changed, and moves rows into the new order.
+function patchList(container, items) {
+  const old = new Map();
+  for (const n of [...container.children]) {
+    if (n._key && !old.has(n._key)) old.set(n._key, n);
+    else n.remove();
+  }
+  let anchor = null;
+  for (const it of items) {
+    let node = old.get(it.key);
+    if (node && node._html !== it.html) {
+      const fresh = htmlNode(it.html);
+      node.replaceWith(fresh);
+      node = fresh;
+    } else if (!node) {
+      node = htmlNode(it.html);
+    }
+    old.delete(it.key);
+    node._key = it.key;
+    node._html = it.html;
+    const want = anchor ? anchor.nextSibling : container.firstChild;
+    if (node !== want) container.insertBefore(node, want);
+    anchor = node;
+  }
+  for (const [, n] of old) n.remove();
+}
+
+function htmlNode(html) {
+  const t = document.createElement('template');
+  t.innerHTML = html.trim();
+  return t.content.firstElementChild;
 }
 
 els.convList.addEventListener('scroll', () => {
@@ -1017,60 +1064,94 @@ function renderMessages(force = false) {
   els.messagesEmpty.hidden = msgs.length > 0;
 
   const container = els.messages;
-  // Build the desired sequence of [type,key,node-spec].
-  const desiredIds = msgs.map((m) => String(m.id));
+  const keyOf = (m) => m._key || String(m.id);
   const existingNodes = new Map(
-    [...container.querySelectorAll('.bubble')].map((n) => [n.dataset.mid, n])
+    [...container.querySelectorAll('.bubble')].map((n) => [n.dataset.key, n])
   );
-
-  // If forced (chat switch), clear day separators; we rebuild them inline.
-  container.querySelectorAll('.day-sep').forEach((n) => n.remove());
+  const existingSeps = new Map(
+    [...container.querySelectorAll('.day-sep')].map((n) => [n.dataset.day, n])
+  );
 
   let lastDay = '';
   let lastDir = '';
-  let anchor = els.threadLoading; // insert after the loading/empty sentinels
-  // Ensure sentinels stay at the top.
+  let anchor = els.threadLoading;
+  const place = (node) => {
+    if (node.previousSibling !== anchor) container.insertBefore(node, anchor.nextSibling);
+    anchor = node;
+  };
   for (const m of msgs) {
     const iso = m.wa_timestamp || m.created_at;
     const day = iso ? new Date(iso).toDateString() : '';
     if (day && day !== lastDay) {
-      const sep = document.createElement('div');
-      sep.className = 'day-sep';
-      sep.textContent = dayLabel(iso);
-      container.insertBefore(sep, anchor.nextSibling);
-      anchor = sep;
+      let sep = existingSeps.get(day);
+      const label = dayLabel(iso);
+      if (sep) {
+        existingSeps.delete(day);
+        if (sep.textContent !== label) sep.textContent = label;
+      } else {
+        sep = document.createElement('div');
+        sep.className = 'day-sep';
+        sep.dataset.day = day;
+        sep.textContent = label;
+      }
+      place(sep);
       lastDay = day;
       lastDir = '';
     }
     const continued = m.direction === lastDir;
-    let node = existingNodes.get(String(m.id));
+    const key = keyOf(m);
+    let node = existingNodes.get(key);
     if (node) {
-      // update in place only if the rendered signature changed
       const sig = bubbleSig(m, continued);
       if (node.dataset.sig !== sig) {
         const fresh = renderBubble(m, continued);
-        node.replaceWith(fresh);
-        node = fresh;
+        if (node.dataset.body === fresh.dataset.body) patchBubble(node, fresh);
+        else { node.replaceWith(fresh); node = fresh; }
       }
-      existingNodes.delete(String(m.id));
+      existingNodes.delete(key);
     } else {
       node = renderBubble(m, continued);
     }
-    // place node right after anchor (keeps order without full rebuild)
-    if (node.previousSibling !== anchor) container.insertBefore(node, anchor.nextSibling);
-    anchor = node;
+    place(node);
     lastDir = m.direction;
   }
-  // remove stale bubbles no longer present
   for (const [, node] of existingNodes) node.remove();
+  for (const [, sep] of existingSeps) sep.remove();
 }
 
-// A cheap signature of everything that affects a bubble's rendering, so we
-// only re-render when something visible actually changed.
+// Only the ticks, the time line and the buttons beside a bubble change while a
+// message goes out; its text, photo or player stay the same elements.
+function patchBubble(node, fresh) {
+  node.className = fresh.className;
+  node.dataset.mid = fresh.dataset.mid;
+  node.dataset.sig = fresh.dataset.sig;
+  const swap = (sel) => {
+    const was = node.querySelector(`:scope > ${sel}`);
+    const now = fresh.querySelector(`:scope > ${sel}`);
+    if (was && now) { if (was.outerHTML !== now.outerHTML) was.replaceWith(now); }
+    else if (was) was.remove();
+    else if (now) node.appendChild(now);
+  };
+  swap('.meta');
+  swap('.bubble-actions');
+}
+
+// Everything that changes a bubble's rendering, so it is redrawn only when
+// something visible changed.
 function bubbleSig(m, continued) {
   const quoted = quotedMessage(m);
   const meta = m.media_meta || {};
-  return [m.id, m.status, m.error || '', m.reaction, m.media_status, m.forwarded ? 1 : 0, m._optimistic ? 1 : 0, continued ? 1 : 0, m.body, replyToOf(m) || '', quoted ? quoted.id : '', state.templates.length, meta.sent_as_audio ? 1 : 0, meta.voice ? 1 : 0, m.agent || ''].join('|');
+  return [m.id, m.status, m.error || '', m.reaction, m.media_status, m.forwarded ? 1 : 0, m._optimistic ? 1 : 0, continued ? 1 : 0, m.body, replyToOf(m) || '', quoted ? quoted.id : '', state.templates.length, meta.sent_as_audio ? 1 : 0, meta.voice ? 1 : 0, m.agent || '', m.wa_message_id ? 1 : 0].join('|');
+}
+
+// The part of a bubble that is more than its ticks: when this is the same, the
+// bubble is patched in place instead of drawn again.
+function bodySig(m, continued) {
+  const quoted = quotedMessage(m);
+  const meta = m.media_meta || {};
+  const failed = m.status === 'failed' ? `failed:${m.error || ''}` : '';
+  const media = m._localUrl ? 'local' : m.media_status;
+  return [failed, m.reaction, media, m.forwarded ? 1 : 0, continued ? 1 : 0, m.body, replyToOf(m) || '', quoted ? quoted.id : '', state.templates.length, meta.sent_as_audio ? 1 : 0, meta.voice ? 1 : 0].join('|');
 }
 
 function replyToOf(m) {
@@ -1148,7 +1229,9 @@ function renderBubble(m, continued) {
   const dir = m.direction === 'out' ? 'out' : 'in';
   div.className = `bubble ${dir}`;
   div.dataset.mid = String(m.id);
+  div.dataset.key = m._key || String(m.id);
   div.dataset.sig = bubbleSig(m, continued);
+  div.dataset.body = bodySig(m, continued);
   if (continued) div.classList.add(dir === 'out' ? 'cont-out' : 'cont-in');
   if (m.status === 'failed') div.classList.add('failed');
   if (m._optimistic) div.classList.add('pending');
@@ -1247,7 +1330,7 @@ function renderBubble(m, continued) {
     });
   }
   const view = div.querySelector('[data-view]');
-  if (view) view.addEventListener('click', (e) => { e.stopPropagation(); openViewer(m.id); });
+  if (view) view.addEventListener('click', (e) => { e.stopPropagation(); openViewer(Number(div.dataset.mid)); });
   const quote = div.querySelector('.bubble-quote[data-quote]');
   if (quote) quote.addEventListener('click', (e) => { e.stopPropagation(); jumpToMessage(Number(quote.dataset.quote)); });
 
@@ -1763,6 +1846,7 @@ async function sendFile(waId, f, caption = '') {
   clearBanner();
 
   const sendKey = newSendKey();
+  opt.client_key = sendKey;
   const { ok, status, data } = await api('/api/send-media', {
     method: 'POST',
     headers: { 'x-idempotency-key': sendKey },
@@ -1998,8 +2082,10 @@ els.recPause.addEventListener('click', togglePause);
 // Add an optimistic outgoing bubble to the active thread and render it.
 function addOptimistic(waId, fields) {
   const t = thread(waId);
+  const localId = state.optimisticSeq--;
   const opt = {
-    id: state.optimisticSeq--,
+    id: localId,
+    _key: `k${localId}`,
     _optimistic: true,
     wa_id: waId,
     direction: 'out',
@@ -2043,7 +2129,13 @@ function settleOptimistic(waId, opt, patch, persisted) {
   t.byId.delete(opt.id);
   const idx = t.order.indexOf(opt.id);
   if (idx > -1) t.order.splice(idx, 1);
-  const row = persisted || { ...opt, ...patch };
+  let row = persisted || { ...opt, ...patch };
+  const seen = persisted ? t.byId.get(row.id) : null;
+  if (seen) {
+    const status = shownStatus(seen, row);
+    row = { ...seen, ...row, status, error: status === row.status ? row.error : seen.error };
+  }
+  if (persisted) takeOver(seen && seen._key ? seen : opt, row);
   t.byId.set(row.id, row);
   // The 1500ms poll usually beats the ~3.5s send, so this row may already be in
   // order (the twin-drop having removed the optimistic id). Pushing regardless
@@ -2077,6 +2169,7 @@ els.composerForm.addEventListener('submit', async (e) => {
   clearBanner();
 
   const sendKey = newSendKey();
+  opt.client_key = sendKey;
   const { ok, status, data } = await api('/api/send', {
     method: 'POST',
     headers: { 'x-idempotency-key': sendKey },
