@@ -181,6 +181,16 @@ async function login(page, url) {
     return { noHeader: !document.querySelector('.list-header') && !document.querySelector('#notify-btn'), sameRow: Math.abs((search.top + search.height / 2) - (me.top + me.height / 2)) < 4, meRight: me.left > search.right, top: Math.round(search.top) };
   });
   check('no top row: the search is first, with one round menu button beside it', top.noHeader && top.sameRow && top.meRight && top.top < 24, JSON.stringify(top));
+  for (const width of [360, 390, 412]) {
+    await page.setViewportSize({ width, height: 780 });
+    await page.waitForTimeout(150);
+    const fit = await page.evaluate(() => {
+      const me = document.querySelector('#me-btn .me-initials').getBoundingClientRect();
+      return { gutter: Math.round(window.innerWidth - me.right), sideways: document.documentElement.scrollWidth > window.innerWidth };
+    });
+    check(`the menu button sits fully inside the screen at ${width} wide`, fit.gutter >= 10 && !fit.sideways, JSON.stringify(fit));
+  }
+  await page.setViewportSize({ width: 390, height: 780 });
   await page.click('#me-btn');
   const meMenu = await page.evaluate(() => ({
     open: !document.querySelector('#me-menu').hidden,
