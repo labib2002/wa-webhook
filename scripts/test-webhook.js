@@ -390,14 +390,28 @@ function sign(body) {
     assert.strictEqual(db._tables.messages.find((m) => m.id === 555).reaction, '❤️');
   });
 
-  await test('reaction bumps the conversation (preview + unread) so the inbox surfaces it', async () => {
-    const conv = db._tables.conversations.find((c) => c.wa_id === '201001234567');
-    const beforeUnread = conv.unread_count;
+  await test('a reaction shows in the list but does not make the chat need a reply', async () => {
+    const { needsReply } = require('../lib/inbox');
+    const row = () => db._tables.conversations.find((c) => c.wa_id === '201001234567');
+    const answered = '2024-06-01T00:00:00.000Z';
+    Object.assign(row(), { last_message_direction: 'out', last_message_at: answered, unread_count: 0, done_at: null });
     await ingestWebhook(inboundReaction('wamid.REACTABLE', '👍'), db);
-    const after = db._tables.conversations.find((c) => c.wa_id === '201001234567');
+    let after = db._tables.conversations.find((c) => c.wa_id === '201001234567');
     assert.strictEqual(after.last_message_text, '👍 Reacted to your message');
-    assert.strictEqual(after.last_message_direction, 'in');
-    assert.strictEqual(after.unread_count, beforeUnread + 1, 'reaction did not increment unread');
+    assert.strictEqual(after.last_message_direction, 'out', 'our message is still the last one to answer');
+    assert.strictEqual(after.unread_count, 0, 'a reaction is not unread');
+    assert.ok(Date.parse(after.last_message_at) > Date.parse(answered), 'the chat still rises in the list');
+    assert.strictEqual(needsReply(after), false, 'answered chat + reaction: no reply needed');
+
+    Object.assign(row(), { last_message_direction: 'in', last_message_at: answered, unread_count: 0, done_at: '2024-06-05T00:00:00.000Z' });
+    await ingestWebhook(inboundReaction('wamid.REACTABLE', '❤️'), db);
+    after = db._tables.conversations.find((c) => c.wa_id === '201001234567');
+    assert.strictEqual(needsReply(after), false, 'a chat marked done stays done after a reaction');
+
+    Object.assign(row(), { last_message_direction: 'in', last_message_at: answered, unread_count: 0, done_at: null });
+    await ingestWebhook(inboundReaction('wamid.REACTABLE', '😂'), db);
+    after = db._tables.conversations.find((c) => c.wa_id === '201001234567');
+    assert.strictEqual(needsReply(after), true, 'a question still waiting keeps waiting');
   });
 
   await test('reaction removal clears the emoji and does NOT bump unread', async () => {

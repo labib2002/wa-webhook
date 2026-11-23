@@ -683,7 +683,8 @@ function rowHtml(c, hit) {
   const isNew = newHere(c);
   const cls = `${active}${isNew ? ' has-unread' : ''}${isWaiting && !isNew ? ' is-waiting' : ''}`;
   const badge = c.unread_count > 99 ? '99+' : c.unread_count || '';
-  const outTick = !hit && c.last_message_direction === 'out' ? '<span class="tick">✓</span> ' : '';
+  const reacted = /Reacted to your message$/.test(c.last_message_text || '');
+  const outTick = !hit && !reacted && c.last_message_direction === 'out' ? '<span class="tick">✓</span> ' : '';
   const preview = hit ? hit.text : WaTpl.previewText(c.last_message_text, state.templates);
   const when = hit ? hit.at : c.last_message_at;
   const toggleTitle = isWaiting ? 'Mark as done' : 'Mark as needing a reply';
@@ -1180,6 +1181,9 @@ function patchBubble(node, fresh) {
     else if (was) was.remove();
     else if (now) node.appendChild(now);
   };
+  if (fresh.dataset.tail) node.dataset.tail = fresh.dataset.tail;
+  else delete node.dataset.tail;
+  swap('.meta-pad');
   swap('.meta');
   swap('.bubble-actions');
 }
@@ -1325,8 +1329,8 @@ function renderBubble(m, continued) {
       div.classList.add(isVoice ? 'is-voice' : 'is-audio');
       const compat = m._localUrl ? '' : `/api/media/${m.id}?compat=1`;
       const audioSrc = compat && !canPlayAudio(meta.mime_type) ? compat : src;
-      // One line: the bubble keeps line breaks, and one here drew an empty row.
-      inner += `<span class="media-label">${isVoice ? '🎤 Voice message' : '🎵 Audio'}</span><audio class="media-audio" controls preload="metadata" src="${audioSrc}" data-compat="${compat}"></audio>`;
+      div.classList.add('is-player');
+      inner += playerHtml(m, audioSrc, compat, isVoice);
       if (meta.sent_as_audio) inner += '<span class="send-note">Sent as an audio file. WhatsApp refused it as a voice note.</span>';
     } else if (stored && m.type === 'document') {
       const fname = escapeHtml(meta.filename || 'Document');
@@ -1363,20 +1367,16 @@ function renderBubble(m, continued) {
 
   const metaClass = div.classList.contains('has-media') ? 'meta meta-block' : 'meta';
   const by = dir === 'out' && m.agent ? `<span class="meta-agent" title="${escapeHtml(m.agent)}"><bdi>${escapeHtml(String(m.agent).trim().split(/\s+/)[0])}</bdi></span>` : '';
-  let metaHtml = `<span class="${metaClass}">${by}${escapeHtml(fmtTime(iso))}`;
-  if (dir === 'out') metaHtml += ' ' + tickGlyph(m._optimistic ? 'pending' : m.status);
-  metaHtml += '</span>';
+  let metaInner = `${by}${escapeHtml(fmtTime(iso))}`;
+  if (dir === 'out') metaInner += ' ' + tickGlyph(m._optimistic ? 'pending' : m.status);
+  const metaHtml = `<span class="${metaClass}">${metaInner}</span>`;
+  // Text bubbles end with an invisible copy of the time line, so the last line
+  // always leaves room for it, whichever way that line reads.
+  const tail = !div.classList.contains('has-media') && !div.classList.contains('is-player');
 
-  div.innerHTML = inner + metaHtml;
+  div.innerHTML = inner + (tail ? `<span class="meta-pad" aria-hidden="true">${metaInner}</span>` : '') + metaHtml;
+  setupPlayer(div);
 
-  // A browser can claim it plays a format and still fail on it; fall back once.
-  const audio = div.querySelector('audio[data-compat]');
-  if (audio && audio.dataset.compat) {
-    audio.addEventListener('error', () => {
-      const compat = audio.dataset.compat;
-      if (!audio.src.endsWith(compat)) audio.src = compat;
-    });
-  }
   const view = div.querySelector('[data-view]');
   if (view) view.addEventListener('click', (e) => { e.stopPropagation(); openViewer(Number(div.dataset.mid)); });
   const quote = div.querySelector('.bubble-quote[data-quote]');
@@ -1432,7 +1432,158 @@ function renderBubble(m, continued) {
     actions.appendChild(actionButton('More for this', '<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>', () => openSheet(m)));
     div.appendChild(actions);
   }
+  if (tail && !div.querySelector(':scope > .fail-reason, :scope > .bubble-retry')) {
+    div.classList.add('meta-tail');
+    div.dataset.tail = lastLineDir([...div.childNodes]
+      .filter((n) => !(n.nodeType === 1 && n.matches('.meta, .meta-pad, .bubble-actions, .reaction-pill, .bubble-quote, .forwarded-tag')))
+      .map((n) => n.textContent).join(''));
+  }
   return div;
+}
+
+// The direction of a text's last paragraph, the way the bubble lays it out
+// (each paragraph reads in the direction of its first strong letter).
+const STRONG_RTL = /[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF]/;
+const STRONG_LTR = /[A-Za-z\u00C0-\u024F\u0370-\u03FF\u0400-\u04FF]/;
+function lastLineDir(text) {
+  const lines = String(text || '').split('\n').filter((l) => l.trim());
+  for (const ch of lines.length ? lines[lines.length - 1] : '') {
+    if (STRONG_RTL.test(ch)) return 'rtl';
+    if (STRONG_LTR.test(ch)) return 'ltr';
+  }
+  return 'ltr';
+}
+
+/* ----------------------- voice notes and audio files ----------------------- */
+
+const SPEEDS = [0.5, 1, 1.5, 2];
+const player = { speed: 1, current: null };
+try { const saved = Number(sessionStorage.getItem('wa-speed')); if (SPEEDS.includes(saved)) player.speed = saved; } catch (_) {}
+const speedLabel = (v) => `${v}x`;
+function setSpeed(v) {
+  player.speed = v;
+  try { sessionStorage.setItem('wa-speed', String(v)); } catch (_) {}
+  for (const b of document.querySelectorAll('.vp-speed')) b.textContent = speedLabel(v);
+  for (const el of document.querySelectorAll('.vplayer audio, video.viewer-media')) el.playbackRate = v;
+}
+const nextSpeed = () => SPEEDS[(SPEEDS.indexOf(player.speed) + 1) % SPEEDS.length];
+function fmtClock(sec) {
+  if (!Number.isFinite(sec) || sec < 0) return '0:00';
+  const t = Math.floor(sec);
+  return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
+}
+const BAR_COUNT = 30;
+function waveBars(seed) {
+  let x = Math.abs(Number(seed) || 7) % 233280;
+  let out = '';
+  for (let i = 0; i < BAR_COUNT; i++) {
+    x = (x * 9301 + 49297) % 233280;
+    out += `<i style="height:${24 + Math.round((x / 233280) * 76)}%"></i>`;
+  }
+  return out;
+}
+const ICO_PLAY = '<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.4-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"/></svg>';
+const ICO_PAUSE = '<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true"><rect x="6.5" y="5" width="4" height="14" rx="1.2"/><rect x="13.5" y="5" width="4" height="14" rx="1.2"/></svg>';
+const ICO_AGAIN = '<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>';
+const ICO_MIC = '<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor" aria-hidden="true"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-2.08A7 7 0 0 0 19 12z"/></svg>';
+const ICO_NOTE = '<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor" aria-hidden="true"><path d="M9 18V6l11-2v12a3 3 0 1 1-2-2.83V7.4l-7 1.27V18a3 3 0 1 1-2-2.83z"/></svg>';
+
+// Built as one string with no gaps: the bubble keeps white space.
+function playerHtml(m, src, compat, isVoice) {
+  return `<div class="vplayer${isVoice ? ' is-voice' : ''}" dir="ltr" data-state="idle">`
+    + `<button type="button" class="vp-play" aria-label="Play ${isVoice ? 'voice message' : 'audio'}">${ICO_PLAY}</button>`
+    + '<div class="vp-body">'
+    + `<div class="vp-track" role="slider" tabindex="0" aria-label="Position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span class="vp-bars">${waveBars(m.id)}</span></div>`
+    + `<div class="vp-row"><span class="vp-time">0:00</span><span class="vp-error" hidden>Could not play it. Tap to try again.</span><button type="button" class="vp-speed" aria-label="Playback speed">${speedLabel(player.speed)}</button></div>`
+    + '</div>'
+    + `<span class="vp-mark" aria-hidden="true">${isVoice ? ICO_MIC : ICO_NOTE}</span>`
+    + `<audio preload="metadata" src="${src}" data-compat="${compat}"></audio>`
+    + '</div>';
+}
+
+function setupPlayer(div) {
+  const root = div.querySelector('.vplayer');
+  if (!root) return;
+  const audio = root.querySelector('audio');
+  const btn = root.querySelector('.vp-play');
+  const track = root.querySelector('.vp-track');
+  const time = root.querySelector('.vp-time');
+  const err = root.querySelector('.vp-error');
+  const bars = [...root.querySelectorAll('.vp-bars i')];
+  const setState = (st) => {
+    root.dataset.state = st;
+    btn.innerHTML = st === 'playing' || st === 'loading' ? ICO_PAUSE : st === 'error' ? ICO_AGAIN : ICO_PLAY;
+    btn.setAttribute('aria-label', st === 'playing' || st === 'loading' ? 'Pause' : st === 'error' ? 'Try again' : 'Play');
+    err.hidden = st !== 'error';
+    time.hidden = st === 'error';
+  };
+  const length = () => (Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : 0);
+  const paint = () => {
+    const d = length();
+    const part = d ? Math.min(1, audio.currentTime / d) : 0;
+    const lit = Math.round(part * bars.length);
+    bars.forEach((b, i) => b.classList.toggle('on', i < lit));
+    track.setAttribute('aria-valuenow', String(Math.round(part * 100)));
+    const running = root.dataset.state === 'playing' || root.dataset.state === 'loading' || audio.currentTime > 0;
+    time.textContent = fmtClock(running ? audio.currentTime : d);
+  };
+  const start = () => {
+    if (player.current && player.current !== audio) player.current.pause();
+    player.current = audio;
+    audio.playbackRate = player.speed;
+    setState('loading');
+    const p = audio.play();
+    if (p && p.catch) p.catch((e) => { if (root.dataset.state !== 'error') setState(e && e.name === 'NotAllowedError' ? 'paused' : 'error'); });
+  };
+  audio.addEventListener('loadedmetadata', paint);
+  audio.addEventListener('durationchange', paint);
+  audio.addEventListener('timeupdate', () => { if (!audio.isConnected) { audio.pause(); return; } paint(); });
+  audio.addEventListener('playing', () => { audio.playbackRate = player.speed; setState('playing'); });
+  audio.addEventListener('waiting', () => { if (!audio.paused) setState('loading'); });
+  audio.addEventListener('pause', () => { if (root.dataset.state !== 'error') setState('paused'); });
+  audio.addEventListener('ended', () => { audio.currentTime = 0; setState('idle'); paint(); });
+  audio.addEventListener('error', () => {
+    // A browser can claim it plays a format and still fail on it; the AAC copy is the fallback.
+    const compat = audio.dataset.compat;
+    if (compat && !audio.src.endsWith(compat)) {
+      const wanted = root.dataset.state === 'loading' || root.dataset.state === 'playing';
+      audio.src = compat;
+      audio.load();
+      if (wanted) start();
+      return;
+    }
+    setState('error');
+  });
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (root.dataset.state === 'error') { setState('idle'); audio.load(); start(); return; }
+    if (audio.paused) start(); else audio.pause();
+  });
+  root.querySelector('.vp-speed').addEventListener('click', (e) => { e.stopPropagation(); setSpeed(nextSpeed()); });
+  const seekTo = (x) => {
+    const d = length();
+    if (!d) return;
+    const r = track.getBoundingClientRect();
+    audio.currentTime = Math.max(0, Math.min(1, (x - r.left) / r.width)) * d;
+    paint();
+  };
+  track.addEventListener('pointerdown', (e) => {
+    e.stopPropagation();
+    try { track.setPointerCapture(e.pointerId); } catch (_) {}
+    root.classList.add('seeking');
+    seekTo(e.clientX);
+  });
+  track.addEventListener('pointermove', (e) => { if (root.classList.contains('seeking')) seekTo(e.clientX); });
+  for (const type of ['pointerup', 'pointercancel']) track.addEventListener(type, () => root.classList.remove('seeking'));
+  track.addEventListener('keydown', (e) => {
+    const d = length();
+    if (!d || (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft')) return;
+    e.preventDefault();
+    audio.currentTime = Math.max(0, Math.min(d, audio.currentTime + (e.key === 'ArrowRight' ? 5 : -5)));
+    paint();
+  });
+  root.addEventListener('click', (e) => e.stopPropagation());
+  root.addEventListener('dblclick', (e) => e.stopPropagation());
 }
 
 function contactCardHtml(c) {
@@ -3262,7 +3413,11 @@ function showViewerItem(index) {
   viewer.download.setAttribute('download', meta.filename || '');
 
   if (m.type === 'video') {
-    viewer.stage.innerHTML = `<video class="viewer-media" controls autoplay playsinline src="${src}"></video>`;
+    viewer.stage.innerHTML = `<video class="viewer-media" controls autoplay playsinline webkit-playsinline src="${src}"></video><button type="button" class="vp-speed viewer-speed" aria-label="Playback speed">${speedLabel(player.speed)}</button>`;
+    const video = viewer.stage.querySelector('video');
+    video.playbackRate = player.speed;
+    video.addEventListener('loadedmetadata', () => { video.playbackRate = player.speed; });
+    viewer.stage.querySelector('.viewer-speed').addEventListener('click', (e) => { e.stopPropagation(); setSpeed(nextSpeed()); });
   } else if (m.type === 'document') {
     const inline = m._localUrl || `/api/media/${m.id}?inline=1`;
     viewer.stage.innerHTML = `<iframe class="viewer-pdf" src="${inline}" title="${escapeHtml(meta.filename || 'Document')}"></iframe>`;
@@ -3789,7 +3944,7 @@ document.addEventListener('pointerdown', (e) => {
 document.addEventListener('selectstart', (e) => {
   if (!byTouch) return;
   const el = e.target.nodeType === 1 ? e.target : e.target.parentElement;
-  if (el && el.closest('.bubble, .conv-row, .day-sep')) e.preventDefault();
+  if (el && el.closest('.bubble, .conv-row, .day-sep, .sheet-overlay, .messages, .me-menu')) e.preventDefault();
 });
 els.convList.addEventListener('contextmenu', (e) => { if (byTouch) e.preventDefault(); });
 document.addEventListener('contextmenu', (e) => {
@@ -3804,7 +3959,21 @@ document.addEventListener('selectionchange', () => {
   if (sel.rangeCount && node && !node.closest('input, textarea, [contenteditable="true"]')) sel.removeAllRanges();
 });
 
-const press = { timer: null, bubble: null, x0: 0, y0: 0, swiping: false, dx: 0, fired: false };
+const press = { timer: null, bubble: null, x0: 0, y0: 0, swiping: false, dx: 0, fired: false, tapOk: false };
+const lastTap = { bubble: null, at: 0, x: 0, y: 0 };
+const DOUBLE_TAP_MS = 320;
+
+// A double click on a message, or beside it in its row, answers it, as in WhatsApp.
+function canReplyTo(m) {
+  return Boolean(m && !m._optimistic && m.wa_message_id && m.status !== 'failed');
+}
+function bubbleAtY(y) {
+  for (const b of els.messages.querySelectorAll(':scope > .bubble')) {
+    const r = b.getBoundingClientRect();
+    if (y >= r.top && y <= r.bottom) return b;
+  }
+  return null;
+}
 const LONG_PRESS_MS = 450;
 const SWIPE_REPLY_AT = 56;
 
@@ -3821,8 +3990,8 @@ function endPress() {
 els.messages.addEventListener('touchstart', (e) => {
   endPress();
   const bubble = e.target.closest('.bubble');
-  if (!bubble || e.touches.length !== 1 || e.target.closest('audio, .bubble-retry')) return;
-  Object.assign(press, { bubble, x0: e.touches[0].clientX, y0: e.touches[0].clientY, dx: 0, fired: false });
+  if (!bubble || e.touches.length !== 1 || e.target.closest('audio, .bubble-retry, .vplayer')) return;
+  Object.assign(press, { bubble, x0: e.touches[0].clientX, y0: e.touches[0].clientY, dx: 0, fired: false, tapOk: !e.target.closest('a, button, .media-frame, video, .contact-card') });
   press.timer = setTimeout(() => {
     if (!press.bubble || press.swiping) return;
     press.fired = true;
@@ -3857,9 +4026,36 @@ for (const type of ['touchend', 'touchcancel']) {
     if (type === 'touchend' && swiping && dx >= SWIPE_REPLY_AT && m) {
       if (navigator.vibrate) { try { navigator.vibrate(8); } catch (_) {} }
       startReply(m);
+      return;
     }
+    // Two quick taps on the same message answer it.
+    if (type !== 'touchend' || swiping || fired || !bubble || !press.tapOk || !e.changedTouches.length) { lastTap.bubble = null; return; }
+    const t = e.changedTouches[0];
+    if (Math.abs(t.clientX - press.x0) > 10 || Math.abs(t.clientY - press.y0) > 10) { lastTap.bubble = null; return; }
+    const now = Date.now();
+    if (lastTap.bubble === bubble && now - lastTap.at < DOUBLE_TAP_MS && Math.abs(t.clientX - lastTap.x) < 30 && Math.abs(t.clientY - lastTap.y) < 30) {
+      lastTap.bubble = null;
+      if (canReplyTo(m)) {
+        if (e.cancelable) e.preventDefault();
+        startReply(m);
+      }
+      return;
+    }
+    Object.assign(lastTap, { bubble, at: now, x: t.clientX, y: t.clientY });
   });
 }
+
+els.messages.addEventListener('mousedown', (e) => {
+  if (e.detail > 1 && !e.target.closest('input, textarea')) e.preventDefault();
+});
+els.messages.addEventListener('dblclick', (e) => {
+  if (byTouch || e.target.closest('a, button, input, textarea, .vplayer, .media-frame, video, .bubble-actions')) return;
+  const bubble = e.target.closest('.bubble') || bubbleAtY(e.clientY);
+  const m = bubble ? messageOfBubble(bubble) : null;
+  if (!canReplyTo(m)) return;
+  if (window.getSelection) window.getSelection().removeAllRanges();
+  startReply(m);
+});
 
 // As a Home Screen app there is no browser bar to go back with: a swipe in
 // from the left edge returns to the list. In a browser tab the browser's own
