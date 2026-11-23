@@ -122,7 +122,7 @@ Copy `.env.example` → `.env` and fill in. In production this is an on-box
 | `AWS_REGION` | `eu-west-1`. Credentials come from the instance role. |
 | `MEDIA_MAX_BYTES` | Inbound download cap. Defaults to 25 MB. |
 | `BACKEND_URL` | The Byte+ backend that checks staff sign-ins. Default `http://127.0.0.1:8000` (the backend on the same box, called directly). |
-| `BACKEND_PROXY_HOPS` | The backend's `trust proxy` number. Default `2`. The inbox pads `x-forwarded-for` so the backend's login limit counts the agent's address, not the inbox. |
+| `BACKEND_PROXY_HOPS` | Default `1`: the inbox sends the agent's address as the one `x-forwarded-for` value, so the backend's login limit counts the agent and not the inbox. Raise it only if the backend's `trust proxy` goes above 2. |
 | `SESSION_SECRET` | You choose - long random string. Generate: `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` |
 | `NODE_ENV` | Must be `production` on the box; it gates the Secure cookie flag. |
 | `PORT` | 8080 on `byteplus-prod-app`. |
