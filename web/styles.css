@@ -1063,7 +1063,8 @@ body.viewer-open { overflow: hidden; }
   /* The filters tuck under the search row while the list scrolls down and come
      back on the way up or at the top, as WhatsApp's do. */
   .pane-list .search-row { position: relative; z-index: 2; background: var(--card); }
-  .pane-list .list-filters { position: relative; z-index: 1; transition: margin-top 0.2s ease, opacity 0.16s ease; }
+  .pane-list .list-filters { position: relative; z-index: 1; transition: margin-top 0.18s ease, opacity 0.14s ease; }
+  .pane-list .conv-list { overflow-anchor: none; }
   .pane-list.filters-tucked .list-filters {
     margin-top: calc(-1 * var(--filters-h, 48px)); opacity: 0; pointer-events: none;
   }
