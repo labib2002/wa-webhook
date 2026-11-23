@@ -2047,6 +2047,15 @@ function sign(body) {
       assert.strictEqual(fdb._tables.messages.find((m) => m.id === 7926).status, 'read');
     });
 
+    await test('an OGG upload is named with its codec, as Meta asks', async () => {
+      assert.strictEqual(wa.uploadType('audio/ogg'), 'audio/ogg; codecs=opus');
+      assert.strictEqual(wa.uploadType('Audio/OGG'), 'audio/ogg; codecs=opus');
+      assert.strictEqual(wa.uploadType('audio/ogg; codecs=opus'), 'audio/ogg; codecs=opus');
+      assert.strictEqual(wa.uploadType('audio/mp4'), 'audio/mp4');
+      assert.strictEqual(wa.uploadType('image/jpeg'), 'image/jpeg');
+      assert.strictEqual(wa.uploadType(''), 'application/octet-stream');
+    });
+
     await test('a voice note that failed for any other reason is retried as a voice note', async () => {
       const calls = [];
       wa.uploadMedia = async (buf, mime) => { calls.push(mime); return { ok: true, mediaId: 'MEDIA_V' }; };
