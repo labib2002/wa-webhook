@@ -405,6 +405,24 @@ async function login(page, url) {
     await page.isVisible('#reply-bar') && (await page.textContent('#reply-text')).length > 0 && !(await page.isVisible('#sheet')));
   await page.click('#reply-cancel');
 
+  {
+    const beside = await page.evaluate(() => {
+      const all = [...document.querySelectorAll('#messages > .bubble.in')];
+      const b = all[all.length - 1];
+      b.scrollIntoView({ block: 'center' });
+      const r = b.getBoundingClientRect();
+      const x = Math.round(r.right + 12), y = Math.round(r.top + r.height / 2);
+      return { x, y };
+    });
+    await touch('touchStart', beside.x, beside.y);
+    for (let dx = 12; dx <= 96; dx += 12) { await touch('touchMove', beside.x + dx, beside.y); await page.waitForTimeout(16); }
+    await touch('touchEnd');
+    await page.waitForTimeout(150);
+    check('swiping right in the empty space beside a message replies to it too',
+      await page.isVisible('#reply-bar') && (await page.textContent('#reply-text')).length > 0 && !(await page.isVisible('#sheet')));
+    if (await page.isVisible('#reply-bar')) await page.click('#reply-cancel');
+  }
+
   at = await centre('.bubble.in');
   await touch('touchStart', at.x, at.y);
   for (let dy = 12; dy <= 120; dy += 12) { await touch('touchMove', at.x + 3, at.y - dy); await page.waitForTimeout(16); }
