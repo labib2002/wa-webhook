@@ -42,6 +42,7 @@ function check(name, ok, detail = '') {
   const browser = await chromium.launch();
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 832 } });
   await ctx.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: base });
+  await ctx.addInitScript(() => { try { localStorage.setItem('wa_agent', 'Check'); } catch (_) {} }); // the name box is checked in phone-check
   const page = await ctx.newPage();
   const pageErrors = [];
   page.on('pageerror', (e) => pageErrors.push(e.message));
