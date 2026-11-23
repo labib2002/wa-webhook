@@ -941,12 +941,15 @@ body.viewer-open { overflow: hidden; }
 @media (max-width: 720px) {
   .app {
     grid-template-columns: 1fr;
+    /* The chat waits off to the right of the list. Clipped here, it cannot
+       make the page wider than the screen, which on a phone let the whole
+       inbox slide sideways and cut names off at the edge. */
+    overflow: hidden;
   }
   .pane-list { border-right: none; }
   .pane-thread {
-    /* overlay the thread on top of the list area */
-    position: fixed; inset: 0; z-index: 10;
-    bottom: auto; top: var(--app-top, 0px); height: var(--app-h, 100dvh);
+    /* overlay the thread on top of the list area; .app already follows the keyboard */
+    position: absolute; inset: 0; z-index: 10;
     transform: translateX(100%);
     transition: transform 0.26s cubic-bezier(0.22, 1, 0.36, 1);
   }

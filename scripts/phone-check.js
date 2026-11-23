@@ -241,6 +241,10 @@ async function login(page, url) {
     (await page2.textContent('#thread-name')).includes('Ada') && await page2.evaluate(() => location.hash === ''));
   await page2.close();
 
+  // the chat pane parked beside the list must not widen the page
+  const wide = await page.evaluate(() => ({ page: document.documentElement.scrollWidth, screen: document.documentElement.clientWidth, inner: window.innerWidth }));
+  check('the inbox is no wider than the phone screen', wide.page === wide.screen && wide.inner === wide.screen, JSON.stringify(wide));
+
   // bell off + logout
   await page.click('#back-btn').catch(() => {});
   await page.evaluate(() => document.querySelector('#notify-btn').click());
