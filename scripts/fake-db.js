@@ -90,19 +90,28 @@ function makeFakeDb() {
       update(patch) {
         // .eq(...) applies the patch to matches and is awaitable on its own or
         // chainable into .select().single(), like the real builder.
-        return {
-          eq(col, val) {
-            const hit = [];
-            for (const r of rows) if (r[col] === val) { Object.assign(r, patch); hit.push(r); }
-            return {
-              select: () => ({
-                single: () => Promise.resolve({ data: hit[0] || null, error: hit.length ? null : { message: 'no rows' } }),
-                maybeSingle: () => Promise.resolve({ data: hit[0] || null, error: null }),
-              }),
-              then: (res) => res({ data: null, error: null }),
-            };
-          },
+        const tests = [];
+        let hit = null;
+        const run = () => {
+          if (!hit) {
+            hit = rows.filter((r) => tests.every((t) => t(r)));
+            for (const r of hit) Object.assign(r, patch);
+          }
+          return hit;
         };
+        const chain = {
+          eq(col, val) { tests.push((r) => r[col] === val); return chain; },
+          neq(col, val) { tests.push((r) => r[col] !== val); return chain; },
+          in(col, vals) { tests.push((r) => (vals || []).includes(r[col])); return chain; },
+          lt(col, val) { tests.push((r) => r[col] < val); return chain; },
+          select: () => ({
+            single: () => Promise.resolve({ data: run()[0] || null, error: run().length ? null : { message: 'no rows' } }),
+            maybeSingle: () => Promise.resolve({ data: run()[0] || null, error: null }),
+            then: (res) => res({ data: run(), error: null }),
+          }),
+          then: (res) => { run(); return res({ data: null, error: null }); },
+        };
+        return chain;
       },
 
       delete() {
