@@ -63,27 +63,22 @@
   <div id="app" class="app" hidden data-view="list">
     <!-- LEFT: conversation list -->
     <aside class="pane pane-list" aria-label="Conversations">
-      <header class="list-header">
-        <div class="brand">
-          <span class="brand-dot" aria-hidden="true"></span>
-          <span class="brand-name">Inbox</span>
+      <div class="search-row">
+        <div class="search-wrap">
+          <svg class="search-ico" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input id="search" type="search" dir="auto" placeholder="Search chats and messages" aria-label="Search conversations and messages" />
         </div>
-        <div class="list-header-actions">
-          <button id="notify-btn" class="icon-btn notify-btn" title="Turn on notifications for this device" aria-label="Turn on notifications for this device" aria-pressed="false" hidden>
-            <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/><line class="bell-slash" x1="3" y1="3" x2="21" y2="21"/></svg>
-          </button>
-          <button id="agent-btn" class="icon-btn agent-btn" title="Who is signed in" aria-label="Who is signed in" hidden><span id="agent-initials" class="agent-initials"></span></button>
-          <button id="new-chat-btn" class="icon-btn" title="New conversation" aria-label="New conversation">
-            <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
-          </button>
-          <button id="logout-btn" class="icon-btn" title="Log out" aria-label="Log out">
-            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
-          </button>
+        <button id="me-btn" type="button" class="me-btn" title="Menu" aria-label="Menu" aria-haspopup="menu" aria-expanded="false"><span id="me-initials" class="me-initials"></span></button>
+      </div>
+      <div id="me-menu" class="me-menu" role="menu" hidden>
+        <div class="me-who">
+          <span id="me-name" class="me-name"></span>
+          <span id="me-email" class="me-email"></span>
         </div>
-      </header>
-      <div class="search-wrap">
-        <svg class="search-ico" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-        <input id="search" type="search" dir="auto" placeholder="Search chats and messages" aria-label="Search conversations and messages" />
+        <button id="new-chat-btn" type="button" class="me-item" role="menuitem">New conversation</button>
+        <button id="me-replies" type="button" class="me-item" role="menuitem">Saved replies</button>
+        <p id="me-notify" class="me-note" hidden></p>
+        <button id="logout-btn" type="button" class="me-item me-danger" role="menuitem">Sign out</button>
       </div>
       <div class="list-filters" role="tablist" aria-label="Filter conversations">
         <button class="filter-chip active" data-view="chats" role="tab" aria-selected="true">Chats<span class="chip-count" hidden></span></button>
@@ -147,7 +142,7 @@
         <footer class="composer">
           <div id="window-bar" class="window-bar" hidden>
             <span id="window-text" class="window-text"></span>
-            <button id="window-action" type="button" class="banner-action">Send a follow-up template</button>
+            <button id="window-action" type="button" class="banner-action">Send a template</button>
           </div>
           <div id="composer-banner" class="composer-banner" hidden role="alert"></div>
           <div id="reply-picker" class="reply-picker" role="listbox" aria-label="Saved replies" hidden>

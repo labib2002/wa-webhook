@@ -180,28 +180,39 @@ input, textarea, button { font-family: inherit; }
 .pane-list {
   background: var(--card);
   border-right: 1px solid var(--card-edge);
+  position: relative;
 }
 
-/* ---- list header ---- */
-.list-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 16px 16px 12px;
+/* ---- search and the one menu ---- */
+.search-row { display: flex; align-items: center; gap: 8px; padding: 12px 12px 10px 14px; }
+.search-row .search-wrap { flex: 1 1 auto; min-width: 0; padding: 0; }
+.search-row .search-ico { left: 12px; top: 50%; transform: translateY(-50%); }
+.me-btn {
+  position: relative; flex: 0 0 auto; display: grid; place-content: center;
+  width: 40px; height: 40px; border-radius: 50%; overflow: hidden;
+  border: none; padding: 0; background: var(--pine-soft); color: var(--pine-deep);
+  font-size: 13px; font-weight: 700; cursor: pointer;
 }
-.brand { display: flex; align-items: center; gap: 10px; }
-.brand-dot {
-  width: 26px; height: 26px; border-radius: 8px;
-  background: linear-gradient(150deg, var(--pine), var(--pine-deep));
-  box-shadow: var(--sh-1);
+.me-btn:focus-visible { outline: 2px solid var(--pine); outline-offset: 2px; }
+.me-btn img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: var(--paper-2); }
+.me-menu {
+  position: absolute; z-index: 30; right: 10px; top: 58px; width: min(300px, calc(100% - 20px));
+  background: var(--card); border: 1px solid var(--card-edge); border-radius: 14px;
+  box-shadow: var(--sh-2, 0 10px 30px rgba(0, 0, 0, 0.14)); padding: 6px;
+  display: flex; flex-direction: column;
 }
-.brand-name {
-  font-family: var(--font-display);
-  font-weight: 600;
-  font-size: 21px;
-  letter-spacing: -0.01em;
+.me-menu[hidden] { display: none; }
+.me-who { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px 10px; border-bottom: 1px solid var(--card-edge); margin-bottom: 4px; }
+.me-name { font-weight: 600; color: var(--ink); overflow-wrap: anywhere; }
+.me-email { font-size: 12.5px; color: var(--ink-3); overflow-wrap: anywhere; }
+.me-item {
+  text-align: left; min-height: 44px; padding: 0 10px; border: none; background: transparent;
+  border-radius: 10px; color: var(--ink); font-size: 14.5px; cursor: pointer;
 }
-.list-header-actions, .thread-header-actions { display: flex; align-items: center; gap: 6px; }
+.me-item:hover, .me-item:focus-visible { background: var(--paper-2); outline: none; }
+.me-danger { color: #a33a26; }
+.me-note { margin: 2px 10px 6px; font-size: 12.5px; line-height: 1.4; color: var(--ink-3); }
+.thread-header-actions { display: flex; align-items: center; gap: 6px; }
 .icon-btn {
   display: inline-grid; place-content: center;
   width: 36px; height: 36px;
@@ -210,8 +221,6 @@ input, textarea, button { font-family: inherit; }
   transition: background 0.14s, color 0.14s;
 }
 .icon-btn:hover { background: var(--paper-2); color: var(--ink); }
-.notify-btn.is-on { color: var(--pine); }
-.notify-btn.is-on .bell-slash { display: none; }
 .icon-btn:focus-visible { outline: 2px solid var(--pine); outline-offset: 2px; }
 
 /* ---- search ---- */
@@ -1039,7 +1048,9 @@ body.viewer-open { overflow: hidden; }
   .bubble .meta { font-size: 11.5px; }
   .filter-chip { font-size: 13.5px; padding: 9px 14px; min-height: 40px; }
   .list-filters { padding: 0 12px 4px; }
-  .search-wrap { padding: 0 12px 6px; }
+  .search-row { padding: calc(6px + env(safe-area-inset-top)) 8px 6px 12px; gap: 6px; }
+  .me-btn { width: 44px; height: 44px; }
+  .me-menu { top: calc(56px + env(safe-area-inset-top)); }
   .send-btn, .attach-btn, .mic-btn { width: 44px; height: 44px; }
   .composer-input { padding: 9px 14px; }
   /* Microphone while the box is empty, send once there is something to send. */
@@ -1048,10 +1059,8 @@ body.viewer-open { overflow: hidden; }
 
   /* iOS zooms the page into any field with text smaller than 16px. */
   input, textarea, select { font-size: 16px !important; }
-  .search-ico { top: 11px; }
 
   /* Only what the notch and the home bar need, and nothing on top of it. */
-  .list-header { padding: calc(4px + env(safe-area-inset-top)) 8px 4px 14px; }
   .thread-header { padding-top: calc(2px + env(safe-area-inset-top)); padding-bottom: 2px; }
   .conv-list { padding-bottom: max(8px, env(safe-area-inset-bottom)); }
   .composer { padding: 5px 8px max(4px, env(safe-area-inset-bottom)); }
@@ -1064,7 +1073,7 @@ body.viewer-open { overflow: hidden; }
   /* Scrolling a list to its end must not drag the whole page with it. */
   .conv-list, .messages { overscroll-behavior: contain; }
   .icon-btn { width: 44px; height: 44px; }
-  .list-header-actions, .thread-header-actions { gap: 2px; }
+  .thread-header-actions { gap: 2px; }
   .composer-form { gap: 4px; }
   .toast {
     border-radius: 16px; width: max-content; text-align: center; line-height: 1.4;
@@ -1086,12 +1095,6 @@ button, a, .conv-row { touch-action: manipulation; -webkit-tap-highlight-color: 
 
 /* ============================== TEAMWORK + PHONE ============================== */
 
-/* who is using this device */
-.agent-btn { width: auto; min-width: 36px; padding: 0 4px; }
-.agent-initials {
-  display: grid; place-content: center; width: 28px; height: 28px; border-radius: 50%;
-  background: var(--pine-soft); color: var(--pine-deep); font-size: 11.5px; font-weight: 700;
-}
 .bubble .meta-agent { font-weight: 600; margin-right: 2px; max-width: 12ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bubble .meta-agent::after { content: ' ·'; font-weight: 400; }
 
@@ -1108,6 +1111,8 @@ button, a, .conv-row { touch-action: manipulation; -webkit-tap-highlight-color: 
 .window-bar.is-closed { background: var(--danger-soft); color: #7a2c1d; font-weight: 500; }
 .window-bar .window-text { flex: 1 1 220px; }
 .window-bar .banner-action { margin-top: 0; }
+.composer.is-locked .window-bar { margin-bottom: 0; }
+.composer.is-locked .attach-preview, .composer.is-locked .reply-bar, .composer.is-locked .composer-banner { display: none; }
 
 /* saved replies */
 .composer { position: relative; }
@@ -1211,7 +1216,6 @@ html.by-touch .bubble img, html.by-touch .conv-row img { -webkit-user-drag: none
 html.by-touch .row-readtoggle { display: none !important; }
 
 @media (max-width: 720px) {
-  .agent-btn { min-width: 44px; }
   .sheet-overlay { place-content: end stretch; padding: 0; }
   .sheet-card {
     width: 100%; border-radius: 20px 20px 0 0; border-bottom: 0;

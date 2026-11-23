@@ -590,6 +590,52 @@ function sign(body) {
   const cookie = (loginRes.headers.get('set-cookie') || '').split(';')[0];
   const authed = (method, path, body) => req(srv2, method, path, { body, headers: { cookie } });
   const rowsForKey = (k) => fdb._tables.messages.filter((m) => m.client_key === k);
+  // The suites below test sending itself; the window has its own tests here.
+  const winMod = require('../lib/window');
+  const realWindowCheck = winMod.check;
+  winMod.check = async () => ({ open: true, last: null });
+
+  await test('a closed 24-hour window: text, media, retry and forward are refused without calling WhatsApp', async () => {
+    winMod.check = realWindowCheck;
+    const calls = [];
+    const was = { t: wa.sendText, m: wa.sendMedia, u: wa.uploadMedia };
+    wa.sendText = async () => { calls.push('text'); return { ok: true, waMessageId: 'wamid.NO' }; };
+    wa.sendMedia = async () => { calls.push('media'); return { ok: true, waMessageId: 'wamid.NO' }; };
+    wa.uploadMedia = async () => { calls.push('upload'); return { ok: true, mediaId: 'M' }; };
+    try {
+      const OLD = '201000000041';
+      const NEVER = '201000000042';
+      const OPEN = '201000000043';
+      const day = 24 * 3600 * 1000;
+      fdb._tables.messages.push({ id: 7941, wa_id: OLD, direction: 'in', type: 'text', body: 'hi', status: 'received', created_at: new Date(Date.now() - day - 60000).toISOString() });
+      fdb._tables.messages.push({ id: 7942, wa_id: OLD, direction: 'out', type: 'text', body: 'x', status: 'failed', error: 'e', created_at: new Date().toISOString() });
+      fdb._tables.messages.push({ id: 7943, wa_id: OPEN, direction: 'in', type: 'text', body: 'hi', status: 'received', created_at: new Date(Date.now() - day + 60000).toISOString() });
+      const t1 = await authed('POST', '/api/send', { wa_id: OLD, text: 'late' });
+      assert.strictEqual(t1.status, 409);
+      const j1 = JSON.parse(t1.text);
+      assert.strictEqual(j1.code, 'WINDOW_CLOSED');
+      assert.strictEqual(j1.error, 'The 24 hours are over. Only a template can be sent.');
+      const t2 = await authed('POST', '/api/send', { wa_id: NEVER, text: 'first' });
+      assert.strictEqual(t2.status, 409);
+      assert.match(JSON.parse(t2.text).error, /not written to this number yet/);
+      const m1 = await authed('POST', '/api/send-media', { wa_id: OLD, file_base64: Buffer.from('x').toString('base64'), mime: 'image/png', filename: 'a.png' });
+      assert.strictEqual(m1.status, 409);
+      const r1 = await authed('POST', '/api/retry/7942');
+      assert.strictEqual(r1.status, 409);
+      assert.strictEqual(fdb._tables.messages.find((m) => m.id === 7942).status, 'failed', 'a refused retry leaves the bubble failed');
+      const f1 = JSON.parse((await authed('POST', '/api/forward', { message_id: 7943, wa_ids: [OLD, OPEN] })).text);
+      assert.strictEqual(f1.sent, 1);
+      assert.strictEqual(f1.results.find((r) => r.wa_id === OLD).code, 'WINDOW_CLOSED');
+      assert.deepStrictEqual(calls, ['text'], 'only the open chat reached WhatsApp');
+      const ok = await authed('POST', '/api/send', { wa_id: OPEN, text: 'in time' });
+      assert.strictEqual(ok.status, 200);
+      const msgs = JSON.parse((await authed('GET', `/api/messages?wa_id=${OLD}`)).text);
+      assert.ok(msgs.server_now && Math.abs(Date.parse(msgs.server_now) - Date.now()) < 5000, 'the thread carries the server clock');
+    } finally {
+      wa.sendText = was.t; wa.sendMedia = was.m; wa.uploadMedia = was.u;
+      winMod.check = async () => ({ open: true, last: null });
+    }
+  });
 
   await test('read endpoint: mark unread sets unread_count = 1', async () => {
     fdb._tables.conversations.push({ wa_id: '201000000001', unread_count: 0 });
@@ -2451,6 +2497,10 @@ function sign(body) {
       }
       function renderMessages() {}
       function scrollMessagesToBottom() {}
+      ${src.split('\n').find((l) => l.startsWith('const TICK_RANK ='))}
+      ${src.split('\n').find((l) => l.startsWith('const REFUSED_VOICE ='))}
+      ${lift('resendingVoice')}
+      ${lift('shownStatus')}
       ${lift('mergeMessages')}
       ${lift('threadMessages')}
       ${lift('isAlbumWrapper')}
@@ -2484,6 +2534,39 @@ function sign(body) {
       ui.settleOptimistic(WA, opt, null, srvRow(587, 'yo'));
       ui.mergeMessages(t, [srvRow(587, 'yo')]);
       assert.strictEqual(ui.threadMessages(t).length, 1);
+    });
+
+    await test('ticks only move forward on screen, and played shows as read', async () => {
+      ui.state.threads = {};
+      const t = ui.thread(WA);
+      ui.mergeMessages(t, [{ ...srvRow(601, 'a'), status: 'delivered' }]);
+      ui.mergeMessages(t, [{ ...srvRow(601, 'a'), status: 'sent' }]);
+      assert.strictEqual(t.byId.get(601).status, 'delivered', 'an older answer arriving late does not take a tick back');
+      ui.mergeMessages(t, [{ ...srvRow(601, 'a'), status: 'read' }]);
+      assert.strictEqual(t.byId.get(601).status, 'read');
+      ui.mergeMessages(t, [{ ...srvRow(601, 'a'), status: 'failed', error: 'Message undeliverable (131026)' }]);
+      assert.strictEqual(t.byId.get(601).status, 'failed', 'a real failure still shows');
+      const glyph = new Function(`${lift('tickGlyph')}; return tickGlyph;`)();
+      assert.strictEqual(glyph('played'), glyph('read'), 'a played voice note shows blue ticks, not a clock');
+    });
+
+    await test('a voice note re-sending itself keeps its ticks until it settles', async () => {
+      ui.state.threads = {};
+      const t = ui.thread(WA);
+      const now = new Date().toISOString();
+      const voice = { ...srvRow(602, '🎤 Voice message'), type: 'audio', created_at: now, wa_timestamp: now, media_meta: { voice: true } };
+      ui.mergeMessages(t, [{ ...voice, status: 'delivered' }]);
+      ui.mergeMessages(t, [{ ...voice, status: 'failed', error: 'Media upload error (131053): scrutiny' }]);
+      assert.strictEqual(t.byId.get(602).status, 'delivered', 'no red flash');
+      ui.mergeMessages(t, [{ ...voice, status: 'pending', media_meta: { voice: true, auto_resend: now } }]);
+      assert.strictEqual(t.byId.get(602).status, 'delivered', 'no clock after ticks');
+      ui.mergeMessages(t, [{ ...voice, status: 'sent', body: '🎵 Audio', media_meta: { voice: null, auto_resend: now, sent_as_audio: true } }]);
+      assert.strictEqual(t.byId.get(602).body, '🎵 Audio');
+      ui.mergeMessages(t, [{ ...voice, status: 'read', body: '🎵 Audio', media_meta: { voice: null, auto_resend: now, sent_as_audio: true } }]);
+      assert.strictEqual(t.byId.get(602).status, 'read');
+      ui.mergeMessages(t, [{ ...srvRow(603, 'x'), type: 'audio', created_at: now, status: 'sent', media_meta: { voice: true } }]);
+      ui.mergeMessages(t, [{ ...srvRow(603, 'x'), type: 'audio', created_at: now, status: 'failed', error: 'Media upload error (131053)', media_meta: { voice: true, auto_resend: now } }]);
+      assert.strictEqual(t.byId.get(603).status, 'failed', 'when the re-send fails too, it shows');
     });
 
     await test('two sends racing the poll stay two bubbles, not four', async () => {
@@ -2661,7 +2744,7 @@ function sign(body) {
         return { windowWords };`)();
       assert.strictEqual(windowWords(null), '');
       assert.ok(/not written to this number yet/.test(windowWords({ open: false, never: true })));
-      assert.ok(/More than 24 hours/.test(windowWords({ open: false, left: -5 })));
+      assert.strictEqual(windowWords({ open: false, left: -5 }), 'The 24 hours are over. Only a template can be sent.');
       assert.strictEqual(windowWords({ open: true, left: 5 * 60 * 60 * 1000, until: 0 }), '', 'plenty of time: nothing to say');
       assert.ok(/until 14:35 \(1 h 20 min left\)/.test(windowWords({ open: true, left: 80 * 60 * 1000, until: 0 })), windowWords({ open: true, left: 80 * 60 * 1000, until: 0 }));
       assert.ok(/\(9 min left\)/.test(windowWords({ open: true, left: 9 * 60 * 1000, until: 0 })));
