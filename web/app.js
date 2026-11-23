@@ -2146,6 +2146,10 @@ function settleOptimistic(waId, opt, patch, persisted) {
   if (waId === state.activeWaId) renderMessages();
 }
 
+['pointerdown', 'mousedown'].forEach((type) => els.sendBtn.addEventListener(type, (e) => {
+  if (document.activeElement === els.composerInput) e.preventDefault();
+}));
+
 els.composerForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   if (state.sending || !state.activeWaId) return;
