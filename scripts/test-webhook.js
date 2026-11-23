@@ -1016,25 +1016,15 @@ function sign(body) {
       assert.strictEqual(inbox.needsReply({ last_message_direction: null, last_message_at: null, unread_count: 0 }), false);
     });
 
-    await test('chats that hold only our templates stay out of the main list, unless the member answers', async () => {
+    await test('a chat that holds only our templates is in the main list like any other', async () => {
       const A = '201000007101';
-      const B = '201000007102';
       fdb._tables.conversations.push(
         { wa_id: A, profile_name: 'Bulk One', last_message_text: '📋 hello', last_message_at: minsAgo(1), last_message_direction: 'out', unread_count: 0 },
-        { wa_id: B, profile_name: 'Bulk Two', last_message_text: 'ok thanks', last_message_at: minsAgo(1), last_message_direction: 'in', unread_count: 1 },
       );
-      inbox.__setForTesting({ templateOnly: async () => new Set([A, B]) });
       const chats = await list();
-      assert.ok(!chats.conversations.some((c) => c.wa_id === A), 'template-only chat in the main list');
-      assert.ok(chats.conversations.some((c) => c.wa_id === B), 'a chat that needs a reply is always shown');
-      const tpl = await list('?view=templates');
-      assert.deepStrictEqual(tpl.conversations.map((c) => c.wa_id), [A]);
-      assert.strictEqual(chats.counts.templates, 1);
-      assert.ok((await list('?q=Bulk')).conversations.length === 2, 'search looks everywhere');
-      wa.sendText = async () => ({ ok: true, waMessageId: 'wamid.BULKREPLY' });
-      await authed('POST', '/api/send', { wa_id: A, text: 'hi, a real message' });
-      assert.ok((await list()).conversations.some((c) => c.wa_id === A), 'an agent wrote, so it is a real chat now');
-      inbox.__setForTesting();
+      assert.ok(chats.conversations.some((c) => c.wa_id === A));
+      assert.strictEqual(chats.counts.templates, undefined);
+      assert.ok((await list('?view=templates')).conversations.some((c) => c.wa_id === A), 'an old tab asking for the removed view gets the main list');
     });
 
     await test('the list comes a page at a time, and search covers the chats beyond the first page', async () => {
@@ -1931,6 +1921,155 @@ function sign(body) {
       assert.strictEqual(row.media_meta.mime_type, 'audio/mp4');
       assert.strictEqual(row.media_path, '201000000011/out/k7913.ogg.m4a');
       assert.strictEqual(row.body, '🎵 Audio');
+    });
+
+    const refusedStatus = (wamid, details) => {
+      const payload = statusUpdate(wamid, 'failed');
+      payload.entry[0].changes[0].value.statuses[0].errors = [{ code: 131053, title: 'Media upload error', error_data: details ? { details } : undefined }];
+      return payload;
+    };
+    const voiceRow = (id, wamid, extra = {}) => ({
+      id, wa_message_id: wamid, wa_id: '201000000011', direction: 'out', type: 'audio', body: '🎤 Voice message', status: 'sent',
+      error: null, media_path: `201000000011/out/k${id}.ogg`, media_status: 'stored',
+      media_meta: { voice: true, mime_type: 'audio/ogg', filename: 'voice-note.ogg', caption: null },
+      created_at: new Date().toISOString(), ...extra,
+    });
+    const withAudioStubs = async (stubs, run) => {
+      const transcode = require('../lib/transcode');
+      const realM4a = transcode.toM4a;
+      transcode.toM4a = stubs.toM4a || (async () => ({ ok: true, buffer: Buffer.from('aac-bytes'), mime: 'audio/mp4', ext: 'm4a' }));
+      try { await run(); } finally { transcode.toM4a = realM4a; }
+    };
+
+    await test('a refused voice note from an hour ago does not re-send itself', async () => {
+      const calls = [];
+      wa.uploadMedia = async () => { calls.push('upload'); return { ok: true, mediaId: 'MEDIA_OLD' }; };
+      wa.sendMedia = async () => { calls.push('send'); return { ok: true, waMessageId: 'wamid.OLD_AUDIO' }; };
+      fdb._tables.messages.push(voiceRow(7919, 'wamid.REFUSED_OLD', { created_at: new Date(Date.now() - 60 * 60 * 1000).toISOString() }));
+      await withAudioStubs({}, async () => {
+        const summary = await ingestWebhook(refusedStatus('wamid.REFUSED_OLD', 'Unsupported audio'), fdb);
+        assert.ok(!summary.resent);
+      });
+      assert.deepStrictEqual(calls, []);
+      const row = fdb._tables.messages.find((m) => m.id === 7919);
+      assert.strictEqual(row.status, 'failed');
+      assert.strictEqual(row.wa_message_id, 'wamid.REFUSED_OLD');
+    });
+
+    await test('a voice note WhatsApp refuses goes out again by itself, once, as an audio file in the same bubble', async () => {
+      const calls = [];
+      wa.uploadMedia = async (buf, mime, name) => { calls.push({ mime, name }); return { ok: true, mediaId: 'MEDIA_AUTO' }; };
+      wa.sendMedia = async (to, cat, id, opts) => { calls.push({ to, cat, voice: opts.voice }); return { ok: true, waMessageId: 'wamid.AUTO_AUDIO' }; };
+      fdb._tables.messages.push(voiceRow(7920, 'wamid.REFUSED1'));
+      const before = fdb._tables.messages.length;
+      await withAudioStubs({}, async () => {
+        const summary = await ingestWebhook(refusedStatus('wamid.REFUSED1', 'Unsupported audio'), fdb);
+        assert.strictEqual(summary.resent, 1);
+        await ingestWebhook(refusedStatus('wamid.REFUSED1', 'Unsupported audio'), fdb);
+        await Promise.all([
+          ingestWebhook(refusedStatus('wamid.REFUSED1', 'Unsupported audio'), fdb),
+          ingestWebhook(refusedStatus('wamid.REFUSED1', 'Unsupported audio'), fdb),
+        ]);
+      });
+      assert.deepStrictEqual(calls, [{ mime: 'audio/mp4', name: 'voice-note.m4a' }, { to: '201000000011', cat: 'audio', voice: false }]);
+      assert.strictEqual(fdb._tables.messages.length, before, 'no second bubble');
+      const row = fdb._tables.messages.find((m) => m.id === 7920);
+      assert.strictEqual(row.status, 'sent');
+      assert.strictEqual(row.wa_message_id, 'wamid.AUTO_AUDIO');
+      assert.strictEqual(row.error, null);
+      assert.strictEqual(row.media_meta.sent_as_audio, true);
+      assert.strictEqual(row.media_meta.voice, null);
+      assert.strictEqual(row.media_meta.first_error, 'Media upload error (131053): Unsupported audio');
+      assert.ok(row.media_meta.auto_resend);
+      assert.strictEqual(row.media_path, '201000000011/out/k7920.ogg.m4a');
+      await ingestWebhook(statusUpdate('wamid.AUTO_AUDIO', 'delivered'), fdb);
+      assert.strictEqual(row.status, 'delivered');
+    });
+
+    await test('two deliveries of the refusal at the same instant still send one audio file', async () => {
+      let sends = 0;
+      let release;
+      const gate = new Promise((r) => { release = r; });
+      wa.uploadMedia = async () => { await gate; return { ok: true, mediaId: 'MEDIA_RACE' }; };
+      wa.sendMedia = async () => { sends++; return { ok: true, waMessageId: 'wamid.RACE_AUDIO' }; };
+      fdb._tables.messages.push(voiceRow(7921, 'wamid.REFUSED2'));
+      await withAudioStubs({}, async () => {
+        const both = Promise.all([
+          ingestWebhook(refusedStatus('wamid.REFUSED2'), fdb),
+          ingestWebhook(refusedStatus('wamid.REFUSED2'), fdb),
+        ]);
+        await new Promise((r) => setTimeout(r, 30));
+        release();
+        await both;
+      });
+      assert.strictEqual(sends, 1, `WhatsApp was called ${sends} times`);
+      assert.strictEqual(fdb._tables.messages.find((m) => m.id === 7921).status, 'sent');
+    });
+
+    await test('when the audio file is refused too, the bubble fails with both reasons and no third send', async () => {
+      let sends = 0;
+      wa.uploadMedia = async () => ({ ok: true, mediaId: 'MEDIA_AGAIN' });
+      wa.sendMedia = async () => { sends++; return { ok: true, waMessageId: 'wamid.AUDIO_REFUSED' }; };
+      fdb._tables.messages.push(voiceRow(7922, 'wamid.REFUSED3'));
+      await withAudioStubs({}, async () => {
+        await ingestWebhook(refusedStatus('wamid.REFUSED3', 'Unsupported audio'), fdb);
+        await ingestWebhook(refusedStatus('wamid.AUDIO_REFUSED', 'Still unsupported'), fdb);
+        await ingestWebhook(refusedStatus('wamid.AUDIO_REFUSED', 'Still unsupported'), fdb);
+      });
+      assert.strictEqual(sends, 1);
+      const row = fdb._tables.messages.find((m) => m.id === 7922);
+      assert.strictEqual(row.status, 'failed');
+      assert.strictEqual(row.error, 'Media upload error (131053): Still unsupported');
+      assert.strictEqual(row.media_meta.first_error, 'Media upload error (131053): Unsupported audio');
+    });
+
+    await test('an automatic re-send that cannot go out leaves a failed bubble that Retry sends as audio', async () => {
+      const calls = [];
+      wa.uploadMedia = async () => ({ ok: false, error: 'WhatsApp is not answering' });
+      wa.sendMedia = async (to, cat, id, opts) => { calls.push(opts.voice); return { ok: true, waMessageId: 'wamid.LATER_AUDIO' }; };
+      fdb._tables.messages.push(voiceRow(7923, 'wamid.REFUSED4'));
+      await withAudioStubs({}, async () => {
+        await ingestWebhook(refusedStatus('wamid.REFUSED4'), fdb);
+        const row = fdb._tables.messages.find((m) => m.id === 7923);
+        assert.strictEqual(row.status, 'failed');
+        assert.strictEqual(row.error, 'Media upload error (131053). Sent again as an audio file, which failed too: WhatsApp is not answering');
+        assert.strictEqual(row.media_meta.voice, true);
+        await ingestWebhook(refusedStatus('wamid.REFUSED4'), fdb);
+        assert.strictEqual(calls.length, 0, 'the webhook does not try twice');
+        wa.uploadMedia = async () => ({ ok: true, mediaId: 'MEDIA_LATER' });
+        assert.strictEqual((await authed('POST', '/api/retry/7923')).status, 200);
+        assert.deepStrictEqual(calls, [false]);
+        assert.strictEqual(row.media_meta.sent_as_audio, true);
+      });
+    });
+
+    await test('only a refused voice note is sent again: not a photo, not a voice note that failed another way', async () => {
+      let sends = 0;
+      wa.uploadMedia = async () => ({ ok: true, mediaId: 'X' });
+      wa.sendMedia = async () => { sends++; return { ok: true, waMessageId: 'wamid.NOPE' }; };
+      fdb._tables.messages.push(
+        { ...voiceRow(7924, 'wamid.PHOTO_REFUSED'), type: 'image', body: '📷 Image', media_meta: { mime_type: 'image/jpeg' } },
+        voiceRow(7925, 'wamid.VOICE_LATE'),
+        voiceRow(7926, 'wamid.VOICE_READ', { status: 'read' }),
+      );
+      await withAudioStubs({ toM4a: async () => { throw new Error('should not transcode'); } }, async () => {
+        await ingestWebhook(refusedStatus('wamid.PHOTO_REFUSED'), fdb);
+        await ingestWebhook(statusUpdate('wamid.VOICE_LATE', 'failed'), fdb);
+        await ingestWebhook(refusedStatus('wamid.VOICE_READ'), fdb);
+      });
+      assert.strictEqual(sends, 0);
+      assert.strictEqual(fdb._tables.messages.find((m) => m.id === 7924).status, 'failed');
+      assert.strictEqual(fdb._tables.messages.find((m) => m.id === 7925).error, 'Re-engagement message (131047)');
+      assert.strictEqual(fdb._tables.messages.find((m) => m.id === 7926).status, 'read');
+    });
+
+    await test('an OGG upload is named with its codec, as Meta asks', async () => {
+      assert.strictEqual(wa.uploadType('audio/ogg'), 'audio/ogg; codecs=opus');
+      assert.strictEqual(wa.uploadType('Audio/OGG'), 'audio/ogg; codecs=opus');
+      assert.strictEqual(wa.uploadType('audio/ogg; codecs=opus'), 'audio/ogg; codecs=opus');
+      assert.strictEqual(wa.uploadType('audio/mp4'), 'audio/mp4');
+      assert.strictEqual(wa.uploadType('image/jpeg'), 'image/jpeg');
+      assert.strictEqual(wa.uploadType(''), 'application/octet-stream');
     });
 
     await test('a voice note that failed for any other reason is retried as a voice note', async () => {
