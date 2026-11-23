@@ -3989,8 +3989,9 @@ function endPress() {
 
 els.messages.addEventListener('touchstart', (e) => {
   endPress();
-  const bubble = e.target.closest('.bubble');
-  if (!bubble || e.touches.length !== 1 || e.target.closest('audio, .bubble-retry, .vplayer')) return;
+  if (e.touches.length !== 1) return;
+  const bubble = e.target.closest('.bubble') || (e.target === els.messages ? bubbleAtY(e.touches[0].clientY) : null);
+  if (!bubble || e.target.closest('audio, .bubble-retry, .vplayer')) return;
   Object.assign(press, { bubble, x0: e.touches[0].clientX, y0: e.touches[0].clientY, dx: 0, fired: false, tapOk: !e.target.closest('a, button, .media-frame, video, .contact-card') });
   press.timer = setTimeout(() => {
     if (!press.bubble || press.swiping) return;
