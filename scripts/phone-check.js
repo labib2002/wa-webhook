@@ -161,13 +161,23 @@ async function login(page, url) {
     const cut = (el) => el && el.scrollWidth > el.clientWidth + 1;
     return {
       name: r.querySelector('.row-name-text').textContent, nameCut: cut(r.querySelector('.row-name-text')),
-      company: r.querySelector('.row-co').textContent, companyCut: cut(r.querySelector('.row-co')),
+      company: r.querySelector('.row-co').textContent, companyTitle: r.querySelector('.row-co').title,
+      underTime: r.querySelector('.row-co').getBoundingClientRect().top >= r.querySelector('.row-time').getBoundingClientRect().bottom - 2,
+      besideMessage: r.querySelector('.row-co').getBoundingClientRect().left >= r.querySelector('.row-preview').getBoundingClientRect().right - 1,
+      insideRow: r.querySelector('.row-co').getBoundingClientRect().right <= r.getBoundingClientRect().right,
       badge: r.querySelector('.row-badge').textContent, unread: r.classList.contains('has-unread'),
       photo: Boolean(r.querySelector('.avatar img')),
     };
   });
-  check('a long name and a long company are shown whole in the list',
-    row.name === 'Ada Lovelace Abdelrahman Mostafa' && !row.nameCut && row.company === 'Nasaym International School (NIS)' && !row.companyCut, JSON.stringify(row));
+  check('a long name is shown whole in the list, with the company under the time, beside the last message',
+    row.name === 'Ada Lovelace Abdelrahman Mostafa' && !row.nameCut && row.company === 'Nasaym International School (NIS)'
+      && row.companyTitle === 'Nasaym International School (NIS)' && row.underTime && row.besideMessage && row.insideRow, JSON.stringify(row));
+  const filters = await page.evaluate(() => {
+    const chips = [...document.querySelectorAll('.list-filters .filter-chip')].filter((c) => !c.hidden);
+    return { names: chips.map((c) => c.dataset.view), rows: new Set(chips.map((c) => Math.round(c.getBoundingClientRect().top))).size, scrolls: getComputedStyle(document.querySelector('.list-filters')).overflowX };
+  });
+  check('the filters are one row that scrolls sideways, and "Templates only" is gone',
+    filters.rows === 1 && filters.scrolls === 'auto' && filters.names.join() === 'chats,needs_reply', JSON.stringify(filters));
   check("the member's picture from the app stands in for the initials", row.photo);
   const targets = await page.evaluate(() => ['#notify-btn', '#agent-btn', '#new-chat-btn', '#logout-btn', '.filter-chip']
     .map((s) => { const b = document.querySelector(s).getBoundingClientRect(); return `${s} ${Math.round(b.width)}x${Math.round(b.height)}`; }));
@@ -263,6 +273,16 @@ async function login(page, url) {
   await page.waitForTimeout(650);
   await touch('touchEnd');
   check('a long press on a message opens its actions', await page.isVisible('#sheet'));
+  const held = await page.evaluate(() => {
+    const bubble = [...document.querySelectorAll('.bubble.in')].pop();
+    const ev = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+    bubble.dispatchEvent(ev);
+    const rowEv = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+    document.querySelector('.conv-row').dispatchEvent(rowEv);
+    return { select: getComputedStyle(bubble).userSelect, selected: String(window.getSelection()), ownMenu: ev.defaultPrevented, rowMenu: rowEv.defaultPrevented };
+  });
+  check('and nothing else: no text selection, no menu from the phone, on a message or a chat row',
+    held.select === 'none' && held.selected === '' && held.ownMenu && held.rowMenu, JSON.stringify(held));
   const menu = await page.evaluate(() => ({
     actions: [...document.querySelectorAll('.sheet-action')].map((b) => b.textContent),
     reactions: document.querySelectorAll('.sheet-react').length,
@@ -292,6 +312,30 @@ async function login(page, url) {
   await page.waitForTimeout(600);
   check('scrolling with a finger on a message does neither', !(await page.isVisible('#reply-bar')) && !(await page.isVisible('#sheet')));
   await page.evaluate(() => { const m = document.querySelector('#messages'); m.scrollTop = m.scrollHeight; });
+  {
+    const openPhoto = async () => {
+      await page.evaluate(() => { [...document.querySelectorAll('.bubble [data-view]')].pop().click(); });
+      await page.waitForSelector('#viewer:not([hidden]) .viewer-img');
+      await page.waitForTimeout(250);
+    };
+    const drag = async (dx, dy, steps) => {
+      await touch('touchStart', 195, 380);
+      for (let i = 1; i <= steps; i++) { await touch('touchMove', 195 + (dx * i) / steps, 380 + (dy * i) / steps); await page.waitForTimeout(30); }
+      await touch('touchEnd');
+      await page.waitForTimeout(250);
+    };
+    await openPhoto();
+    await drag(2, 70, 5);
+    const settled = await page.isVisible('#viewer');
+    await drag(0, 180, 8);
+    const closed = !(await page.isVisible('#viewer'));
+    await openPhoto();
+    await drag(-120, 3, 6);
+    const sideways = await page.isVisible('#viewer');
+    await page.click('#viewer-close');
+    check('a photo dragged down closes, a short drag settles back, a sideways swipe keeps it open',
+      settled && closed && sideways && !(await page.isVisible('#viewer')), JSON.stringify({ settled, closed, sideways }));
+  }
   const opened = await page.evaluate(() => ({ view: document.querySelector('#app').dataset.view, chat: Boolean(history.state && history.state.chat) }));
   check('opening a chat on a phone adds a step the back gesture can undo', opened.view === 'thread' && opened.chat);
   await page.goBack();
