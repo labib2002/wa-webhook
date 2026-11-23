@@ -632,9 +632,13 @@ async function login(page, url) {
     const sel = await d.evaluate(() => {
       document.documentElement.classList.add('by-touch');
       const card = document.querySelector('.sheet-card') || document.body;
-      return { body: getComputedStyle(document.body).userSelect, card: getComputedStyle(card).userSelect, box: getComputedStyle(document.querySelector('#composer-input')).userSelect };
+      const box = document.querySelector('#composer-input');
+      let above = null;
+      for (let a = box.parentElement; a; a = a.parentElement) if (getComputedStyle(a).userSelect === 'none') { above = a.className || a.tagName; break; }
+      return { chat: getComputedStyle(document.querySelector('#messages')).userSelect, list: getComputedStyle(document.querySelector('#conv-list')).userSelect, card: getComputedStyle(card).userSelect, box: getComputedStyle(box).userSelect, above };
     });
-    check('a long press selects nothing, not even inside the menu, but the message box still takes text', sel.body === 'none' && sel.card === 'none' && sel.box !== 'none', JSON.stringify(sel));
+    check('a long press selects nothing in the chat, the list or the menu, and nothing above a text box is switched off (iPhone would not type)',
+      sel.chat === 'none' && sel.list === 'none' && sel.card === 'none' && sel.box !== 'none' && !sel.above, JSON.stringify(sel));
   }
 
   // a text box keeps its caret on a touch screen: the search and the message box
