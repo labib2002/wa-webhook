@@ -3427,6 +3427,7 @@ function showViewerItem(index) {
 
   stopViewerVideo();
   viewer.share.hidden = !canShareFiles();
+  if (!viewer.share.hidden) prepareShare(m);
   viewer.full.hidden = !(m.type === 'video' && fullScreenWorks());
   if (m.type === 'video') {
     const play = m._localUrl || `/api/media/${m.id}?inline=1`;
@@ -3554,23 +3555,50 @@ function fullScreenWorks() {
   return Boolean(document.fullscreenEnabled && Element.prototype.requestFullscreen);
 }
 
-async function shareCurrent() {
+// The share sheet only opens inside the tap itself, so the file is fetched as
+// soon as the item shows and the tap shares it at once.
+const shareFiles = new Map();
+const SHARE_MAX_BYTES = 30 * 1024 * 1024;
+function shareType(m, blob) {
+  const meta = m.media_meta || {};
+  const given = String(meta.mime_type || '').split(';')[0].trim();
+  if (given && given !== 'application/octet-stream') return given;
+  const fromBlob = String(blob.type || '').split(';')[0].trim();
+  if (fromBlob && !/octet-stream/.test(fromBlob)) return fromBlob;
+  return { image: 'image/jpeg', sticker: 'image/webp', video: 'video/mp4', document: 'application/pdf' }[m.type] || 'application/octet-stream';
+}
+function prepareShare(m) {
+  if (!m || !canShareFiles() || shareFiles.has(m.id)) return shareFiles.get(m && m.id);
+  const job = fetch(mediaSrc(m), { credentials: 'same-origin' })
+    .then((resp) => (resp.ok ? resp.blob() : null))
+    .then((blob) => {
+      if (!blob || blob.size > SHARE_MAX_BYTES) return null;
+      const file = new File([blob], saveName(m), { type: shareType(m, blob) });
+      job.file = file;
+      return file;
+    })
+    .catch(() => null);
+  shareFiles.set(m.id, job);
+  if (shareFiles.size > 6) shareFiles.delete(shareFiles.keys().next().value);
+  return job;
+}
+function shareCurrent() {
   const m = viewer.items[viewer.index];
   if (!m) return;
-  try {
-    const resp = await fetch(mediaSrc(m), { credentials: 'same-origin' });
-    if (!resp.ok) throw new Error('fetch');
-    const blob = await resp.blob();
-    const file = new File([blob], saveName(m), { type: blob.type || (m.media_meta || {}).mime_type || 'application/octet-stream' });
-    if (navigator.canShare && navigator.canShare({ files: [file] })) {
-      await navigator.share({ files: [file] });
-      return;
-    }
-    viewer.download.click();
-  } catch (e) {
-    if (e && e.name === 'AbortError') return;
-    viewer.download.click();
+  const job = prepareShare(m);
+  const file = job && job.file;
+  if (file && navigator.canShare && navigator.canShare({ files: [file] })) {
+    navigator.share({ files: [file] }).catch((e) => {
+      if (!e || e.name !== 'AbortError') toast('Could not open the share sheet. Use Save instead.', true);
+    });
+    return;
   }
+  if (job && !file) {
+    toast('Getting the file ready, tap Share again in a moment.');
+    job.then((f) => { if (!f) toast('This file cannot be shared from here. Use Save instead.', true); });
+    return;
+  }
+  toast('This file cannot be shared from here. Use Save instead.', true);
 }
 viewer.share.addEventListener('click', (e) => { e.stopPropagation(); shareCurrent(); });
 viewer.full.addEventListener('click', (e) => {
