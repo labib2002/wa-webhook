@@ -124,7 +124,7 @@ async function login(page, url) {
   // ------------------------------------------------------------- phone
   const phone = await browser.newContext({
     viewport: { width: 390, height: 780 }, deviceScaleFactor: 2, hasTouch: true, isMobile: true,
-    permissions: ['notifications'],
+    permissions: ['notifications', 'clipboard-read', 'clipboard-write'],
   });
   await phone.addInitScript(() => {
     // Headless Chromium has no push service, so the subscription is faked.
@@ -248,10 +248,32 @@ async function login(page, url) {
   await page.waitForTimeout(900);
   const header = await page.evaluate(() => {
     const cut = (s) => { const el = document.querySelector(s); return el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1; };
-    return { name: document.querySelector('#thread-name').textContent, nameCut: cut('#thread-name-text'), member: document.querySelector('#thread-member').textContent, memberCut: cut('#thread-member') };
+    const r = (s) => document.querySelector(s).getBoundingClientRect();
+    return {
+      name: document.querySelector('#thread-name').textContent, nameCut: cut('#thread-name-text'),
+      height: Math.round(r('.thread-header').height), parts: document.querySelector('.thread-peer').children.length,
+      press: Math.round(r('#thread-peer').height), under: Math.round(window.innerHeight - r('#composer-form').bottom),
+    };
   });
-  check('the chat header shows the whole name and company, and no longer says "Member"',
-    header.name === 'Ada Lovelace Abdelrahman Mostafa' && !header.nameCut && header.member === 'Nasaym International School (NIS)' && !header.memberCut, JSON.stringify(header));
+  check('the chat header is one row beside the photo and still shows the whole name',
+    header.name === 'Ada Lovelace Abdelrahman Mostafa' && !header.nameCut && header.height <= 52 && header.parts === 2 && header.press >= 44, JSON.stringify(header));
+  check('nothing but a thin edge is left under the message box', header.under <= 5, `${header.under}px`);
+  await page.click('#thread-peer');
+  await page.waitForSelector('#peer-sheet:not([hidden])', { timeout: 3000 }).catch(() => {});
+  const facts = await page.evaluate(() => [...document.querySelectorAll('#peer-rows .peer-row')].map((row) => [row.querySelector('.peer-label').textContent, row.querySelector('.peer-value').textContent]));
+  check('a tap on the header opens the phone, the WhatsApp name and the whole company, and no longer says "Member"',
+    JSON.stringify(facts) === JSON.stringify([['Phone', '+20 10 0123 4567'], ['On WhatsApp', 'Ada Lovelace'], ['Company', 'Nasaym International School (NIS)']]), JSON.stringify(facts));
+  await page.click('#peer-rows [data-peer="copy"]');
+  await page.waitForTimeout(250);
+  check('a tap on the phone number copies it', (await page.evaluate(() => navigator.clipboard.readText()).catch(() => '')) === '+201001234567');
+  await page.goBack();
+  await page.waitForTimeout(300);
+  check('the back gesture closes that sheet and leaves the chat open',
+    await page.isHidden('#peer-sheet') && await page.evaluate(() => document.querySelector('#app').dataset.view === 'thread'));
+  await page.click('#thread-avatar');
+  await page.click('#peer-sheet [data-peer="rename"]');
+  check('the sheet leads to the rename box', await page.isHidden('#peer-sheet') && await page.isVisible('#rename-modal'));
+  await page.click('#rename-cancel');
   check('on a phone the microphone and send share one place', await page.isVisible('#mic-btn') && !(await page.isVisible('#send-btn')));
   check('the small buttons beside a bubble are gone on a touch screen', await page.evaluate(() => getComputedStyle(document.querySelector('.bubble-actions')).display === 'none'));
 
@@ -280,9 +302,9 @@ async function login(page, url) {
   check('and nothing else: no text selection, no menu from the phone, on a message or a chat row',
     held.select === 'none' && held.selected === '' && held.ownMenu && held.rowMenu, JSON.stringify(held));
   const menu = await page.evaluate(() => ({
-    actions: [...document.querySelectorAll('.sheet-action')].map((b) => b.textContent),
+    actions: [...document.querySelectorAll('#sheet .sheet-action')].map((b) => b.textContent),
     reactions: document.querySelectorAll('.sheet-react').length,
-    height: Math.min(...[...document.querySelectorAll('.sheet-action, .sheet-react')].map((b) => b.getBoundingClientRect().height)),
+    height: Math.min(...[...document.querySelectorAll('#sheet .sheet-action, .sheet-react')].map((b) => b.getBoundingClientRect().height)),
   }));
   check('with reactions, Reply, Copy and Forward, each big enough to tap',
     ['Reply', 'Copy', 'Forward'].every((a) => menu.actions.includes(a)) && menu.reactions === 6 && menu.height >= 44, JSON.stringify(menu));
@@ -355,7 +377,8 @@ async function login(page, url) {
     await page.waitForTimeout(400);
     check('swiping a chat to the left marks it done, without opening it',
       Boolean(doneReq) && doneReq.postDataJSON().read === true && await page.evaluate(() => document.querySelector('#thread').hidden)
-      && fake._tables.conversations.find((c) => c.wa_id === A).unread_count === 0);
+      && fake._tables.conversations.find((c) => c.wa_id === A).unread_count === 0,
+      JSON.stringify({ sent: Boolean(doneReq), body: doneReq && doneReq.postDataJSON(), unread: fake._tables.conversations.find((c) => c.wa_id === A).unread_count }));
   }
   await page.click('.conv-row');
   await page.waitForSelector('.bubble');
@@ -385,8 +408,12 @@ async function login(page, url) {
   });
   check('with the keyboard up the header stays on screen and the composer sits above the keyboard',
     kb.appH === '440px' && kb.headerTop >= 0 && kb.composerBottom <= 440.5, JSON.stringify(kb));
+  check('and the composer keeps no room for the home bar while the keyboard covers it',
+    await page.evaluate(() => document.documentElement.classList.contains('kb-open') && getComputedStyle(document.querySelector('.composer')).paddingBottom === '4px'));
   check('and the latest messages stay in view', kb.gap <= before.gap + 4, `gap ${before.gap} -> ${kb.gap}`);
   await page.setViewportSize({ width: 390, height: 780 });
+  await page.waitForFunction(() => !document.documentElement.classList.contains('kb-open'), null, { timeout: 3000 }).catch(() => {});
+  check('and gives it back when the keyboard goes', await page.evaluate(() => !document.documentElement.classList.contains('kb-open')));
   await page.click('#back-btn');
   await page.waitForFunction(() => document.querySelector('#app').dataset.view === 'list');
 
@@ -444,12 +471,21 @@ async function login(page, url) {
   await d.evaluate(() => { const m = document.querySelector('#messages'); m.scrollTop = m.scrollHeight; });
 
   // the name is the way to rename; the pen is gone
-  check('the pen icon is gone and the name opens the rename box',
+  const hover = await d.getAttribute('#thread-peer', 'title');
+  check('on a computer the phone and the company show on hover',
+    hover.includes('Phone: +20 10 0123 4567') && hover.includes('Company: Nasaym International School (NIS)'), hover);
+  check('the pen icon is gone and the name opens the details, with the rename box one click on',
     await d.evaluate(() => !document.querySelector('#rename-btn')) && await (async () => {
       await d.click('#thread-name');
+      const card = await d.evaluate(() => {
+        const c = document.querySelector('.peer-card').getBoundingClientRect();
+        const h = document.querySelector('.thread-header').getBoundingClientRect();
+        return !document.querySelector('#peer-sheet').hidden && c.top >= h.bottom && c.top < h.bottom + 20 && c.left >= h.left;
+      });
+      await d.click('#peer-sheet [data-peer="rename"]');
       const open = await d.isVisible('#rename-modal');
       await d.click('#rename-cancel');
-      return open;
+      return card && open;
     })());
 
   // saved replies with "/"
@@ -553,15 +589,16 @@ async function login(page, url) {
     const inside = (s) => { const el = document.querySelector(s); const b = el.getBoundingClientRect(); return b.left >= 0 && b.right <= window.innerWidth + 0.5 && b.width > 0; };
     const cut = (s) => { const el = document.querySelector(s); return el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1; };
     return {
-      inside: ['#back-btn', '#thread-name', '#thread-member', '#followup-btn', '#attach-btn', '#composer-input', '#mic-btn'].filter((s) => !inside(s)),
-      cut: ['#thread-name-text', '#thread-member'].filter(cut),
+      inside: ['#back-btn', '#thread-name', '#followup-btn', '#attach-btn', '#composer-input', '#mic-btn'].filter((s) => !inside(s)),
+      cut: ['#thread-name-text'].filter(cut),
+      header: Math.round(document.querySelector('.thread-header').getBoundingClientRect().height),
       bubbles: [...document.querySelectorAll('.bubble')].filter((b) => b.getBoundingClientRect().right > window.innerWidth).length,
       input: Math.round(document.querySelector('#composer-input').getBoundingClientRect().width),
     };
   });
   check('at 360px wide the page still fits the screen', w360.page === w360.screen && w360.inner === w360.screen, JSON.stringify(w360));
   check('and nothing in the chat is cut off or pushed off the edge',
-    narrow.inside.length === 0 && narrow.cut.length === 0 && narrow.bubbles === 0 && narrow.input >= 150, JSON.stringify(narrow));
+    narrow.inside.length === 0 && narrow.cut.length === 0 && narrow.bubbles === 0 && narrow.input >= 150 && narrow.header <= 52, JSON.stringify(narrow));
   await small.close();
 
   // ------------------------------------------------- Safari's engine
