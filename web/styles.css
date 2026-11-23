@@ -539,6 +539,12 @@ button.thread-name {
 }
 .bubble.meta-tail .meta { position: absolute; float: none; margin: 0; bottom: 5px; right: 10px; }
 .bubble:not(.meta-tail):not(.has-media) .meta { float: none; display: flex; justify-content: flex-end; margin: 4px 0 -2px; }
+.bubble .bline { display: flex; flex-wrap: wrap; align-items: flex-end; column-gap: 10px; }
+.bubble .bline > .btext {
+  display: block; flex: 0 1 auto; max-width: 100%; min-width: 0;
+  unicode-bidi: plaintext; text-align: start; white-space: pre-wrap;
+}
+.bubble.meta-side .bline > .meta { display: inline-flex; margin: 0 0 0 auto; white-space: nowrap; }
 .bubble .tick { font-size: 12px; line-height: 1; letter-spacing: -1px; }
 .bubble .tick.read { color: var(--read-tick); }
 .bubble.failed { background: var(--danger-soft); color: #6e2417; }
