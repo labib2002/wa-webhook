@@ -37,6 +37,13 @@ const rows = [
   ['out', 'This is a long message that wraps across several lines so the time has to find room on the last one without sitting on the words', 'Naglaa Mohamed'],
   ['out', 'رسالة طويلة بالعربي بتلف على كذا سطر عشان نتأكد إن الوقت واسم اللي بعت ميقعدوش فوق الكلام في آخر سطر خالص', 'Naglaa Mohamed'],
   ['in', 'Hdhdhdhdhd', null],
+  ['in', 'x', null], ['in', 'ا', null], ['in', '1', null], ['in', '👍', null], ['in', 'ok', null], ['in', 'تمام', null],
+  ['out', 'x', 'Labib'], ['out', 'ا', 'Labib'], ['out', '1', 'Labib'], ['out', '👍', 'Labib'], ['out', 'ok', 'Labib'], ['out', 'تمام', 'Labib'],
+  ['out', 'تمام يا فندم هبعتلك الملف على WhatsApp', 'Naglaa Mohamed'],
+  ['in', 'I will send it بكرة', null],
+  ['in', 'Supercalifragilisticexpialidociousandthensomemorewordsglued', null],
+  ['out', 'شوف اللينك ده https://wa.bytepluslife.com/app', 'Labib'],
+  ['out', 'السطر الأول\nالسطر التاني فيه كلام أكتر شوية\nوالتالت', 'Naglaa Mohamed'],
 ];
 rows.forEach(([direction, body, agent], i) => {
   fake._tables.messages.push({ id: 200 + i, wa_message_id: `w${i}`, wa_id: C, direction, type: 'text', body, status: direction === 'out' ? 'read' : 'received', agent, wa_timestamp: iso(60 - i), created_at: iso(60 - i), media_meta: null, media_status: null, media_path: null, error: null, forwarded: false });
@@ -99,7 +106,7 @@ async function login(page, url) {
 const overlaps = (page) => page.evaluate(() => {
   const out = [];
   for (const b of document.querySelectorAll('.bubble:not(.has-media)')) {
-    const meta = b.querySelector(':scope > .meta');
+    const meta = b.querySelector(':scope > .meta, :scope > .bline > .meta');
     if (!meta) continue;
     const m = meta.getBoundingClientRect();
     const walker = document.createTreeWalker(b, NodeFilter.SHOW_TEXT, {
@@ -119,6 +126,28 @@ const overlaps = (page) => page.evaluate(() => {
   }
   return out;
 });
+
+// The heights of one-line bubbles, by their own text, in and out.
+const ONE_LINERS = ['x', 'ا', '1', '👍', 'ok', 'تمام'];
+const oneLineHeights = (page) => page.evaluate((words) => {
+  const own = (b) => {
+    const c = b.cloneNode(true);
+    c.querySelectorAll('.meta, .meta-pad, .bubble-actions, .reaction-pill').forEach((n) => n.remove());
+    return c.textContent.trim();
+  };
+  const out = { in: {}, out: {} };
+  for (const b of document.querySelectorAll('.bubble:not(.has-media)')) {
+    const t = own(b);
+    if (!words.includes(t)) continue;
+    const side = b.classList.contains('out') ? 'out' : 'in';
+    out[side][t] = Math.round(b.getBoundingClientRect().height * 100) / 100;
+  }
+  return out;
+}, ONE_LINERS);
+const sameHeights = (h) => {
+  const all = [...Object.values(h.in), ...Object.values(h.out)];
+  return all.length === ONE_LINERS.length * 2 && Math.max(...all) - Math.min(...all) < 0.5;
+};
 
 (async () => {
   const app = require('../api/index');
@@ -154,7 +183,7 @@ const overlaps = (page) => page.evaluate(() => {
     const hits = await overlaps(page);
     check(`${label}: the time and the sender never sit on a message's text (Arabic, English, emoji, short and long)`, hits.length === 0, JSON.stringify(hits));
     const order = await page.evaluate(() => [...document.querySelectorAll('.bubble:not(.has-media)')].every((b) => {
-      const meta = b.querySelector(':scope > .meta');
+      const meta = b.querySelector(':scope > .meta, :scope > .bline > .meta');
       if (!meta) return true;
       const m = meta.getBoundingClientRect();
       const r = b.getBoundingClientRect();
@@ -162,7 +191,7 @@ const overlaps = (page) => page.evaluate(() => {
     }));
     check(`${label}: the time line stays inside its bubble`, order);
     const corner = await page.evaluate(() => [...document.querySelectorAll('.bubble:not(.is-player)')].map((b) => {
-      const meta = b.querySelector(':scope > .meta');
+      const meta = b.querySelector(':scope > .meta, :scope > .bline > .meta');
       if (!meta) return null;
       const m = meta.getBoundingClientRect();
       const r = b.getBoundingClientRect();
@@ -170,6 +199,18 @@ const overlaps = (page) => page.evaluate(() => {
     }).filter(Boolean));
     const off = corner.filter((c) => c.right > 14 || c.bottom > 12);
     check(`${label}: the name, time and ticks sit at the bottom right of every message, Arabic and English alike`, corner.length > 10 && off.length === 0, JSON.stringify(off.length ? off : corner.slice(0, 3)));
+    const heights = await oneLineHeights(page);
+    console.log(`HEIGHTS ${label} ${JSON.stringify(heights)}`);
+    if (shots) {
+      await page.evaluate(() => {
+        const b = [...document.querySelectorAll('.bubble')].find((n) => n.textContent.trim().startsWith('تمام يا فندم'));
+        const list = document.querySelector('#messages');
+        if (b) list.scrollTop = Math.max(0, b.offsetTop + b.offsetHeight - list.clientHeight + 8);
+      });
+      await page.waitForTimeout(300);
+      await page.screenshot({ path: `${shots}/${label}-oneliners.png` });
+    }
+    check(`${label}: one-line messages are the same height whatever the language ('x', 'ا', '1', '👍', 'ok', 'تمام', in and out)`, sameHeights(heights), JSON.stringify(heights));
     const dots = await page.evaluate(() => ({
       text: [...document.querySelectorAll('.bubble .meta')].some((m) => m.textContent.includes('·')),
       after: [...document.querySelectorAll('.bubble .meta-agent')].some((a) => !['none', 'normal', ''].includes(getComputedStyle(a, '::after').content)),
@@ -400,6 +441,41 @@ const overlaps = (page) => page.evaluate(() => {
     await browser.close();
   }
 
+  {
+    const browser = await chromium.launch();
+    const ctx = await browser.newContext({ viewport: { width: 1366, height: 800 } });
+    const page = await ctx.newPage();
+    page.on('pageerror', (e) => pageErrors.push(`desktop: ${e.message}`));
+    await login(page, `${base}/app`);
+    await page.click('.conv-row');
+    await page.waitForSelector('.bubble');
+    await page.waitForTimeout(700);
+    if (shots) await page.screenshot({ path: `${shots}/desktop-chat.png`, fullPage: false });
+    const hits = await overlaps(page);
+    check('desktop: the time and the sender never sit on the text of a message', hits.length === 0, JSON.stringify(hits));
+    const corner = await page.evaluate(() => [...document.querySelectorAll('.bubble:not(.is-player)')].map((b) => {
+      const meta = b.querySelector(':scope > .meta, :scope > .bline > .meta');
+      if (!meta) return null;
+      const m = meta.getBoundingClientRect();
+      const r = b.getBoundingClientRect();
+      return { text: b.textContent.trim().slice(0, 14), right: Math.round(r.right - m.right), bottom: Math.round(r.bottom - m.bottom) };
+    }).filter(Boolean));
+    const off = corner.filter((c) => c.right > 14 || c.bottom > 12);
+    check('desktop: the name, time and ticks sit at the bottom right of every message', corner.length > 10 && off.length === 0, JSON.stringify(off.length ? off : corner.slice(0, 3)));
+    const heights = await oneLineHeights(page);
+    console.log(`HEIGHTS desktop ${JSON.stringify(heights)}`);
+    if (shots) {
+      await page.evaluate(() => {
+        const b = [...document.querySelectorAll('.bubble')].find((n) => n.textContent.trim().startsWith('تمام يا فندم'));
+        const list = document.querySelector('#messages');
+        if (b) list.scrollTop = Math.max(0, b.offsetTop + b.offsetHeight - list.clientHeight + 8);
+      });
+      await page.waitForTimeout(300);
+      await page.screenshot({ path: `${shots}/desktop-oneliners.png` });
+    }
+    check('desktop: one-line messages are the same height whatever the language', sameHeights(heights), JSON.stringify(heights));
+    await browser.close();
+  }
   check('no script errors', pageErrors.length === 0, pageErrors.join(' | '));
   srv.close();
   const failed = results.filter((r) => !r.ok).length;

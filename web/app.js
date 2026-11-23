@@ -1154,7 +1154,8 @@ function renderMessages(force = false) {
       const sig = bubbleSig(m, continued);
       if (node.dataset.sig !== sig) {
         const fresh = renderBubble(m, continued);
-        if (node.dataset.body === fresh.dataset.body) patchBubble(node, fresh);
+        if (node.dataset.body === fresh.dataset.body
+          && node.classList.contains('meta-side') === fresh.classList.contains('meta-side')) patchBubble(node, fresh);
         else { node.replaceWith(fresh); node = fresh; }
       }
       existingNodes.delete(key);
@@ -1175,8 +1176,9 @@ function patchBubble(node, fresh) {
   node.dataset.mid = fresh.dataset.mid;
   node.dataset.sig = fresh.dataset.sig;
   const swap = (sel) => {
-    const was = node.querySelector(`:scope > ${sel}`);
-    const now = fresh.querySelector(`:scope > ${sel}`);
+    const at = `:scope > ${sel}, :scope > .bline > ${sel}`;
+    const was = node.querySelector(at);
+    const now = fresh.querySelector(at);
     if (was && now) { if (was.outerHTML !== now.outerHTML) was.replaceWith(now); }
     else if (was) was.remove();
     else if (now) node.appendChild(now);
@@ -1442,8 +1444,32 @@ function renderBubble(m, continued) {
       .filter((n) => !(n.nodeType === 1 && n.matches('.meta, .meta-pad, .bubble-actions, .reaction-pill, .bubble-quote, .forwarded-tag')))
       .map((n) => n.textContent).join(''));
     if (lastDir === 'ltr') div.classList.add('meta-tail');
+    else sideBySide(div);
   }
   return div;
+}
+
+// A message whose last paragraph reads right to left ends at the left edge, so
+// an invisible tail cannot hold the time's place. The text and the time sit in
+// one wrapping row instead: one line when they fit side by side, the time on
+// its own line at the bottom right when they do not.
+const BESIDE_LINE = '.meta, .meta-pad, .bubble-actions, .reaction-pill, .bubble-quote, .forwarded-tag, .tapped-tag';
+function sideBySide(div) {
+  const meta = div.querySelector(':scope > .meta');
+  if (!meta) return;
+  const line = document.createElement('div');
+  line.className = 'bline';
+  const text = document.createElement('span');
+  text.className = 'btext';
+  for (const n of [...div.childNodes]) {
+    if (n.nodeType === 1 && n.matches(BESIDE_LINE)) continue;
+    text.appendChild(n);
+  }
+  const pad = div.querySelector(':scope > .meta-pad');
+  if (pad) pad.remove();
+  line.append(text, meta);
+  div.insertBefore(line, div.querySelector(':scope > .reaction-pill, :scope > .bubble-actions'));
+  div.classList.add('meta-side');
 }
 
 // The direction of a text's last paragraph, the way the bubble lays it out
