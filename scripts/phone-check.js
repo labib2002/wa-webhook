@@ -728,6 +728,97 @@ async function login(page, url) {
   }));
   check('desktop is as it was: two panes, full height, same text size, no extra back step',
     dk.appH === '' && !dk.chat && dk.search === 14 && dk.panes[0] === 372 && dk.panes[1] === 908 && dk.height === 832, JSON.stringify(dk));
+
+  // the chat list on a wide screen: drag to resize, hide with the button or Ctrl+B, remembered
+  {
+    const listW = () => d.evaluate(() => Math.round(document.querySelector('.pane-list').getBoundingClientRect().width));
+    const handleBox = () => d.evaluate(() => { const r = document.querySelector('#list-handle').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
+    const dragBy = async (dx) => {
+      const h = await handleBox();
+      await d.mouse.move(h.x, h.y);
+      await d.mouse.down();
+      for (let i = 1; i <= 6; i++) { await d.mouse.move(h.x + (dx * i) / 6, h.y); await d.waitForTimeout(20); }
+      await d.mouse.up();
+      await d.waitForTimeout(320);
+    };
+    await d.click('.conv-row >> nth=0');
+    await d.waitForSelector('#thread:not([hidden])');
+    const start = await listW();
+    await dragBy(100);
+    const wider = await listW();
+    check('dragging the edge of the chat list makes it wider', wider >= start + 90 && wider <= start + 110, `${start} -> ${wider}`);
+    const sel = await d.evaluate(() => String(window.getSelection()));
+    check('dragging selects no text', sel === '', JSON.stringify(sel));
+    await dragBy(-900);
+    check('it never gets narrower than 260', (await listW()) === 260, String(await listW()));
+    await dragBy(1200);
+    check('or wider than 45% of the window, at most 560', (await listW()) === Math.min(560, Math.round(1280 * 0.45)), String(await listW()));
+    const h = await handleBox();
+    await d.mouse.dblclick(h.x, h.y);
+    await d.waitForTimeout(320);
+    check('a double click on the edge resets the width', (await listW()) === 372, String(await listW()));
+    await d.focus('#list-handle');
+    await d.keyboard.press('ArrowRight');
+    await d.keyboard.press('ArrowRight');
+    await d.waitForTimeout(320);
+    check('the arrow keys resize it by 16px from the keyboard', (await listW()) === 404, String(await listW()));
+    await d.reload();
+    await d.waitForSelector('.conv-row');
+    check('the width is remembered after a reload', (await listW()) === 404, String(await listW()));
+    await d.click('.conv-row >> nth=0');
+    await d.waitForSelector('#thread:not([hidden])');
+    await d.click('#list-toggle');
+    await d.waitForTimeout(320);
+    const hidden = await d.evaluate(() => ({ cls: document.querySelector('#app').classList.contains('list-hidden'), list: Math.round(document.querySelector('.pane-list').getBoundingClientRect().width), chat: Math.round(document.querySelector('.pane-thread').getBoundingClientRect().width) }));
+    check('the button in the chat header hides the list and the chat takes the whole width', hidden.cls && hidden.list === 0 && hidden.chat === 1280, JSON.stringify(hidden));
+    await d.click('#messages');
+    await d.keyboard.press('Control+b');
+    await d.waitForTimeout(320);
+    check('Ctrl+B brings it back', (await listW()) === 404, String(await listW()));
+    await d.focus('#composer-input');
+    await d.keyboard.press('Control+b');
+    await d.waitForTimeout(320);
+    check('Ctrl+B does nothing while typing', (await listW()) === 404, String(await listW()));
+    await d.click('#messages');
+    await d.keyboard.press('Control+b');
+    await d.waitForTimeout(320);
+    await d.reload();
+    await d.waitForSelector('.conv-row');
+    const afterReload = await d.evaluate(() => ({ cls: document.querySelector('#app').classList.contains('list-hidden'), list: Math.round(document.querySelector('.pane-list').getBoundingClientRect().width) }));
+    check('with no chat open the list always shows, even if it was hidden', !afterReload.cls && afterReload.list === 404, JSON.stringify(afterReload));
+    await d.click('.conv-row >> nth=0');
+    await d.waitForTimeout(320);
+    check('and the hidden choice comes back once a chat is open', await d.evaluate(() => document.querySelector('#app').classList.contains('list-hidden')));
+    await d.click('#list-toggle');
+    await d.waitForTimeout(320);
+    await d.evaluate(() => { localStorage.removeItem('wa_list_w'); localStorage.removeItem('wa_list_hidden'); });
+    await d.reload();
+    await d.waitForSelector('.conv-row');
+  }
+  if (process.env.SHOTS_DIR) {
+    for (const [w, h] of [[1366, 800], [1920, 1080]]) {
+      const ctx = await browser.newContext({ viewport: { width: w, height: h } });
+      const sp = await ctx.newPage();
+      await login(sp, `${base}/app`);
+      const shot = async (name, width, hidden) => {
+        await sp.evaluate(([wd, hd]) => {
+          if (wd) localStorage.setItem('wa_list_w', String(wd)); else localStorage.removeItem('wa_list_w');
+          localStorage.setItem('wa_list_hidden', hd ? '1' : '0');
+        }, [width, hidden]);
+        await sp.reload();
+        await sp.waitForSelector('.conv-row');
+        await sp.click('.conv-row >> nth=0');
+        await sp.waitForSelector('#thread:not([hidden])');
+        await sp.waitForTimeout(500);
+        await sp.screenshot({ path: `${process.env.SHOTS_DIR}/${w}x${h}-${name}.png` });
+      };
+      await shot('default', null, false);
+      await shot('wide', 560, false);
+      await shot('narrow', 260, false);
+      await shot('hidden', null, true);
+      await ctx.close();
+    }
+  }
   await desk.close();
 
   // ------------------------------------------------- a 360px phone
