@@ -175,7 +175,25 @@ async function login(page, url) {
   check('the filters are one row that scrolls sideways, and "Templates only" is gone',
     filters.rows === 1 && filters.scrolls === 'auto' && filters.names.join() === 'chats,needs_reply', JSON.stringify(filters));
   check("the member's picture from the app stands in for the initials", row.photo);
-  const targets = await page.evaluate(() => ['#notify-btn', '#agent-btn', '#new-chat-btn', '#logout-btn', '.filter-chip']
+  const top = await page.evaluate(() => {
+    const search = document.querySelector('#search').getBoundingClientRect();
+    const me = document.querySelector('#me-btn').getBoundingClientRect();
+    return { noHeader: !document.querySelector('.list-header') && !document.querySelector('#notify-btn'), sameRow: Math.abs((search.top + search.height / 2) - (me.top + me.height / 2)) < 4, meRight: me.left > search.right, top: Math.round(search.top) };
+  });
+  check('no top row: the search is first, with one round menu button beside it', top.noHeader && top.sameRow && top.meRight && top.top < 24, JSON.stringify(top));
+  await page.click('#me-btn');
+  const meMenu = await page.evaluate(() => ({
+    open: !document.querySelector('#me-menu').hidden,
+    items: [...document.querySelectorAll('#me-menu .me-item')].filter((b) => !b.hidden).map((b) => b.textContent.trim()),
+    name: document.querySelector('#me-name').textContent,
+  }));
+  check('the menu holds who is signed in, a new conversation, saved replies and sign out',
+    meMenu.open && meMenu.items.join('|') === 'New conversation|Saved replies|Sign out' && meMenu.name.length > 0, JSON.stringify(meMenu));
+  const itemSizes = await page.evaluate(() => [...document.querySelectorAll('#me-menu .me-item')].map((b) => Math.round(b.getBoundingClientRect().height)));
+  check('menu rows are big enough for a thumb', itemSizes.every((h) => h >= 44), itemSizes.join(','));
+  await page.mouse.click(5, 400);
+  check('a tap outside closes the menu', await page.evaluate(() => document.querySelector('#me-menu').hidden));
+  const targets = await page.evaluate(() => ['#me-btn', '.filter-chip']
     .map((s) => { const b = document.querySelector(s).getBoundingClientRect(); return `${s} ${Math.round(b.width)}x${Math.round(b.height)}`; }));
   check('the buttons are big enough for a thumb (40px high at least, 44 wide)',
     targets.every((s) => { const [w, h] = s.split(' ')[1].split('x').map(Number); return h >= 40 && w >= 44; }), targets.join(', '));
@@ -201,14 +219,12 @@ async function login(page, url) {
     .map((s) => parseFloat(getComputedStyle(document.querySelector(s)).fontSize)));
   check('no field is under 16px, so an iPhone does not zoom in on focus', sizes.every((n) => n >= 16), sizes.join(','));
 
-  await page.waitForFunction(() => !document.querySelector('#notify-btn').hidden, null, { timeout: 5000 }).catch(() => {});
-  check('the bell shows once the server says notifications are available', await page.isVisible('#notify-btn'));
   const scope = await page.evaluate(async () => (await navigator.serviceWorker.ready).scope);
   check('the worker registers for the whole inbox', scope === `${base}/`, scope);
 
-  await page.waitForFunction(() => document.querySelector('#notify-btn').classList.contains('is-on'), null, { timeout: 5000 }).catch(() => {});
-  check('notifications already allowed: the device is signed up without a tap on the bell',
-    fake._tables.push_subscriptions.length === 1 && await page.evaluate(() => document.querySelector('#notify-btn').getAttribute('aria-pressed') === 'true'));
+  await page.waitForFunction(() => document.querySelector('#me-notify').textContent.includes('on for this device'), null, { timeout: 5000 }).catch(() => {});
+  check('notifications are on by themselves: the device is signed up with nothing to press',
+    fake._tables.push_subscriptions.length === 1 && await page.evaluate(() => document.querySelector('#me-notify').textContent === 'Notifications are on for this device.'));
   // chat as its own screen + back gesture
   const land = await openAndWatch(page, async () => {
     await page.goBack();
@@ -430,19 +446,13 @@ async function login(page, url) {
     (await page2.textContent('#thread-name')).includes('Ada') && await page2.evaluate(() => location.hash === ''));
   await page2.close();
 
-  // bell off + logout
+  // sign out from the menu
   await page.click('#back-btn').catch(() => {});
-  await page.evaluate(() => document.querySelector('#notify-btn').click());
-  await page.waitForFunction(() => !document.querySelector('#notify-btn').classList.contains('is-on'), null, { timeout: 5000 }).catch(() => {});
-  check('tapping the bell removes this device', fake._tables.push_subscriptions.length === 0);
-  await page.reload({ waitUntil: 'load' });
-  await page.waitForSelector('.conv-row');
-  await page.waitForTimeout(1500);
-  check('and it stays off after a reload, because the agent chose off',
-    fake._tables.push_subscriptions.length === 0 && await page.evaluate(() => !document.querySelector('#notify-btn').classList.contains('is-on')));
-  await page.evaluate(() => document.querySelector('#notify-btn').click());
-  await page.waitForFunction(() => document.querySelector('#notify-btn').classList.contains('is-on'), null, { timeout: 5000 }).catch(() => {});
-  check('tapping it again signs the device up', fake._tables.push_subscriptions.length === 1);
+  await page.click('#me-btn');
+  await page.click('#logout-btn');
+  await page.waitForFunction(() => !document.querySelector('#login-screen').hidden, null, { timeout: 5000 }).catch(() => {});
+  check('Sign out in the menu signs out and takes this device off notifications',
+    fake._tables.push_subscriptions.length === 0 && await page.isVisible('#login-screen'));
   await phone.close();
 
   // ----------------------------------------------------------- desktop
@@ -504,6 +514,20 @@ async function login(page, url) {
   await d.waitForSelector('#window-bar:not([hidden])', { timeout: 3000 }).catch(() => {});
   check('a chat whose 24 hours have passed says so before anything is sent, and offers the template',
     /24 hours/.test(await d.textContent('#window-text')) && await d.isVisible('#window-action'), await d.textContent('#window-text'));
+  const locked = await d.evaluate(() => ({
+    form: !document.querySelector('#composer-form').hidden,
+    words: document.querySelector('#window-text').textContent,
+    action: document.querySelector('#window-action').textContent,
+  }));
+  check('there is no box to type in: one row says why and sends a template instead',
+    !locked.form && locked.words === 'The 24 hours are over. Only a template can be sent.' && locked.action === 'Send a template', JSON.stringify(locked));
+  const pastedHere = await d.evaluate(() => {
+    const dt = new DataTransfer();
+    dt.items.add(new File(['x'], 'a.png', { type: 'image/png' }));
+    document.querySelector('#messages').dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true }));
+    return !document.querySelector('#attach-preview').hidden;
+  });
+  check('a picture pasted into that chat is not staged either', !pastedHere);
   const link = await d.evaluate(() => { const a = document.querySelector('.bubble .msg-link'); return a && { href: a.getAttribute('href'), target: a.target, rel: a.rel }; });
   check('a web address in a message is a link that opens in a new tab',
     Boolean(link) && link.href === 'https://bytepluslife.com/help' && link.target === '_blank' && /noopener/.test(link.rel), JSON.stringify(link));
@@ -529,7 +553,7 @@ async function login(page, url) {
   check('every message carries the name on the account that is signed in, and nobody is asked to type one',
     Boolean(namedReq) && !('x-agent-name' in namedReq.headers()) && !(await d.$('#agent-modal'))
     && await d.evaluate(() => [...document.querySelectorAll('.bubble.out .meta-agent')].some((e) => e.textContent === 'Naglaa'))
-    && await d.evaluate(() => document.querySelector('#agent-btn').title === 'Signed in as Naglaa' && document.querySelector('#agent-initials').textContent === 'N'));
+    && await d.evaluate(() => document.querySelector('#me-name').textContent === 'Naglaa' && document.querySelector('#me-initials').textContent === 'N'));
 
   // one dropped request must not lock the composer
   await d.route('**/api/send', (route) => route.abort());

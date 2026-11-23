@@ -41,6 +41,7 @@ const els = {
   threadLoading: $('#thread-loading'),
   messagesEmpty: $('#messages-empty'),
   composerForm: $('#composer-form'),
+  composer: $('.composer'),
   composerInput: $('#composer-input'),
   composerBanner: $('#composer-banner'),
   replyBar: $('#reply-bar'),
@@ -65,7 +66,6 @@ const els = {
   recDot: $('#rec-dot'),
   recHint: $('#rec-hint'),
   newChatBtn: $('#new-chat-btn'),
-  notifyBtn: $('#notify-btn'),
   newChatModal: $('#new-chat-modal'),
   newChatForm: $('#new-chat-form'),
   newChatNumber: $('#new-chat-number'),
@@ -91,8 +91,13 @@ const els = {
   forwardCancel: $('#forward-cancel'),
   forwardSubmit: $('#forward-submit'),
   toast: $('#toast'),
-  agentBtn: $('#agent-btn'),
-  agentInitials: $('#agent-initials'),
+  meBtn: $('#me-btn'),
+  meInitials: $('#me-initials'),
+  meMenu: $('#me-menu'),
+  meName: $('#me-name'),
+  meEmail: $('#me-email'),
+  meReplies: $('#me-replies'),
+  meNotify: $('#me-notify'),
   doneBtn: $('#done-btn'),
   windowBar: $('#window-bar'),
   windowText: $('#window-text'),
@@ -154,6 +159,28 @@ function thread(waId) {
   return state.threads[waId];
 }
 
+// Ticks only move forward on screen. An answer that left the server before a
+// newer one can arrive after it, and the automatic re-send of a refused voice
+// note passes through failed and pending on its way to the next tick: in both
+// cases the bubble keeps the ticks it already showed.
+const TICK_RANK = { pending: 0, sent: 1, delivered: 2, read: 3, played: 4 };
+const REFUSED_VOICE = /media upload error|131053/i;
+function resendingVoice(m) {
+  const mm = m.media_meta || {};
+  if (mm.voice !== true && !mm.auto_resend) return false;
+  if (m.status === 'pending') return Boolean(mm.auto_resend);
+  if (m.status !== 'failed' || mm.auto_resend || !REFUSED_VOICE.test(m.error || '')) return false;
+  return Date.now() - Date.parse(m.created_at || 0) < 15 * 60 * 1000;
+}
+function shownStatus(existing, m) {
+  const was = TICK_RANK[existing.status];
+  if (was === undefined || was === 0) return m.status;
+  if (resendingVoice(m)) return existing.status;
+  const now = TICK_RANK[m.status];
+  if (now !== undefined && now < was) return existing.status;
+  return m.status;
+}
+
 // Merge a batch of message rows into a thread, deduping by id. Returns true if
 // anything visible changed (new message, or an existing one's status/reaction/
 // body updated). Also advances the thread's updated_at high-water mark.
@@ -176,13 +203,17 @@ function mergeMessages(t, rows) {
       t.byId.set(m.id, m);
       t.order.push(m.id);
       changed = true;
-    } else if (
-      existing.status !== m.status || existing.reaction !== m.reaction ||
-      existing.media_status !== m.media_status || existing.body !== m.body ||
-      (existing.error || '') !== (m.error || '')
-    ) {
-      t.byId.set(m.id, { ...existing, ...m });
-      changed = true;
+    } else {
+      const status = shownStatus(existing, m);
+      const error = status === m.status ? (m.error || '') : (existing.error || '');
+      if (
+        existing.status !== status || existing.reaction !== m.reaction ||
+        existing.media_status !== m.media_status || existing.body !== m.body ||
+        (existing.error || '') !== error
+      ) {
+        t.byId.set(m.id, { ...existing, ...m, status, error: error || null });
+        changed = true;
+      }
     }
     if (m.updated_at && (!t.maxUpdatedAt || m.updated_at > t.maxUpdatedAt)) {
       t.maxUpdatedAt = m.updated_at;
@@ -265,11 +296,14 @@ async function api(path, opts = {}) {
 // server stores on every message they send.
 let agentName = '';
 let agentEmail = '';
+let agentImage = null;
 // Set when the server ends a session because the account lost its access.
 let endedNote = '';
 function setAgent(agent) {
   agentName = (agent && agent.name) || '';
   agentEmail = (agent && agent.email) || '';
+  agentImage = (agent && agent.image && agent.image.url) ? agent.image : null;
+  renderAgent();
 }
 try { localStorage.removeItem('wa_agent'); } catch (_) {}
 
@@ -375,6 +409,7 @@ function dayLabel(iso) {
 
 function tickGlyph(status) {
   switch (status) {
+    case 'played':
     case 'read':      return '<span class="tick read">✓✓</span>';
     case 'delivered': return '<span class="tick">✓✓</span>';
     case 'sent':      return '<span class="tick">✓</span>';
@@ -959,6 +994,10 @@ async function loadThread(initial = false) {
   }
   t.loaded = true;
   if (data.last_inbound_at !== undefined) t.lastInboundAt = data.last_inbound_at;
+  if (data.server_now) {
+    const skew = Date.parse(data.server_now) - Date.now();
+    if (Number.isFinite(skew)) state.clockSkew = skew;
+  }
   const changed = mergeMessages(t, data.messages || []);
   renderWindow();
   if (changed || initial) {
@@ -1468,6 +1507,12 @@ async function retrySend(m) {
     // still failing — restore the failed state (and keep _retry for another go)
     t2.byId.set(m.id, { ...stillThere, _retrying: false, status: 'failed', error: (data && data.error) || 'Failed to send.' });
     renderMessages();
+    if (data && data.code === 'WINDOW_CLOSED') {
+      t2.lastInboundAt = data.last_inbound_at || null;
+      renderWindow();
+      toast(data.error, true);
+      return;
+    }
     setBanner((data && data.error) || 'Still couldn’t send. Check the connection or the 24-hour window.');
   }
 }
@@ -1589,7 +1634,7 @@ function stageFirstFile(files) {
 
 document.addEventListener('paste', (e) => {
   const data = e.clipboardData;
-  if (!data || !data.files.length || !canStageFileFrom(e.target)) return;
+  if (!data || !data.files.length || !canStageFileFrom(e.target) || !canWriteFreely()) return;
   // Office copies put a picture of the selection next to its text; keep the text.
   if (data.types.includes('text/rtf') && data.getData('text/plain').trim()) return;
   e.preventDefault();
@@ -1605,7 +1650,7 @@ document.addEventListener('dragover', (e) => {
 document.addEventListener('drop', (e) => {
   if (!draggingFiles(e)) return;
   e.preventDefault();
-  if (e.dataTransfer.files.length && canDropOn(e.target)) stageFirstFile(e.dataTransfer.files);
+  if (e.dataTransfer.files.length && canDropOn(e.target) && canWriteFreely()) stageFirstFile(e.dataTransfer.files);
 });
 
 async function stageFile(file) {
@@ -1734,6 +1779,8 @@ async function sendFile(waId, f, caption = '') {
   } else if (status === 207) {
     settleOptimistic(waId, opt, { _optimistic: false, status: 'sent' });
     toast(data.warning || 'Sent, but not saved.');
+  } else if (windowRefused(waId, opt, data)) {
+    state.pendingFile = null;
   } else {
     // keep the failed bubble retryable: re-POST the same media (base64
     // retained) with the SAME idempotency key so the server can dedupe
@@ -1781,7 +1828,7 @@ function showRecBar(on) {
 }
 
 async function startRecording() {
-  if (state.rec || !state.activeWaId) return;
+  if (state.rec || !state.activeWaId || !canWriteFreely()) return;
   const waId = state.activeWaId;
   if (typeof MediaRecorder === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
     setBanner('Voice recording is not supported in this browser.');
@@ -1971,6 +2018,25 @@ function addOptimistic(waId, fields) {
   return opt;
 }
 
+// The server refused a send because the 24 hours are over: nothing reached
+// WhatsApp, so the bubble goes, the text stays as a draft, and the chat locks.
+function windowRefused(waId, opt, data, draftText) {
+  if (!data || data.code !== 'WINDOW_CLOSED') return false;
+  const t = thread(waId);
+  t.byId.delete(opt.id);
+  const idx = t.order.indexOf(opt.id);
+  if (idx > -1) t.order.splice(idx, 1);
+  t.lastInboundAt = data.last_inbound_at || null;
+  for (const m of t.byId.values()) {
+    if (m.direction === 'in' && Date.parse(m.wa_timestamp || m.created_at) > Date.parse(data.last_inbound_at || 0)) {
+      t.lastInboundAt = m.wa_timestamp || m.created_at;
+    }
+  }
+  if (draftText) { state.drafts[waId] = draftText; storeDrafts(); }
+  if (waId === state.activeWaId) { renderMessages(); renderWindow(); }
+  return true;
+}
+
 // Replace an optimistic bubble with the server's persisted row (or mutate it).
 function settleOptimistic(waId, opt, patch, persisted) {
   const t = thread(waId);
@@ -1992,6 +2058,7 @@ els.composerForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   if (state.sending || !state.activeWaId) return;
   const waId = state.activeWaId;
+  if (!canWriteFreely(waId)) { renderWindow(); return; }
 
   // If a file is staged, send media; otherwise send text.
   if (state.pendingFile) return sendPendingFile();
@@ -2027,6 +2094,8 @@ els.composerForm.addEventListener('submit', async (e) => {
   } else if (status === 207) {
     settleOptimistic(waId, opt, { _optimistic: false, status: 'sent' });
     toast(data.warning || 'Sent, but not saved.');
+  } else if (windowRefused(waId, opt, data, text)) {
+    // locked; the text waits as a draft for the member's reply
   } else {
     // keep the failed bubble retryable: re-POST the same text on retry,
     // carrying the SAME idempotency key so the server can dedupe
@@ -2412,9 +2481,9 @@ function unlockAlerts() {
     const Ctx = window.AudioContext || window.webkitAudioContext;
     if (Ctx && !alerts.audio) alerts.audio = new Ctx();
   } catch (_) {}
-  // A Home Screen app on an iPhone may only ask from a tap on the bell itself.
+  // A Home Screen app on an iPhone asks from a full tap instead (askOnTap).
   if ('Notification' in window && Notification.permission === 'default' && !(IS_IOS && IS_HOME_SCREEN_APP)) {
-    Notification.requestPermission().then((perm) => { if (perm === 'granted') autoSubscribe(); }).catch(() => {});
+    Notification.requestPermission().then((perm) => { if (perm === 'granted') autoSubscribe(); renderNotifyNote(); }).catch(() => {});
   }
 }
 document.addEventListener('pointerdown', unlockAlerts, true);
@@ -2424,26 +2493,34 @@ document.addEventListener('keydown', unlockAlerts, true);
 
 // The alerts above need the inbox open in a tab. A phone freezes the page as
 // soon as it leaves the screen, so there the server sends the notification
-// (lib/push.js) and web/sw.js shows it. Each device opts in from the bell.
+// (lib/push.js) and web/sw.js shows it. Every signed-in device is signed up
+// by itself: the browser is asked on the first tap, nothing to press.
 const pushCtl = { reg: null, key: null, on: false };
 const IS_IOS = /iPhone|iPad|iPod/.test(navigator.userAgent)
   || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 const IS_HOME_SCREEN_APP = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 const PUSH_OK = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
-const BELL_HINT_KEY = 'wa_bell_hint';
-const BELL_OFF_KEY = 'wa_bell_off'; // set when the agent turned the bell off on this device
-const lsGet = (key) => { try { return localStorage.getItem(key); } catch (_) { return null; } };
-const lsSet = (key, value) => {
-  try { if (value == null) localStorage.removeItem(key); else localStorage.setItem(key, value); } catch (_) {}
-};
+
+try { localStorage.removeItem('wa_bell_off'); localStorage.removeItem('wa_bell_hint'); } catch (_) {}
 
 function setBell(on) {
   pushCtl.on = on;
-  const label = on ? 'Notifications are on for this device' : 'Turn on notifications for this device';
-  els.notifyBtn.classList.toggle('is-on', on);
-  els.notifyBtn.title = label;
-  els.notifyBtn.setAttribute('aria-label', label);
-  els.notifyBtn.setAttribute('aria-pressed', String(on));
+  renderNotifyNote();
+}
+
+// One quiet line in the menu, only when something needs the person.
+function notifyWords() {
+  if (pushCtl.on) return 'Notifications are on for this device.';
+  if (IS_IOS && !IS_HOME_SCREEN_APP) return 'On iPhone, notifications need the Home Screen app: tap Share, then Add to Home Screen, and open the inbox from there.';
+  if (!('Notification' in window)) return '';
+  if (Notification.permission === 'denied') return 'Notifications are blocked in this browser. Allow them in the site settings (the icon left of the address), then reload.';
+  return '';
+}
+function renderNotifyNote() {
+  if (!els.meNotify) return;
+  const words = notifyWords();
+  els.meNotify.textContent = words;
+  els.meNotify.hidden = !words;
 }
 
 function keyBytes(b64url) {
@@ -2464,30 +2541,38 @@ function saveSub(sub) {
 
 async function initPush() {
   setBell(false);
-  if (!PUSH_OK) {
-    // An iPhone only allows notifications from the Home Screen copy.
-    els.notifyBtn.hidden = !(IS_IOS && !IS_HOME_SCREEN_APP);
-    return;
-  }
+  if (!PUSH_OK) return;
   try {
     const { ok, data } = await api('/api/push/key');
-    if (!ok || !data.on) { els.notifyBtn.hidden = true; return; }
+    if (!ok || !data.on) return;
     pushCtl.key = data.key;
     pushCtl.reg = await navigator.serviceWorker.register('/static/sw.js', { scope: '/' });
-    els.notifyBtn.hidden = false;
     const sub = await pushCtl.reg.pushManager.getSubscription();
     if (sub && Notification.permission === 'granted') {
       if (sameKey(sub, data.key)) setBell((await saveSub(sub)).ok);
       else await sub.unsubscribe();
     }
     await autoSubscribe();
-    if (!pushCtl.on && IS_HOME_SCREEN_APP && !lsGet(BELL_HINT_KEY)) {
-      lsSet(BELL_HINT_KEY, '1');
-      toast('Tap the bell to get notifications on this phone.', false, 6000);
-    }
-  } catch (_) {
-    els.notifyBtn.hidden = true;
-  }
+    if (!pushCtl.on && Notification.permission === 'default') askOnTap();
+  } catch (_) {}
+  renderNotifyNote();
+}
+
+// The browser asks once, on the first tap after sign-in. An iPhone Home Screen
+// app only lets a full tap (not a touch down) ask and sign up.
+let tapAsk = null;
+function askOnTap() {
+  if (tapAsk) return;
+  tapAsk = async () => {
+    els.app.removeEventListener('click', tapAsk, true);
+    tapAsk = null;
+    if (!pushCtl.reg || pushCtl.on || Notification.permission !== 'default') return;
+    try {
+      if (await Notification.requestPermission() === 'granted') await subscribeDevice();
+    } catch (_) {}
+    renderNotifyNote();
+  };
+  els.app.addEventListener('click', tapAsk, true);
 }
 
 // One sign-up at a time: a tap on the bell while the automatic one is still
@@ -2514,7 +2599,7 @@ function subscribeDevice() {
 // the bell, unless the agent turned the bell off here. So a phone or a closed
 // tab gets them the same way an open desktop tab always did.
 async function autoSubscribe() {
-  if (!pushCtl.reg || !pushCtl.key || pushCtl.on || lsGet(BELL_OFF_KEY)) return;
+  if (!pushCtl.reg || !pushCtl.key || pushCtl.on) return;
   if (Notification.permission !== 'granted') return;
   try { await subscribeDevice(); } catch (_) {}
 }
@@ -2531,30 +2616,6 @@ async function pushOff() {
   setBell(false);
 }
 
-els.notifyBtn.addEventListener('click', async () => {
-  if (!pushCtl.reg) {
-    toast('On iPhone: tap Share, then "Add to Home Screen". Open Inbox from that icon and tap the bell.', false, 9000);
-    return;
-  }
-  if (pushCtl.on) {
-    await pushOff();
-    lsSet(BELL_OFF_KEY, '1');
-    toast('Notifications are off on this device.');
-    return;
-  }
-  try {
-    const perm = await Notification.requestPermission();
-    if (perm !== 'granted') {
-      toast('Notifications are blocked for the inbox. Allow them in the settings, then tap the bell again.', true, 7000);
-      return;
-    }
-    lsSet(BELL_OFF_KEY, null);
-    await subscribeDevice();
-    toast('Notifications are on for this device.');
-  } catch (e) {
-    toast(`Couldn't turn notifications on (${(e && e.message) || 'unknown'}). Try again.`, true, 7000);
-  }
-});
 
 // A tapped notification opens its chat: by message when the inbox is already
 // open, by #chat= in the address when it had to be opened.
@@ -3177,21 +3238,44 @@ document.addEventListener('keydown', (e) => {
 /* ----------------------- who is signed in ----------------------- */
 
 function renderAgent() {
-  els.agentBtn.hidden = !agentName;
-  els.agentInitials.textContent = initials(agentName, '');
-  els.agentBtn.title = `Signed in as ${agentName}`;
+  if (!els.meBtn) return;
+  const img = agentImage
+    ? `<img src="${escapeHtml(agentImage.url)}" alt="" decoding="async" referrerpolicy="no-referrer"${agentImage.backgroundColor ? ` style="background:${escapeHtml(agentImage.backgroundColor)}"` : ''} />`
+    : '';
+  els.meInitials.innerHTML = `${escapeHtml(initials(agentName, ''))}${img}`;
+  els.meBtn.classList.toggle('has-photo', Boolean(img));
+  els.meBtn.title = agentName ? `${agentName}: menu` : 'Menu';
+  els.meName.textContent = agentName || 'Signed in';
+  els.meEmail.textContent = agentEmail || '';
+  els.meEmail.hidden = !agentEmail;
 }
 
-els.agentBtn.addEventListener('click', () => {
-  toast(`Signed in as ${agentName}${agentEmail ? ` (${agentEmail})` : ''}. Your name shows on the messages you send.`, false, 5000);
+function openMeMenu() {
+  renderNotifyNote();
+  els.meMenu.hidden = false;
+  els.meBtn.setAttribute('aria-expanded', 'true');
+}
+function closeMeMenu() {
+  if (els.meMenu.hidden) return;
+  els.meMenu.hidden = true;
+  els.meBtn.setAttribute('aria-expanded', 'false');
+}
+els.meBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (els.meMenu.hidden) openMeMenu(); else closeMeMenu();
 });
+document.addEventListener('click', (e) => {
+  if (!els.meMenu.hidden && !els.meMenu.contains(e.target) && e.target !== els.meBtn) closeMeMenu();
+});
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMeMenu(); });
+els.meMenu.addEventListener('click', (e) => { if (e.target.closest('.me-item')) closeMeMenu(); });
+els.meReplies.addEventListener('click', () => openRepliesModal());
 
 /* ----------------------- the 24-hour window ----------------------- */
 
 // WhatsApp lets a free message through only within 24 hours of the member's
-// last one. The chat says where it stands before anything is sent. The
-// composer stays usable: this is read from our own copy of the chat, and a
-// wrong guess must not stop an agent from answering.
+// last one, judged on the server's clock. Once it is over the composer gives
+// way to one row that sends a template; the member's reply brings it back.
 const WINDOW_MS = 24 * 60 * 60 * 1000;
 const WINDOW_SOON_MS = 2 * 60 * 60 * 1000;
 
@@ -3203,31 +3287,46 @@ function windowState(waId) {
     if (m.direction === 'in') last = Math.max(last, Date.parse(m.wa_timestamp || m.created_at) || 0);
   }
   if (!last) return { open: false, never: true };
-  const left = last + WINDOW_MS - Date.now();
+  const left = last + WINDOW_MS - (Date.now() + (state.clockSkew || 0));
   return { open: left > 0, left, until: last + WINDOW_MS };
 }
 
 function windowWords(w) {
   if (!w) return '';
-  if (w.never) return 'They have not written to this number yet. WhatsApp only lets a follow-up template through.';
-  if (!w.open) return 'More than 24 hours since their last message. WhatsApp only lets a follow-up template through now.';
+  if (w.never) return 'They have not written to this number yet. Only a template can be sent.';
+  if (!w.open) return 'The 24 hours are over. Only a template can be sent.';
   if (w.left > WINDOW_SOON_MS) return '';
   const mins = Math.max(1, Math.round(w.left / 60000));
   const left = mins >= 60 ? `${Math.floor(mins / 60)} h ${mins % 60} min` : `${mins} min`;
   return `You can write freely until ${fmtTime(new Date(w.until).toISOString())} (${left} left). After that only a template goes through.`;
 }
 
+// False only when the chat is known to be outside the window.
+function canWriteFreely(waId = state.activeWaId) {
+  const w = waId ? windowState(waId) : null;
+  return !(w && !w.open);
+}
+
 function renderWindow() {
   if (!state.activeWaId) return;
   const w = windowState(state.activeWaId);
+  const closed = Boolean(w && !w.open);
   const words = windowWords(w);
   els.windowBar.hidden = !words;
   els.windowText.textContent = words;
-  els.windowBar.classList.toggle('is-closed', Boolean(w && !w.open));
-  els.windowAction.hidden = !(w && !w.open);
+  els.windowBar.classList.toggle('is-closed', closed);
+  els.windowAction.hidden = !closed;
+  if (closed === els.composer.classList.contains('is-locked')) return;
+  els.composer.classList.toggle('is-locked', closed);
+  els.composerForm.hidden = closed;
+  if (closed) {
+    if (typeof closeReplyPicker === 'function') closeReplyPicker();
+    clearBanner();
+    if (document.activeElement === els.composerInput) els.composerInput.blur();
+  }
 }
 els.windowAction.addEventListener('click', () => openFollowupModal());
-setInterval(() => { if (!els.thread.hidden) renderWindow(); }, 60000);
+setInterval(() => { if (!els.thread.hidden) renderWindow(); }, 15000);
 
 els.doneBtn.addEventListener('click', () => {
   if (!state.activeWaId) return;
