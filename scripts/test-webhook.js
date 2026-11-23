@@ -2828,6 +2828,32 @@ function sign(body) {
     });
   }
 
+  // ---- voice note file ----
+  {
+    const transcode = require('../lib/transcode');
+    if (transcode.isAvailable()) {
+      await test('a voice note made from an Opus recording has an exact first page count', async () => {
+        const { execFileSync } = require('child_process');
+        const fs = require('fs');
+        const os = require('os');
+        const path = require('path');
+        const src = path.join(os.tmpdir(), `wa-test-rec-${process.pid}.webm`);
+        execFileSync(transcode.ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=3', '-c:a', 'libopus', src]);
+        const recording = fs.readFileSync(src);
+        fs.unlinkSync(src);
+        const out = await transcode.toOggOpus(recording, 'webm');
+        assert.strictEqual(out.ok, true);
+        const pages = [];
+        for (let i = out.buffer.indexOf('OggS'); i >= 0; i = out.buffer.indexOf('OggS', i + 4)) pages.push(out.buffer.readBigInt64LE(i + 6));
+        assert.ok(pages.length >= 4, 'header, tags and audio pages');
+        assert.strictEqual(pages[2], 48000n, 'the first second counts 48000 samples');
+        assert.strictEqual(out.buffer.indexOf('OpusHead') > 0, true);
+      });
+    } else {
+      console.log('  (voice note file test skipped: no ffmpeg here)');
+    }
+  }
+
   // ---- summary ----
   console.log(`\n\x1b[1mRESULT:\x1b[0m ${passed} passed, ${failed} failed\n`);
   process.exit(failed ? 1 : 0);
