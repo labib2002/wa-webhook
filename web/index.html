@@ -23,7 +23,7 @@
 <body class="preload">
   <!-- ===================== LOGIN GATE ===================== -->
   <div id="login-screen" class="login-screen" hidden>
-    <form id="login-form" class="login-card" autocomplete="off">
+    <form id="login-form" class="login-card">
       <div class="login-mark" aria-hidden="true">
         <svg viewBox="0 0 100 100" width="44" height="44">
           <rect width="100" height="100" rx="26" fill="#1f6f5c" />
@@ -31,22 +31,32 @@
         </svg>
       </div>
       <h1 class="login-title">Agent Inbox</h1>
-      <p class="login-sub">Enter the team passcode to continue.</p>
+      <p class="login-sub">Sign in with your Byte+ staff account.</p>
       <label class="field">
-        <span class="field-label">Passcode</span>
+        <span class="field-label">Email</span>
         <input
-          id="passcode"
-          type="password"
-          inputmode="text"
-          autocomplete="current-password"
-          placeholder="••••••••"
+          id="login-email"
+          type="email"
+          inputmode="email"
+          autocomplete="username"
+          autocapitalize="none"
+          spellcheck="false"
           required
         />
       </label>
-      <button id="login-btn" type="submit" class="btn-primary">Unlock</button>
+      <label class="field">
+        <span class="field-label">Password</span>
+        <input
+          id="login-password"
+          type="password"
+          autocomplete="current-password"
+          required
+        />
+      </label>
+      <button id="login-btn" type="submit" class="btn-primary">Sign in</button>
       <p id="login-error" class="login-error" role="alert" hidden></p>
     </form>
-    <p class="login-foot">Customer messages are private. Sessions last 7 days.</p>
+    <p class="login-foot">Customer messages are private.</p>
   </div>
 
   <!-- ===================== APP SHELL ===================== -->
@@ -62,7 +72,7 @@
           <button id="notify-btn" class="icon-btn notify-btn" title="Turn on notifications for this device" aria-label="Turn on notifications for this device" aria-pressed="false" hidden>
             <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/><line class="bell-slash" x1="3" y1="3" x2="21" y2="21"/></svg>
           </button>
-          <button id="agent-btn" class="icon-btn agent-btn" title="Your name on the messages you send" aria-label="Change your name" hidden><span id="agent-initials" class="agent-initials"></span></button>
+          <button id="agent-btn" class="icon-btn agent-btn" title="Who is signed in" aria-label="Who is signed in" hidden><span id="agent-initials" class="agent-initials"></span></button>
           <button id="new-chat-btn" class="icon-btn" title="New conversation" aria-label="New conversation">
             <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
           </button>
@@ -224,22 +234,6 @@
       <div class="modal-actions">
         <button id="new-chat-cancel" type="button" class="btn-ghost">Cancel</button>
         <button id="new-chat-submit" type="submit" class="btn-primary btn-inline">Open chat</button>
-      </div>
-    </form>
-  </div>
-
-  <!-- who is using this device -->
-  <div id="agent-modal" class="modal-overlay" hidden>
-    <form id="agent-form" class="modal-card" autocomplete="off">
-      <h2 class="modal-title">Your name</h2>
-      <p class="modal-sub">Everyone logs in with the same passcode, so this is how the team sees who sent a message. It is kept on this device and shown beside the messages you send.</p>
-      <label class="field">
-        <span class="field-label">Name</span>
-        <input id="agent-input" type="text" dir="auto" maxlength="40" placeholder="Naglaa" required />
-      </label>
-      <div class="modal-actions">
-        <button id="agent-cancel" type="button" class="btn-ghost">Not now</button>
-        <button type="submit" class="btn-primary btn-inline">Save</button>
       </div>
     </form>
   </div>

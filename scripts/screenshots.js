@@ -13,7 +13,6 @@ const { makeFakeDb } = require('./fake-db');
 // env so the gate + app are operational
 process.env.VERIFY_TOKEN = 'vibecode123';
 process.env.SESSION_SECRET = 'demo_session_secret_0123456789';
-process.env.DASHBOARD_PASSCODE = 'demo';
 process.env.NODE_ENV = 'test';
 // Blank, not unset: dotenv must not load the real token from a local .env,
 // or opening a chat here calls Meta's mark-as-read for real.
@@ -23,6 +22,7 @@ process.env.PHONE_NUMBER_ID = '';
 const db = require('../lib/db');
 const fake = makeFakeDb();
 db.__setDbForTesting(fake);
+require('./fake-backend').install();
 
 // ---- seed a realistic inbox ----
 function iso(minAgo) { return new Date(Date.now() - minAgo * 60000).toISOString(); }
@@ -88,11 +88,11 @@ seed();
       viewport: { width, height },
       deviceScaleFactor: 2,
     });
-    await ctx.addInitScript(() => { try { localStorage.setItem('wa_agent', 'Check'); } catch (_) {} });
     const page = await ctx.newPage();
     await page.goto(base, { waitUntil: 'networkidle' });
     // log in
-    await page.fill('#passcode', 'demo');
+    await page.fill('#login-email', 'naglaa@byte.test');
+    await page.fill('#login-password', 'demo');
     await page.click('#login-btn');
     // wait until the login screen is gone and the app + rows are visible
     await page.waitForSelector('#login-screen', { state: 'hidden', timeout: 5000 });

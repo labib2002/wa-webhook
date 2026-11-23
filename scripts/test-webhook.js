@@ -16,13 +16,15 @@ const { makeFakeDb } = require('./fake-db');
 process.env.VERIFY_TOKEN = 'vibecode123';
 process.env.APP_SECRET = 'test_app_secret';
 process.env.SESSION_SECRET = 'test_session_secret_0123456789';
-process.env.DASHBOARD_PASSCODE = 'letmein';
 process.env.NODE_ENV = 'test';
 // Empty (not delete): dotenv won't override an already-present key, so this
 // survives the dotenv.config() inside api/index.js and keeps the DB unconfigured.
 process.env.DATABASE_URL = '';
 
 const { ingestWebhook, describeMessage, __setMediaFetcher } = require('../lib/ingest');
+// Sign-in asks the backend; here a stand-in answers, never a real one.
+const backend = require('./fake-backend').install();
+const ME = { email: 'naglaa@byte.test', password: 'demo' };
 
 let passed = 0, failed = 0;
 function ok(name) { console.log(`  \x1b[32m✓\x1b[0m ${name}`); passed++; }
@@ -169,15 +171,105 @@ function sign(body) {
     const r = await req(srv, 'POST', '/api/conversations/201001234567/read', { body: { read: false } });
     assert.strictEqual(r.status, 401);
   });
-  await test('POST /api/login wrong passcode → 401', async () => {
-    const r = await req(srv, 'POST', '/api/login', { body: { passcode: 'wrong' } });
-    assert.strictEqual(r.status, 401);
+  const staff = require('../lib/staff');
+  const login = (body, headers) => req(srv, 'POST', '/api/login', { body, headers });
+  const said = (r) => JSON.parse(r.text).error;
+
+  await test('sign-in: a wrong password and an unknown email get the same sentence and no session', async () => {
+    const wrong = await login({ email: ME.email, password: 'nope' });
+    assert.strictEqual(wrong.status, 401);
+    assert.strictEqual(said(wrong), staff.SENTENCES.wrong);
+    assert.strictEqual(wrong.headers.get('set-cookie'), null);
+    const unknown = await login({ email: 'nobody@byte.test', password: 'demo' });
+    assert.strictEqual(unknown.status, 401);
+    assert.strictEqual(said(unknown), staff.SENTENCES.wrong);
   });
-  await test('POST /api/login correct passcode → 200 + Set-Cookie', async () => {
-    const r = await req(srv, 'POST', '/api/login', { body: { passcode: 'letmein' } });
+  await test('sign-in: an empty email or password is refused before the backend is asked', async () => {
+    const before = backend.calls.length;
+    for (const body of [{}, { email: ME.email }, { password: 'demo' }, { email: '   ', password: 'demo' }, { email: ME.email, password: 5 }, { passcode: 'letmein' }]) {
+      const r = await login(body);
+      assert.strictEqual(r.status, 400);
+      assert.strictEqual(said(r), staff.SENTENCES.missing);
+    }
+    assert.strictEqual(backend.calls.length, before);
+  });
+  await test('sign-in: a view-only account and one with no ops role are refused in plain words', async () => {
+    for (const email of ['viewer@byte.test', 'norole@byte.test']) {
+      const r = await login({ email, password: 'demo' });
+      assert.strictEqual(r.status, 403, email);
+      assert.strictEqual(said(r), staff.SENTENCES.role);
+      assert.strictEqual(r.headers.get('set-cookie'), null);
+    }
+  });
+  await test('sign-in: the backend not answering, or answering nonsense, is its own sentence', async () => {
+    backend.state.down = true;
+    try {
+      const r = await login(ME);
+      assert.strictEqual(r.status, 503);
+      assert.strictEqual(said(r), staff.SENTENCES.down);
+    } finally { backend.state.down = false; }
+    staff.__setBackendForTesting(async () => ({ status: 200, json: async () => { throw new Error('not json'); } }));
+    try {
+      assert.strictEqual((await login(ME)).status, 503);
+    } finally { staff.__setBackendForTesting(backend.fetchImpl); }
+  });
+  await test("sign-in: the backend's own limit is passed on as a wait", async () => {
+    backend.state.limited = true;
+    try {
+      const r = await login(ME);
+      assert.strictEqual(r.status, 429);
+      assert.strictEqual(said(r), staff.SENTENCES.limited);
+    } finally { backend.state.limited = false; }
+  });
+  await test('sign-in: the right password opens a session that says who it is and holds no password or backend token', async () => {
+    backend.calls.length = 0;
+    const r = await login(ME, { 'x-forwarded-for': '6.6.6.6, 203.0.113.9' });
     assert.strictEqual(r.status, 200);
-    assert.match(r.headers.get('set-cookie') || '', /wa_session=/);
-    assert.match(r.headers.get('set-cookie') || '', /HttpOnly/);
+    const setCookie = r.headers.get('set-cookie') || '';
+    assert.match(setCookie, /wa_session=/);
+    assert.match(setCookie, /HttpOnly/);
+    assert.deepStrictEqual(JSON.parse(r.text).agent, { name: 'Naglaa', email: ME.email });
+    const token = decodeURIComponent(setCookie.split(';')[0].split('=')[1]);
+    const held = Buffer.from(token.split('.')[1], 'base64url').toString('utf8');
+    assert.deepStrictEqual(Object.keys(JSON.parse(held)).sort(), ['a', 'e', 'n', 'x']);
+    assert.ok(!held.includes('demo') && !held.includes('tok-'), 'the session holds a secret');
+    assert.deepStrictEqual(backend.calls.map((c) => `${c.method} ${c.path}`), ['POST /api/auth/v1/admins/login', 'GET /api/ops/v1/me']);
+    for (const c of backend.calls) {
+      assert.strictEqual(c.headers['x-byteplus-client'], 'inbox');
+      assert.strictEqual(c.headers['x-forwarded-for'], '203.0.113.9', 'the backend must count the agent, not the inbox');
+    }
+    const cookie = setCookie.split(';')[0];
+    const session = JSON.parse((await req(srv, 'GET', '/api/session', { headers: { cookie } })).text);
+    assert.strictEqual(session.authed, true);
+    assert.deepStrictEqual(session.agent, { name: 'Naglaa', email: ME.email });
+    assert.strictEqual(JSON.parse((await req(srv, 'GET', '/api/session')).text).authed, false);
+  });
+  await test('sign-in: the name is the first and last name on the account', async () => {
+    backend.accounts['full@byte.test'] = { password: 'demo', admin_id: 40, first_name: ' Rafeek ', last_name: 'Ishak', opsRole: 'super_admin' };
+    assert.strictEqual(JSON.parse((await login({ email: ' full@byte.test ', password: 'demo' })).text).agent.name, 'Rafeek Ishak');
+    backend.accounts['bare@byte.test'] = { password: 'demo', admin_id: 41, first_name: '', last_name: null, opsRole: 'ops' };
+    assert.strictEqual(JSON.parse((await login({ email: 'bare@byte.test', password: 'demo' })).text).agent.name, 'bare');
+    backend.accounts['twice@byte.test'] = { password: 'demo', admin_id: 42, first_name: 'Labib', last_name: 'labib', opsRole: 'super_admin' };
+    assert.strictEqual(JSON.parse((await login({ email: 'twice@byte.test', password: 'demo' })).text).agent.name, 'Labib');
+  });
+  await test('the address sent to the backend sits where it reads it, whatever the hop count', async () => {
+    assert.strictEqual(staff.forwardedFor('203.0.113.9'), '203.0.113.9', 'one value: read as the caller by a backend trusting one hop or two');
+    assert.strictEqual(staff.forwardedFor('::ffff:10.0.0.1'), '::ffff:10.0.0.1');
+    assert.strictEqual(staff.forwardedFor(''), '127.0.0.1');
+    assert.ok(!/[,\s]/.test(staff.forwardedFor('1.1.1.1, 9.9.9.9\r\nx: y')), 'a second address or a header cannot be smuggled in');
+    process.env.BACKEND_PROXY_HOPS = '3';
+    try { assert.strictEqual(staff.forwardedFor('203.0.113.9'), '203.0.113.9, 127.0.0.1, 127.0.0.1'); } finally { delete process.env.BACKEND_PROXY_HOPS; }
+    // What a backend called directly on this box makes of it, as Express reads it.
+    for (const trusted of [1, 2]) {
+      const backendLike = require('express')();
+      backendLike.set('trust proxy', trusted);
+      backendLike.get('/ip', (q, s) => s.json({ ip: q.ip }));
+      const listening = await new Promise((resolve) => { const l = http.createServer(backendLike).listen(0, '127.0.0.1', () => resolve(l)); });
+      try {
+        const r = await fetch(`http://127.0.0.1:${listening.address().port}/ip`, { headers: { 'x-forwarded-for': staff.forwardedFor('203.0.113.9') } });
+        assert.strictEqual((await r.json()).ip, '203.0.113.9', `a backend trusting ${trusted} hop(s)`);
+      } finally { listening.close(); }
+    }
   });
 
   srv.close();
@@ -494,7 +586,7 @@ function sign(body) {
 
   const srv2 = await startServer();
   // log in to get a session cookie for the gated routes
-  const loginRes = await req(srv2, 'POST', '/api/login', { body: { passcode: 'letmein' } });
+  const loginRes = await req(srv2, 'POST', '/api/login', { body: ME });
   const cookie = (loginRes.headers.get('set-cookie') || '').split(';')[0];
   const authed = (method, path, body) => req(srv2, method, path, { body, headers: { cookie } });
   const rowsForKey = (k) => fdb._tables.messages.filter((m) => m.client_key === k);
@@ -718,10 +810,10 @@ function sign(body) {
     assert.ok(pushed.some((p) => p.payload.wa_id === '201119998877' && p.payload.body === 'hello from someone else'));
   });
 
-  await test('a device the push service says is gone is forgotten, one not seen for 7 days is skipped', async () => {
+  await test('a device the push service says is gone is forgotten, one not seen for the length of a session is skipped', async () => {
     await authed('POST', '/api/push/subscribe', { endpoint: 'https://fcm.googleapis.com/fcm/send/gone', keys: subKeys });
     await authed('POST', '/api/push/subscribe', { endpoint: 'https://fcm.googleapis.com/fcm/send/stale', keys: subKeys });
-    fdb._tables.push_subscriptions.find((s) => s.endpoint.endsWith('/stale')).seen_at = new Date(Date.now() - 8 * 86400000).toISOString();
+    fdb._tables.push_subscriptions.find((s) => s.endpoint.endsWith('/stale')).seen_at = new Date(Date.now() - 31 * 86400000).toISOString();
     pushed.length = 0;
     const n = await push.deliver('201001234567', 'ping');
     assert.strictEqual(n, 1);
@@ -945,7 +1037,12 @@ function sign(body) {
     const features = require('../lib/features');
     const inbox = require('../lib/inbox');
     const auth = require('../lib/auth');
-    const as = (name) => (method, path, body) => req(srv2, method, path, { body, headers: { cookie, 'x-agent-name': encodeURIComponent(name) } });
+    const cookies = {};
+    const signIn = async (email) => {
+      if (!cookies[email]) cookies[email] = ((await req(srv2, 'POST', '/api/login', { body: { email, password: 'demo' } })).headers.get('set-cookie') || '').split(';')[0];
+      return cookies[email];
+    };
+    const as = (email) => async (method, path, body, headers) => req(srv2, method, path, { body, headers: { cookie: await signIn(email), ...(headers || {}) } });
     const list = async (query = '') => JSON.parse((await authed('GET', `/api/conversations${query}`)).text);
     const conv = (id) => fdb._tables.conversations.find((c) => c.wa_id === id);
     const T = '201000007001';
@@ -960,32 +1057,32 @@ function sign(body) {
       assert.strictEqual(j.teamwork, true);
     });
 
-    await test('a reply clears it, and the message carries the name of the agent who sent it', async () => {
+    await test('a reply clears it, and the message carries the name on the account that sent it', async () => {
       wa.sendText = async () => ({ ok: true, waMessageId: 'wamid.TEAM1' });
-      const r = await as('Naglaa ناجلاء')('POST', '/api/send', { wa_id: T, text: 'on it', client_key: 'team-1' });
+      const r = await as('arabic@byte.test')('POST', '/api/send', { wa_id: T, text: 'on it', client_key: 'team-1' });
       assert.strictEqual(r.status, 200);
       assert.strictEqual(JSON.parse(r.text).message.agent, 'Naglaa ناجلاء');
       assert.strictEqual(conv(T).unread_count, 0);
       assert.ok(!(await list('?view=needs_reply')).conversations.some((c) => c.wa_id === T));
       const thread = JSON.parse((await authed('GET', `/api/messages?wa_id=${T}`)).text);
       assert.strictEqual(thread.messages.find((m) => m.wa_message_id === 'wamid.TEAM1').agent, 'Naglaa ناجلاء');
-      const keyless = await as('Youssef')('POST', '/api/send', { wa_id: T, text: 'and again' });
+      const keyless = await as('youssef@byte.test')('POST', '/api/send', { wa_id: T, text: 'and again' });
       assert.strictEqual(JSON.parse(keyless.text).message.agent, 'Youssef');
-      const nameless = await authed('POST', '/api/send', { wa_id: T, text: 'no name yet' });
-      assert.strictEqual(JSON.parse(nameless.text).message.agent, null);
+      const posing = await as('youssef@byte.test')('POST', '/api/send', { wa_id: T, text: 'not me' }, { 'x-agent-name': 'Naglaa' });
+      assert.strictEqual(JSON.parse(posing.text).message.agent, 'Youssef', 'a name sent by the browser must not be believed');
     });
 
     await test('photos, templates and forwards carry the name too', async () => {
       wa.uploadMedia = async () => ({ ok: true, mediaId: 'M' });
       wa.sendMedia = async () => ({ ok: true, waMessageId: 'wamid.TEAMPIC' });
-      const pic = await as('Naglaa')('POST', '/api/send-media', { wa_id: T, file_base64: Buffer.from('x').toString('base64'), mime: 'image/png', filename: 'a.png', client_key: 'team-pic' });
+      const pic = await as('naglaa@byte.test')('POST', '/api/send-media', { wa_id: T, file_base64: Buffer.from('x').toString('base64'), mime: 'image/png', filename: 'a.png', client_key: 'team-pic' });
       assert.strictEqual(JSON.parse(pic.text).message.agent, 'Naglaa');
       wa.sendTemplate = async () => ({ ok: true, waMessageId: 'wamid.TEAMTPL' });
-      await as('Naglaa')('POST', '/api/send-template', { wa_id: T, template: 'ops_support_followup', language: 'en', params: ['Sara', 'the plan'], client_key: 'team-tpl' });
+      await as('naglaa@byte.test')('POST', '/api/send-template', { wa_id: T, template: 'ops_support_followup', language: 'en', params: ['Sara', 'the plan'], client_key: 'team-tpl' });
       assert.strictEqual(rowsForKey('team-tpl')[0].agent, 'Naglaa');
       wa.sendText = async () => ({ ok: true, waMessageId: 'wamid.TEAMFWD' });
       const src = fdb._tables.messages.find((m) => m.wa_message_id === 'wamid.TEAM1');
-      const fwd = JSON.parse((await as('Oufa')('POST', '/api/forward', { message_id: src.id, wa_ids: ['201000000012'] })).text);
+      const fwd = JSON.parse((await as('oufa@byte.test')('POST', '/api/forward', { message_id: src.id, wa_ids: ['201000000012'] })).text);
       assert.strictEqual(fwd.results[0].message.agent, 'Oufa');
     });
 
@@ -1079,7 +1176,7 @@ function sign(body) {
     });
 
     await test('saved replies: add, change, remove, and refuse an empty one', async () => {
-      const made = JSON.parse((await as('Naglaa')('POST', '/api/saved-replies', { title: 'Sync steps', body: 'Open the app and pull down to sync.' })).text).reply;
+      const made = JSON.parse((await as('naglaa@byte.test')('POST', '/api/saved-replies', { title: 'Sync steps', body: 'Open the app and pull down to sync.' })).text).reply;
       assert.ok(made.id);
       assert.strictEqual(made.created_by, 'Naglaa');
       assert.strictEqual((await authed('POST', '/api/saved-replies', { title: '', body: 'x' })).status, 400);
@@ -1113,59 +1210,111 @@ function sign(body) {
       assert.strictEqual((await authed('POST', '/api/react', { message_id: 7950, emoji: '👍' })).status, 502);
     });
 
-    await test('changing the passcode logs every device out and stops its notifications', async () => {
-      const before = (await authed('GET', '/api/conversations')).status;
-      assert.strictEqual(before, 200);
-      await authed('POST', '/api/push/subscribe', { endpoint: 'https://fcm.googleapis.com/fcm/send/old-passcode', keys: subKeys });
-      const mine = fdb._tables.push_subscriptions.find((s) => s.endpoint.endsWith('/old-passcode'));
-      assert.strictEqual(mine.pass_mark, auth.passcodeMark());
-      fdb._tables.push_subscriptions.push({ endpoint: 'https://fcm.googleapis.com/fcm/send/unmarked', p256dh: subKeys.p256dh, auth: subKeys.auth, seen_at: new Date().toISOString(), pass_mark: null });
-
-      process.env.DASHBOARD_PASSCODE = 'a-new-passcode';
-      try {
-        assert.strictEqual((await authed('GET', '/api/conversations')).status, 401, 'the old session still works');
-        pushed.length = 0;
-        await push.deliver(T, 'after the change');
-        assert.ok(!pushed.some((p) => p.endpoint.endsWith('/old-passcode')), 'a device from the old passcode was notified');
-        assert.ok(!fdb._tables.push_subscriptions.some((s) => s.endpoint.endsWith('/old-passcode')), 'and it is forgotten');
-        const relog = await req(srv2, 'POST', '/api/login', { body: { passcode: 'a-new-passcode' } });
-        assert.strictEqual(relog.status, 200);
-      } finally {
-        process.env.DASHBOARD_PASSCODE = 'letmein';
+    await test('removing a person ends their session at the next re-check and stops their notifications', async () => {
+      const youssef = as('youssef@byte.test');
+      const account = backend.accounts['youssef@byte.test'];
+      const DEVICE = 'https://fcm.googleapis.com/fcm/send/youssef-phone';
+      assert.strictEqual((await youssef('GET', '/api/conversations')).status, 200);
+      await youssef('POST', '/api/push/subscribe', { endpoint: DEVICE, keys: subKeys });
+      assert.strictEqual(fdb._tables.push_subscriptions.find((x) => x.endpoint === DEVICE).admin_id, account.admin_id);
+      for (const change of [{ active: false }, { opsRole: 'viewer' }, { opsRole: null }]) {
+        const was = { ...account };
+        Object.assign(account, change);
+        try {
+          assert.strictEqual((await youssef('GET', '/api/conversations')).status, 200, 'asked again before the re-check was due');
+          staff.__forget(); // the re-check falls due
+          const r = await youssef('GET', '/api/conversations');
+          assert.strictEqual(r.status, 401);
+          assert.deepStrictEqual(JSON.parse(r.text), { error: staff.SENTENCES.ended, ended: true });
+          assert.match(r.headers.get('set-cookie') || '', /wa_session=;.*Max-Age=0/);
+          const session = JSON.parse((await youssef('GET', '/api/session')).text);
+          assert.strictEqual(session.authed, false);
+          assert.strictEqual(session.ended, staff.SENTENCES.ended);
+          assert.strictEqual((await authed('GET', '/api/conversations')).status, 200, 'everyone else stays in');
+        } finally {
+          for (const k of Object.keys(change)) { if (k in was) account[k] = was[k]; else delete account[k]; }
+          staff.__forget();
+        }
+        assert.strictEqual((await youssef('GET', '/api/conversations')).status, 200);
       }
-      assert.strictEqual((await authed('GET', '/api/conversations')).status, 200, 'the passcode is back, so is the session');
-      fdb._tables.push_subscriptions = fdb._tables.push_subscriptions.filter((s) => !/unmarked|old-passcode/.test(s.endpoint));
+      account.active = false;
+      staff.__forget();
+      try {
+        pushed.length = 0;
+        await push.deliver(T, 'after they left');
+        assert.ok(!pushed.some((x) => x.endpoint === DEVICE), 'a removed person was notified');
+        assert.ok(!fdb._tables.push_subscriptions.some((x) => x.endpoint === DEVICE), 'and their device is forgotten');
+      } finally {
+        delete account.active;
+        staff.__forget();
+      }
     });
 
-    await test('a session opened before this release still works and is given the mark on its next request', async () => {
+    await test('the staff lookup is asked once per person per re-check, and nobody is thrown out when it cannot answer', async () => {
+      let asked = 0;
+      staff.__setLookupForTesting(async (id) => { asked += 1; return backend.lookup(id); });
+      try {
+        await Promise.all([1, 2, 3, 4, 5].map(() => authed('GET', '/api/conversations')));
+        await authed('GET', '/api/conversations');
+        assert.strictEqual(asked, 1);
+        staff.__setLookupForTesting(async () => { throw Object.assign(new Error('function wa_lookup.staff(integer) does not exist'), { code: '42883' }); });
+        assert.strictEqual((await authed('GET', '/api/conversations')).status, 200, 'migration 013 not run yet');
+      } finally {
+        staff.__setLookupForTesting(backend.lookup);
+      }
+    });
+
+    await test('a device from the passcode days gets nothing until someone signs in on it', async () => {
+      const OLD = 'https://fcm.googleapis.com/fcm/send/passcode-days';
+      fdb._tables.push_subscriptions.push({ endpoint: OLD, p256dh: subKeys.p256dh, auth: subKeys.auth, seen_at: new Date().toISOString(), pass_mark: 'abc' });
+      pushed.length = 0;
+      await push.deliver(T, 'nobody signed in there');
+      assert.ok(!pushed.some((x) => x.endpoint === OLD));
+      assert.ok(fdb._tables.push_subscriptions.some((x) => x.endpoint === OLD), 'kept for the sign-in');
+      await authed('POST', '/api/push/subscribe', { endpoint: OLD, keys: subKeys });
+      assert.strictEqual(fdb._tables.push_subscriptions.find((x) => x.endpoint === OLD).admin_id, 19);
+      pushed.length = 0;
+      await push.deliver(T, 'now it is tied');
+      assert.ok(pushed.some((x) => x.endpoint === OLD));
+      fdb._tables.push_subscriptions = fdb._tables.push_subscriptions.filter((x) => x.endpoint !== OLD);
+    });
+
+    await test('a cookie from the passcode days, a forged one and a changed one do not open the inbox', async () => {
       const crypto = require('crypto');
+      const mac = (v) => crypto.createHmac('sha256', process.env.SESSION_SECRET).update(v).digest('hex');
+      const get = (token) => req(srv2, 'GET', '/api/conversations', { headers: { cookie: `wa_session=${encodeURIComponent(token)}` } });
       const expires = Date.now() + 3600 * 1000;
-      const old = `${expires}.${crypto.createHmac('sha256', process.env.SESSION_SECRET).update(String(expires)).digest('hex')}`;
-      const r = await req(srv2, 'GET', '/api/conversations', { headers: { cookie: `wa_session=${old}` } });
+      assert.strictEqual((await get(`${expires}.${mac(String(expires))}`)).status, 401, 'first passcode shape');
+      assert.strictEqual((await get(`${expires}.abcdef0123456789.${mac(`${expires}.abcdef0123456789`)}`)).status, 401, 'second passcode shape');
+      const good = auth.issueToken({ adminId: 19, email: ME.email, name: 'Naglaa' });
+      assert.strictEqual((await get(good)).status, 200);
+      const [kind, body, sig] = good.split('.');
+      const other = Buffer.from(JSON.stringify({ ...JSON.parse(Buffer.from(body, 'base64url').toString()), a: 22, n: 'Oufa' })).toString('base64url');
+      assert.strictEqual((await get(`${kind}.${other}.${sig}`)).status, 401, 'changed who it is');
+      assert.strictEqual((await get(`${kind}.${body}.${'0'.repeat(64)}`)).status, 401);
+      assert.strictEqual((await get(auth.issueToken({ adminId: 19, email: ME.email, name: 'Naglaa' }, Date.now() - 1000))).status, 401, 'expired');
+      assert.strictEqual((await get(auth.issueToken({ adminId: 999, email: 'x@y.z', name: 'Ghost' }))).status, 401, 'an account that does not exist');
+    });
+
+    await test('a session in use is renewed once a day, not on every request', async () => {
+      assert.strictEqual((await authed('GET', '/api/conversations')).headers.get('set-cookie'), null, 'a fresh session is left alone');
+      const aging = auth.issueToken({ adminId: 19, email: ME.email, name: 'Naglaa' }, Date.now() + auth.SESSION_TTL_MS - 2 * 86400000);
+      const r = await req(srv2, 'GET', '/api/conversations', { headers: { cookie: `wa_session=${encodeURIComponent(aging)}` } });
       assert.strictEqual(r.status, 200);
-      const fresh = (r.headers.get('set-cookie') || '').split(';')[0].split('=')[1];
-      assert.ok(fresh && decodeURIComponent(fresh).split('.').length === 3, 'no upgraded cookie');
-      assert.strictEqual(Number(decodeURIComponent(fresh).split('.')[0]), expires, 'the upgrade must not extend the session');
-      const forged = `${expires}.${'0'.repeat(64)}`;
-      assert.strictEqual((await req(srv2, 'GET', '/api/conversations', { headers: { cookie: `wa_session=${forged}` } })).status, 401);
-      assert.strictEqual((await authed('GET', '/api/conversations')).headers.get('set-cookie'), null, 'a current session is left alone');
+      const fresh = auth.verifyToken(decodeURIComponent((r.headers.get('set-cookie') || '').split(';')[0].split('=')[1]));
+      assert.ok(fresh && fresh.expires > Date.now() + auth.SESSION_TTL_MS - 60000, 'not renewed');
+      assert.strictEqual(fresh.adminId, 19);
+      assert.strictEqual(fresh.name, 'Naglaa');
     });
 
-    await test('a device signed up before devices carried the mark is kept and marked at start-up', async () => {
-      fdb._tables.push_subscriptions.push({ endpoint: 'https://fcm.googleapis.com/fcm/send/adopt-me', p256dh: subKeys.p256dh, auth: subKeys.auth, seen_at: new Date().toISOString() });
-      await push.adoptDevices();
-      assert.strictEqual(fdb._tables.push_subscriptions.find((s) => s.endpoint.endsWith('/adopt-me')).pass_mark, auth.passcodeMark());
-      fdb._tables.push_subscriptions = fdb._tables.push_subscriptions.filter((s) => !s.endpoint.endsWith('/adopt-me'));
-    });
-
-    await test('before migration 011 the inbox works as it did: opening clears the count, no names, no saved replies', async () => {
-      features.__setForTesting({ agent: false, done: false, replies: false, passMark: false });
+    await test('before migrations 011 and 013 the inbox works as it did: opening clears the count, no names, no saved replies, every device notified', async () => {
+      features.__setForTesting({ agent: false, done: false, replies: false, staff: false });
       try {
         Object.assign(conv(T), { unread_count: 3, last_message_direction: 'in' });
         await authed('POST', '/api/mark-read', { wa_id: T });
         assert.strictEqual(conv(T).unread_count, 0);
         wa.sendText = async () => ({ ok: true, waMessageId: 'wamid.PRE011' });
-        const sent = JSON.parse((await as('Naglaa')('POST', '/api/send', { wa_id: T, text: 'before', client_key: 'pre-011' })).text).message;
+        const sent = JSON.parse((await as('naglaa@byte.test')('POST', '/api/send', { wa_id: T, text: 'before', client_key: 'pre-011' })).text).message;
         assert.ok(!('agent' in sent), 'wrote a column that is not there yet');
         const j = await list();
         assert.strictEqual(j.teamwork, false);
@@ -1175,7 +1324,10 @@ function sign(body) {
         const read = JSON.parse((await authed('POST', `/api/conversations/${T}/read`, { read: false })).text);
         assert.strictEqual(read.unread_count, 1);
         await authed('POST', '/api/push/subscribe', { endpoint: 'https://fcm.googleapis.com/fcm/send/pre-011', keys: subKeys });
-        assert.ok(!('pass_mark' in fdb._tables.push_subscriptions.find((s) => s.endpoint.endsWith('/pre-011'))));
+        assert.ok(!('admin_id' in fdb._tables.push_subscriptions.find((s) => s.endpoint.endsWith('/pre-011'))));
+        pushed.length = 0;
+        await push.deliver(T, 'before 013');
+        assert.ok(pushed.some((x) => x.endpoint.endsWith('/pre-011')));
       } finally {
         features.__setForTesting(null);
         fdb._tables.push_subscriptions = fdb._tables.push_subscriptions.filter((s) => !s.endpoint.endsWith('/pre-011'));
@@ -1368,7 +1520,7 @@ function sign(body) {
     assert.strictEqual(rows[0].error, null);
   });
 
-  // --- inbox send-template (passcode gate + narrower human allow-list) ---
+  // --- inbox send-template (behind sign-in + narrower human allow-list) ---
   console.log('\n\x1b[1mINBOX SEND-TEMPLATE (fake DB, stubbed Graph)\x1b[0m');
 
   const followup = (body) => req(srv2, 'POST', '/api/send-template', { body, headers: { cookie } });
@@ -2534,13 +2686,19 @@ function sign(body) {
     });
 
     await test('a request that never reaches the server answers as a failure instead of throwing', async () => {
-      const make = (fetchImpl) => new Function('fetch', `function agentHeader() { return { 'x-agent-name': 'Naglaa' }; }\n${cut('async function api(', '// The name the agent typed')}\nreturn api;`)(fetchImpl);
+      const make = (fetchImpl) => new Function('fetch', `let endedNote = '';\n${cut('async function api(', '// Who is signed in on this device')}\nreturn Object.assign(api, { note: () => endedNote });`)(fetchImpl);
       const down = await make(async () => { throw new TypeError('Failed to fetch'); })('/api/send', { method: 'POST' });
       assert.strictEqual(down.ok, false);
       assert.strictEqual(down.status, 0);
       assert.ok(/No connection/.test(down.data.error));
       const up = await make(async () => ({ status: 200, ok: true, json: async () => ({ a: 1 }) }))('/api/x');
       assert.deepStrictEqual(up, { status: 200, ok: true, data: { a: 1 } });
+      const ended = make(async () => ({ status: 401, ok: false, json: async () => ({ error: 'Your account no longer has access to the inbox.', ended: true }) }));
+      await ended('/api/conversations');
+      assert.strictEqual(ended.note(), 'Your account no longer has access to the inbox.', 'the reason must reach the login screen');
+      const plain = make(async () => ({ status: 401, ok: false, json: async () => ({ error: 'Not authenticated.' }) }));
+      await plain('/api/conversations');
+      assert.strictEqual(plain.note(), '');
     });
 
     await test('search: local numbers, saved names, member names and companies all find the chat', async () => {
