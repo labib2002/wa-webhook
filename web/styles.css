@@ -1217,8 +1217,11 @@ button.peer-row:hover { background: var(--paper-2); }
    text selection or the phone's own menu. The class follows the last press
    (web/app.js): a Samsung phone with a pen says its pointer is a mouse. */
 html.by-touch .bubble-actions { display: none; }
-html.by-touch .bubble, html.by-touch .conv-row, html.by-touch .day-sep {
+html.by-touch body {
   -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+}
+html.by-touch input, html.by-touch textarea, html.by-touch [contenteditable="true"] {
+  -webkit-user-select: text; user-select: text; -webkit-touch-callout: default;
 }
 html.by-touch .bubble img, html.by-touch .conv-row img { -webkit-user-drag: none; }
 html.by-touch .row-readtoggle { display: none !important; }
