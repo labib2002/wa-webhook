@@ -8,7 +8,7 @@ const http = require('http');
 Object.assign(process.env, {
   WHATSAPP_TOKEN: '', PHONE_NUMBER_ID: '', APP_SECRET: '', DATABASE_URL: '',
   VERIFY_TOKEN: 'x', SESSION_SECRET: 'demo_session_secret_0123456789',
-  DASHBOARD_PASSCODE: 'demo', NODE_ENV: 'test',
+  NODE_ENV: 'test',
 });
 
 const { chromium, webkit } = require('playwright');
@@ -16,6 +16,7 @@ const { makeFakeDb } = require('./fake-db');
 const db = require('../lib/db');
 const fake = makeFakeDb();
 db.__setDbForTesting(fake);
+require('./fake-backend').install();
 
 const iso = (minAgo) => new Date(Date.now() - minAgo * 60000).toISOString();
 const A = '201001234567';
@@ -62,17 +63,12 @@ function check(name, ok, detail = '') {
 
 async function login(page, url) {
   await page.goto(url, { waitUntil: 'networkidle' });
-  if (await page.isVisible('#passcode')) {
-    await page.fill('#passcode', 'demo');
+  if (await page.isVisible('#login-email')) {
+    await page.fill('#login-email', 'naglaa@byte.test');
+    await page.fill('#login-password', 'demo');
     await page.click('#login-btn');
   }
   await page.waitForSelector('.conv-row', { state: 'visible', timeout: 5000 });
-  // First time on a device the inbox asks who is using it.
-  if (await page.waitForSelector('#agent-modal:not([hidden])', { timeout: 1500 }).catch(() => null)) {
-    await page.fill('#agent-input', 'Naglaa');
-    await page.click('#agent-form button[type="submit"]');
-    await page.waitForSelector('#agent-modal', { state: 'hidden' });
-  }
 }
 
 (async () => {
@@ -494,9 +490,10 @@ async function login(page, url) {
   await d.fill('#composer-input', 'hello from the team');
   await d.click('#send-btn');
   const namedReq = await named;
-  check("every message is sent with the agent's name, asked once on this device",
-    Boolean(namedReq) && decodeURIComponent(namedReq.headers()['x-agent-name'] || '') === 'Naglaa'
-    && await d.evaluate(() => [...document.querySelectorAll('.bubble.out .meta-agent')].some((e) => e.textContent === 'Naglaa')));
+  check('every message carries the name on the account that is signed in, and nobody is asked to type one',
+    Boolean(namedReq) && !('x-agent-name' in namedReq.headers()) && !(await d.$('#agent-modal'))
+    && await d.evaluate(() => [...document.querySelectorAll('.bubble.out .meta-agent')].some((e) => e.textContent === 'Naglaa'))
+    && await d.evaluate(() => document.querySelector('#agent-btn').title === 'Signed in as Naglaa' && document.querySelector('#agent-initials').textContent === 'N'));
 
   // one dropped request must not lock the composer
   await d.route('**/api/send', (route) => route.abort());
