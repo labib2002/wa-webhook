@@ -363,7 +363,7 @@ const MEMBER_ROLES = { hr: 'HR', coordinator: 'Coordinator' };
 function memberLabel(m) {
   const role = m.kind === 'member' && !m.active ? 'Former member' : (MEMBER_ROLES[m.kind] || '');
   const company = m.company ? `${m.company}${m.more ? ` +${m.more}` : ''}` : '';
-  return [role, company].filter(Boolean).join(' · ');
+  return [role, company].filter(Boolean).join(', ');
 }
 
 function memberTag(m) {
@@ -685,7 +685,7 @@ function rowHtml(c, hit) {
   const badge = c.unread_count > 99 ? '99+' : c.unread_count || '';
   const reacted = /Reacted to your message$/.test(c.last_message_text || '');
   const outTick = !hit && !reacted && c.last_message_direction === 'out' ? '<span class="tick">✓</span> ' : '';
-  const preview = hit ? hit.text : WaTpl.previewText(c.last_message_text, state.templates);
+  const preview = hit ? hit.text : String(WaTpl.previewText(c.last_message_text, state.templates) || '').replace(/^(\S+ [^·]+?) · /, '$1  ');
   const when = hit ? hit.at : c.last_message_at;
   const toggleTitle = isWaiting ? 'Mark as done' : 'Mark as needing a reply';
   const toggle = hit ? '' : `<span class="row-readtoggle" role="button" tabindex="0" data-read="${isWaiting ? 'read' : 'unread'}" title="${toggleTitle}" aria-label="${toggleTitle}">${isWaiting ? ICO_DONE : ICO_FLAG}</span>`;
@@ -1237,7 +1237,7 @@ function snippetOf(m) {
   if (isTextLike(m)) return WaTpl.messageText(m, state.templates);
   const meta = m.media_meta || {};
   const label = m.type === 'unsupported' ? UNSUPPORTED_LABEL : stripCaption(m.body) || labelForType(m.type);
-  return meta.caption ? `${label} · ${meta.caption}` : label;
+  return meta.caption ? `${label} ${meta.caption}` : label;
 }
 
 function quoteHtml(m) {
@@ -1320,9 +1320,14 @@ function renderBubble(m, continued) {
       </button>`;
     } else if (stored && m.type === 'video') {
       div.classList.add('has-media');
+      const still = m._localUrl
+        ? `<video preload="metadata" muted playsinline src="${src}"></video>`
+        : `<img class="video-poster" src="${posterSrc(m)}" alt="Video" loading="lazy" draggable="false" onerror="this.remove()" />`;
+      const length = Number(meta.duration) > 0 ? `<span class="video-length">${fmtClock(Number(meta.duration))}</span>` : '';
       inner += `<button type="button" ${frameAttrs(m)} data-view title="Play">
-        <video preload="metadata" muted playsinline src="${src}"></video>
+        ${still}
         <span class="play-badge" aria-hidden="true"><svg viewBox="0 0 24 24" width="26" height="26" fill="currentColor"><polygon points="7 4 20 12 7 20 7 4"/></svg></span>
+        ${length}
       </button>`;
     } else if (stored && (m.type === 'audio' || m.type === 'voice')) {
       const isVoice = m.type === 'voice' || meta.voice === true;
@@ -1351,9 +1356,9 @@ function renderBubble(m, continued) {
       const label = escapeHtml(m.type === 'unsupported' ? UNSUPPORTED_LABEL
         : stripCaption(m.body) || (isVoice ? '🎤 Voice message' : labelForType(m.type)));
       const note =
-        m.media_status === 'pending' && isDownloadable ? ' <span class="media-pending">· loading…</span>'
-        : m.media_status === 'failed' ? ' <span class="media-pending">· unavailable</span>'
-        : m.media_status === 'expired' ? ' <span class="media-pending">· file deleted after 90 days</span>'
+        m.media_status === 'pending' && isDownloadable ? ' <span class="media-pending">loading…</span>'
+        : m.media_status === 'failed' ? ' <span class="media-pending">unavailable</span>'
+        : m.media_status === 'expired' ? ' <span class="media-pending">file deleted after 90 days</span>'
         : '';
       inner += `<span class="media-label">${label}${note}</span>`;
     }
@@ -1433,10 +1438,10 @@ function renderBubble(m, continued) {
     div.appendChild(actions);
   }
   if (tail && !div.querySelector(':scope > .fail-reason, :scope > .bubble-retry')) {
-    div.classList.add('meta-tail');
-    div.dataset.tail = lastLineDir([...div.childNodes]
+    const lastDir = lastLineDir([...div.childNodes]
       .filter((n) => !(n.nodeType === 1 && n.matches('.meta, .meta-pad, .bubble-actions, .reaction-pill, .bubble-quote, .forwarded-tag')))
       .map((n) => n.textContent).join(''));
+    if (lastDir === 'ltr') div.classList.add('meta-tail');
   }
   return div;
 }
@@ -3116,7 +3121,7 @@ function renderForwardList() {
   els.forwardEmpty.hidden = list.length > 0;
   els.forwardList.innerHTML = list.map((c) => {
     const sel = f.selected.has(c.wa_id) ? ' selected' : '';
-    const sub = [knownName(c) ? formatPhone(c.wa_id) : '', memberTag(c.member)].filter(Boolean).join(' · ');
+    const sub = [knownName(c) ? formatPhone(c.wa_id) : '', memberTag(c.member)].filter(Boolean).join(', ');
     return `
       <button type="button" class="forward-opt${sel}" data-wa="${escapeHtml(c.wa_id)}">
         ${avatarHtml(c)}
@@ -3345,12 +3350,16 @@ const viewer = {
   el: $('#viewer'), stage: $('#viewer-stage'), strip: $('#viewer-strip'),
   name: $('#viewer-name'), when: $('#viewer-when'), count: $('#viewer-count'),
   caption: $('#viewer-caption'), download: $('#viewer-download'),
+  share: $('#viewer-share'), full: $('#viewer-full'),
   prev: $('#viewer-prev'), next: $('#viewer-next'),
   items: [], index: 0, returnFocus: null, touchX: null,
 };
 
 function mediaSrc(m) {
   return m._localUrl || `/api/media/${m.id}`;
+}
+function posterSrc(m) {
+  return `/api/media/${m.id}?poster=1`;
 }
 
 // The phone's status bar takes the colour of what sits under it.
@@ -3370,8 +3379,10 @@ function openViewer(msgId) {
   viewer.returnFocus = document.activeElement;
   viewer.strip.innerHTML = viewer.items.map((m, i) => {
     const thumb = m.type === 'image' || m.type === 'sticker'
-      ? `<img src="${mediaSrc(m)}" alt="" loading="lazy" />`
-      : `<span class="thumb-ico">${m.type === 'video' ? '🎬' : '📄'}</span>`;
+      ? `<img src="${mediaSrc(m)}" alt="" loading="lazy" draggable="false" />`
+      : m.type === 'video' && !m._localUrl
+        ? `<img src="${posterSrc(m)}" alt="" loading="lazy" draggable="false" onerror="this.replaceWith(Object.assign(document.createElement('span'), { className: 'thumb-ico', textContent: '🎬' }))" /><span class="thumb-play" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><polygon points="7 4 20 12 7 20 7 4"/></svg></span>`
+        : `<span class="thumb-ico">${m.type === 'video' ? '🎬' : '📄'}</span>`;
     return `<button type="button" class="viewer-thumb" data-i="${i}" aria-label="Item ${i + 1}">${thumb}</button>`;
   }).join('');
   viewer.strip.hidden = viewer.items.length < 2;
@@ -3384,6 +3395,8 @@ function openViewer(msgId) {
 
 function closeViewer() {
   if (viewer.el.hidden) return;
+  stopViewerVideo();
+  if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(() => {});
   viewer.el.hidden = true;
   endViewerDrag();
   viewer.stage.innerHTML = '';
@@ -3410,21 +3423,23 @@ function showViewerItem(index) {
     : '';
   viewer.count.textContent = items.length > 1 ? `${index + 1} / ${items.length}` : '';
   viewer.download.href = src;
-  viewer.download.setAttribute('download', meta.filename || '');
+  viewer.download.setAttribute('download', saveName(m));
 
+  stopViewerVideo();
+  viewer.share.hidden = !canShareFiles();
+  viewer.full.hidden = !(m.type === 'video' && fullScreenWorks());
   if (m.type === 'video') {
-    viewer.stage.innerHTML = `<video class="viewer-media" controls autoplay playsinline webkit-playsinline src="${src}"></video><button type="button" class="vp-speed viewer-speed" aria-label="Playback speed">${speedLabel(player.speed)}</button>`;
-    const video = viewer.stage.querySelector('video');
-    video.playbackRate = player.speed;
-    video.addEventListener('loadedmetadata', () => { video.playbackRate = player.speed; });
-    viewer.stage.querySelector('.viewer-speed').addEventListener('click', (e) => { e.stopPropagation(); setSpeed(nextSpeed()); });
+    const play = m._localUrl || `/api/media/${m.id}?inline=1`;
+    viewer.stage.innerHTML = videoViewerHtml(m, play);
+    setupVideoViewer(viewer.stage.querySelector('.vv'));
   } else if (m.type === 'document') {
     const inline = m._localUrl || `/api/media/${m.id}?inline=1`;
     viewer.stage.innerHTML = `<iframe class="viewer-pdf" src="${inline}" title="${escapeHtml(meta.filename || 'Document')}"></iframe>`;
   } else {
-    viewer.stage.innerHTML = `<img class="viewer-media viewer-img" src="${src}" alt="${escapeHtml(labelForType(m.type))}" />`;
+    viewer.stage.innerHTML = `<img class="viewer-media viewer-img" src="${src}" alt="${escapeHtml(labelForType(m.type))}" draggable="false" />`;
   }
   viewer.stage.classList.remove('zoomed');
+  resetPinch();
 
   const caption = meta.caption || (m.type === 'document' ? meta.filename : '');
   viewer.caption.textContent = caption || '';
@@ -3443,23 +3458,8 @@ function showViewerItem(index) {
   });
 }
 
-function toggleZoom(e) {
-  const stage = viewer.stage;
-  if (stage.classList.contains('zoomed')) {
-    stage.classList.remove('zoomed');
-    return;
-  }
-  const r = e.target.getBoundingClientRect();
-  const fx = (e.clientX - r.left) / r.width;
-  const fy = (e.clientY - r.top) / r.height;
-  stage.classList.add('zoomed');
-  stage.scrollLeft = fx * stage.scrollWidth - stage.clientWidth / 2;
-  stage.scrollTop = fy * stage.scrollHeight - stage.clientHeight / 2;
-}
-
 viewer.stage.addEventListener('click', (e) => {
-  if (e.target.classList.contains('viewer-img')) toggleZoom(e);
-  else if (e.target === viewer.stage) closeViewer();
+  if (e.target === viewer.stage) closeViewer();
 });
 viewer.el.querySelector('.viewer-main').addEventListener('click', (e) => {
   if (e.target.classList.contains('viewer-main')) closeViewer();
@@ -3488,8 +3488,8 @@ function endViewerDrag() {
   viewer.el.style.removeProperty('--fade');
 }
 viewer.stage.addEventListener('touchstart', (e) => {
-  const one = e.touches.length === 1 && !viewer.stage.classList.contains('zoomed')
-    && !(window.visualViewport && window.visualViewport.scale > 1.01);
+  const one = e.touches.length === 1 && !viewer.stage.classList.contains('zoomed') && pinch.scale <= 1.01
+    && !e.target.closest('.vv-bar, .vv-error');
   viewer.touchX = one ? e.touches[0].clientX : null;
   endViewerDrag();
   if (!one || !viewer.stage.querySelector('.viewer-media')) return;
@@ -3531,6 +3531,259 @@ for (const type of ['touchend', 'touchcancel']) {
     if (Math.abs(dx) > 50) showViewerItem(viewer.index + (dx < 0 ? 1 : -1));
   });
 }
+/* ----------------------- the viewer: video, photo, save, share ----------------------- */
+
+const ICO_SOUND = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" fill="currentColor"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M19 5a10 10 0 0 1 0 14"/></svg>';
+const ICO_MUTED = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" fill="currentColor"/><line x1="22" y1="9" x2="16" y2="15"/><line x1="16" y1="9" x2="22" y2="15"/></svg>';
+
+function saveName(m) {
+  const meta = m.media_meta || {};
+  if (meta.filename) return meta.filename;
+  const ext = { image: 'jpg', sticker: 'webp', video: 'mp4', document: 'pdf' }[m.type] || 'bin';
+  const iso = m.wa_timestamp || m.created_at || '';
+  const day = iso ? String(iso).slice(0, 10) : 'file';
+  return `whatsapp-${m.type}-${day}-${m.id}.${ext}`;
+}
+
+function canShareFiles() {
+  try {
+    return Boolean(navigator.canShare && navigator.share && navigator.canShare({ files: [new File([''], 'a.jpg', { type: 'image/jpeg' })] }));
+  } catch (_) { return false; }
+}
+function fullScreenWorks() {
+  return Boolean(document.fullscreenEnabled && Element.prototype.requestFullscreen);
+}
+
+async function shareCurrent() {
+  const m = viewer.items[viewer.index];
+  if (!m) return;
+  try {
+    const resp = await fetch(mediaSrc(m), { credentials: 'same-origin' });
+    if (!resp.ok) throw new Error('fetch');
+    const blob = await resp.blob();
+    const file = new File([blob], saveName(m), { type: blob.type || (m.media_meta || {}).mime_type || 'application/octet-stream' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({ files: [file] });
+      return;
+    }
+    viewer.download.click();
+  } catch (e) {
+    if (e && e.name === 'AbortError') return;
+    viewer.download.click();
+  }
+}
+viewer.share.addEventListener('click', (e) => { e.stopPropagation(); shareCurrent(); });
+viewer.full.addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (document.fullscreenElement) { document.exitFullscreen().catch(() => {}); return; }
+  const box = viewer.stage.querySelector('.vv') || viewer.el;
+  box.requestFullscreen().catch(() => {});
+});
+viewer.el.addEventListener('contextmenu', (e) => {
+  if (!e.target.closest('input, textarea')) e.preventDefault();
+});
+
+function videoViewerHtml(m, src) {
+  const meta = m.media_meta || {};
+  const poster = m._localUrl ? '' : ` poster="${posterSrc(m)}"`;
+  const total = Number(meta.duration) > 0 ? fmtClock(Number(meta.duration)) : '0:00';
+  return `<div class="vv" data-state="idle" data-ui="on">`
+    + `<video class="viewer-media vv-video" playsinline webkit-playsinline preload="metadata"${poster} src="${src}"`
+    + ` disablepictureinpicture disableremoteplayback x-webkit-airplay="deny" controlslist="nodownload noplaybackrate noremoteplayback nofullscreen"></video>`
+    + `<button type="button" class="vv-big" aria-label="Play">${ICO_PLAY}</button>`
+    + '<div class="vv-bar" dir="ltr">'
+    + `<button type="button" class="vv-play" aria-label="Play">${ICO_PLAY}</button>`
+    + '<span class="vv-time vv-now">0:00</span>'
+    + '<input class="vv-seek" type="range" min="0" max="1000" step="1" value="0" aria-label="Position" />'
+    + `<span class="vv-time vv-total">${total}</span>`
+    + `<button type="button" class="vp-speed vv-speed" aria-label="Playback speed">${speedLabel(player.speed)}</button>`
+    + `<button type="button" class="vv-mute" aria-label="Mute">${ICO_SOUND}</button>`
+    + '</div>'
+    + `<div class="vv-error" hidden><span>Could not play it here.</span><a class="vv-open" href="${src}" target="_blank" rel="noopener">Open with the phone's player</a></div>`
+    + '</div>';
+}
+
+let viewerVideo = null;
+function stopViewerVideo() {
+  if (!viewerVideo) return;
+  const v = viewerVideo;
+  viewerVideo = null;
+  clearTimeout(v._hide);
+  try { v.pause(); } catch (_) {}
+}
+
+function setupVideoViewer(root) {
+  if (!root) return;
+  const video = root.querySelector('video');
+  const big = root.querySelector('.vv-big');
+  const btn = root.querySelector('.vv-play');
+  const seek = root.querySelector('.vv-seek');
+  const now = root.querySelector('.vv-now');
+  const total = root.querySelector('.vv-total');
+  const mute = root.querySelector('.vv-mute');
+  const err = root.querySelector('.vv-error');
+  let seeking = false;
+  viewerVideo = video;
+  video.playbackRate = player.speed;
+
+  const length = () => (Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0);
+  const showUi = (on) => {
+    root.dataset.ui = on ? 'on' : 'off';
+    clearTimeout(video._hide);
+    if (on && !video.paused) video._hide = setTimeout(() => { if (!video.paused && !seeking) root.dataset.ui = 'off'; }, 2600);
+  };
+  const paint = () => {
+    const d = length();
+    if (d) total.textContent = fmtClock(d);
+    now.textContent = fmtClock(video.currentTime || 0);
+    if (!seeking && d) seek.value = String(Math.round((video.currentTime / d) * 1000));
+    seek.style.setProperty('--done', `${d ? (video.currentTime / d) * 100 : 0}%`);
+  };
+  const setState = (st) => {
+    root.dataset.state = st;
+    const playing = st === 'playing' || st === 'loading';
+    btn.innerHTML = playing ? ICO_PAUSE : ICO_PLAY;
+    btn.setAttribute('aria-label', playing ? 'Pause' : 'Play');
+    big.hidden = playing || st === 'error';
+    err.hidden = st !== 'error';
+  };
+  const toggle = () => {
+    if (root.dataset.state === 'error') return;
+    if (video.paused) {
+      video.playbackRate = player.speed;
+      const p = video.play();
+      if (p && p.catch) p.catch((e) => { if (!e || e.name !== 'AbortError') setState('error'); });
+    } else {
+      video.pause();
+    }
+  };
+
+  video.addEventListener('loadedmetadata', () => { video.playbackRate = player.speed; paint(); });
+  video.addEventListener('timeupdate', paint);
+  video.addEventListener('durationchange', paint);
+  video.addEventListener('waiting', () => setState('loading'));
+  video.addEventListener('playing', () => { setState('playing'); showUi(true); });
+  video.addEventListener('play', () => { setState('playing'); showUi(true); });
+  video.addEventListener('pause', () => { setState('paused'); showUi(true); });
+  video.addEventListener('ended', () => { setState('paused'); showUi(true); });
+  video.addEventListener('volumechange', () => {
+    mute.innerHTML = video.muted ? ICO_MUTED : ICO_SOUND;
+    mute.setAttribute('aria-label', video.muted ? 'Sound on' : 'Mute');
+  });
+  video.addEventListener('error', () => setState('error'));
+  video.addEventListener('contextmenu', (e) => e.preventDefault());
+
+  big.addEventListener('click', (e) => { e.stopPropagation(); toggle(); });
+  btn.addEventListener('click', (e) => { e.stopPropagation(); toggle(); showUi(true); });
+  mute.addEventListener('click', (e) => { e.stopPropagation(); video.muted = !video.muted; showUi(true); });
+  root.querySelector('.vv-speed').addEventListener('click', (e) => { e.stopPropagation(); setSpeed(nextSpeed()); showUi(true); });
+  video.addEventListener('click', (e) => {
+    e.stopPropagation();
+    showUi(root.dataset.ui !== 'on');
+  });
+  seek.addEventListener('pointerdown', () => { seeking = true; showUi(true); });
+  seek.addEventListener('input', () => {
+    seeking = true;
+    const d = length();
+    if (!d) return;
+    const at = (Number(seek.value) / 1000) * d;
+    now.textContent = fmtClock(at);
+    seek.style.setProperty('--done', `${(at / d) * 100}%`);
+    if (typeof video.fastSeek === 'function') video.fastSeek(at); else video.currentTime = at;
+  });
+  seek.addEventListener('change', () => { seeking = false; showUi(true); });
+  for (const t of ['pointerup', 'pointercancel', 'touchend']) seek.addEventListener(t, () => { seeking = false; });
+  root.querySelector('.vv-bar').addEventListener('click', (e) => e.stopPropagation());
+
+  setState('idle');
+  const first = video.play();
+  if (first && first.catch) first.catch((e) => { if (e && e.name === 'NotAllowedError') setState('paused'); else if (!e || e.name !== 'AbortError') setState('error'); });
+}
+
+// A photo pinches and pans inside the viewer; the page itself never zooms.
+const pinch = { scale: 1, x: 0, y: 0, d0: 0, s0: 1, cx: 0, cy: 0, px: 0, py: 0, panning: false, lastTap: 0 };
+function applyPinch() {
+  const img = viewer.stage.querySelector('.viewer-img');
+  if (!img) return;
+  img.style.transform = pinch.scale > 1.01 ? `translate(${pinch.x}px, ${pinch.y}px) scale(${pinch.scale})` : '';
+  viewer.stage.classList.toggle('pinched', pinch.scale > 1.01);
+}
+function resetPinch() {
+  Object.assign(pinch, { scale: 1, x: 0, y: 0, d0: 0, panning: false });
+  applyPinch();
+}
+const touchGap = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+viewer.stage.addEventListener('touchstart', (e) => {
+  if (!e.target.classList || !e.target.classList.contains('viewer-img')) return;
+  if (e.touches.length === 2) {
+    pinch.d0 = touchGap(e.touches);
+    pinch.s0 = pinch.scale;
+    pinch.panning = false;
+  } else if (e.touches.length === 1 && pinch.scale > 1.01) {
+    pinch.panning = true;
+    pinch.px = e.touches[0].clientX - pinch.x;
+    pinch.py = e.touches[0].clientY - pinch.y;
+  }
+}, { passive: true });
+viewer.stage.addEventListener('touchmove', (e) => {
+  if (!e.target.classList || !e.target.classList.contains('viewer-img')) return;
+  if (e.touches.length === 2 && pinch.d0) {
+    if (e.cancelable) e.preventDefault();
+    pinch.scale = Math.min(4, Math.max(1, pinch.s0 * (touchGap(e.touches) / pinch.d0)));
+    if (pinch.scale <= 1.01) { pinch.x = 0; pinch.y = 0; }
+    applyPinch();
+  } else if (e.touches.length === 1 && pinch.panning) {
+    if (e.cancelable) e.preventDefault();
+    pinch.x = e.touches[0].clientX - pinch.px;
+    pinch.y = e.touches[0].clientY - pinch.py;
+    applyPinch();
+  }
+}, { passive: false });
+viewer.stage.addEventListener('touchend', (e) => {
+  if (!e.target.classList || !e.target.classList.contains('viewer-img')) return;
+  if (e.touches.length < 2) pinch.d0 = 0;
+  if (!e.touches.length) pinch.panning = false;
+  if (e.touches.length || e.changedTouches.length !== 1) return;
+  const t = Date.now();
+  if (t - pinch.lastTap < 300) {
+    pinch.lastTap = 0;
+    if (pinch.scale > 1.01) resetPinch();
+    else {
+      const r = e.target.getBoundingClientRect();
+      const c = e.changedTouches[0];
+      pinch.scale = 2.5;
+      pinch.x = (r.left + r.width / 2 - c.clientX) * 1.5;
+      pinch.y = (r.top + r.height / 2 - c.clientY) * 1.5;
+      applyPinch();
+    }
+  } else {
+    pinch.lastTap = t;
+  }
+}, { passive: true });
+viewer.stage.addEventListener('dblclick', (e) => {
+  if (!e.target.classList || !e.target.classList.contains('viewer-img')) return;
+  if (pinch.scale > 1.01) { resetPinch(); return; }
+  const r = e.target.getBoundingClientRect();
+  pinch.scale = 2.5;
+  pinch.x = (r.left + r.width / 2 - e.clientX) * 1.5;
+  pinch.y = (r.top + r.height / 2 - e.clientY) * 1.5;
+  applyPinch();
+});
+viewer.stage.addEventListener('wheel', (e) => {
+  if (!e.ctrlKey || !e.target.classList || !e.target.classList.contains('viewer-img')) return;
+  e.preventDefault();
+  pinch.scale = Math.min(4, Math.max(1, pinch.scale * (e.deltaY < 0 ? 1.1 : 0.9)));
+  if (pinch.scale <= 1.01) { pinch.x = 0; pinch.y = 0; }
+  applyPinch();
+}, { passive: false });
+
+// The page never zooms: no pinch, no double tap, nothing on iPhone either.
+document.addEventListener('gesturestart', (e) => { e.preventDefault(); }, { passive: false });
+document.addEventListener('gesturechange', (e) => { e.preventDefault(); }, { passive: false });
+document.addEventListener('touchmove', (e) => {
+  if (e.touches.length > 1 && !(e.target.classList && e.target.classList.contains('viewer-img')) && e.cancelable) e.preventDefault();
+}, { passive: false });
+
 document.addEventListener('keydown', (e) => {
   if (viewer.el.hidden) return;
   if (e.key === 'Escape') closeViewer();

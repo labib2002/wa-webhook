@@ -2445,6 +2445,74 @@ function sign(body) {
       { id: 7904, wa_id: '201000000031', direction: 'in', type: 'audio', media_status: 'stored', media_path: 'a/audio/s.mp3', media_meta: { mime_type: 'audio/mpeg' } },
     );
 
+    {
+      const posterTranscode = require('../lib/transcode');
+      const { execFileSync } = require('child_process');
+      const os = require('os');
+      const fsP = require('fs');
+      const pathP = require('path');
+      const tinyVideo = () => {
+        const f = pathP.join(os.tmpdir(), `wa-test-poster-${process.pid}-${Date.now()}.mp4`);
+        execFileSync(posterTranscode.ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-y',
+          '-f', 'lavfi', '-i', 'color=c=red:s=320x240:d=2', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2',
+          '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest', f]);
+        const b = fsP.readFileSync(f);
+        fsP.unlinkSync(f);
+        return b;
+      };
+      if (posterTranscode.isAvailable()) {
+        await test('a video sent from the inbox keeps a poster beside it and its length', async () => {
+          const uploads = [];
+          const realFrom = fdb.storage.from;
+          fdb.storage.from = () => ({ ...realFrom(), upload: async (p, b, o) => { uploads.push({ p, type: o && o.contentType, size: b.length }); return { data: { path: p }, error: null }; } });
+          const realUp = wa.uploadMedia;
+          const realSend = wa.sendMedia;
+          wa.uploadMedia = async () => ({ ok: true, mediaId: 'MV1' });
+          wa.sendMedia = async () => ({ ok: true, waMessageId: 'wamid.VIDPOSTER1' });
+          try {
+            const r = await authed('POST', '/api/send-media', { wa_id: '201000000041', file_base64: tinyVideo().toString('base64'), mime: 'video/mp4', filename: 'clip.mp4' });
+            assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+            const row = fdb._tables.messages.find((m) => m.wa_message_id === 'wamid.VIDPOSTER1');
+            assert.ok(row && row.media_meta.poster === true, JSON.stringify(row && row.media_meta));
+            assert.ok(row.media_meta.duration >= 1.5 && row.media_meta.duration <= 2.5, String(row.media_meta.duration));
+            const posterUp = uploads.find((u) => u.p === `${row.media_path}.poster.jpg`);
+            assert.ok(posterUp && posterUp.type === 'image/jpeg' && posterUp.size > 200, JSON.stringify(uploads));
+          } finally {
+            fdb.storage.from = realFrom;
+            wa.uploadMedia = realUp;
+            wa.sendMedia = realSend;
+          }
+        });
+
+        await test('a video stored before posters gets one on first request, then from the cache', async () => {
+          fdb._tables.messages.push({ id: 7951, wa_id: '201000000041', direction: 'in', type: 'video', media_status: 'stored', media_path: 'a/video/old.mp4', media_meta: { mime_type: 'video/mp4' } });
+          const bytes = tinyVideo();
+          const uploads = [];
+          let have = false;
+          const s = signedFor({
+            exists: async () => ({ data: have, error: null }),
+            download: async () => ({ data: { arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.length) }, error: null }),
+            upload: async (p, b, o) => { uploads.push({ p, type: o.contentType }); have = true; return { data: { path: p }, error: null }; },
+          });
+          try {
+            const r = await req(srv2, 'GET', '/api/media/7951?poster=1', { headers: { cookie }, redirect: 'manual' });
+            assert.strictEqual(r.status, 302);
+            assert.strictEqual(r.headers.get('location'), 'https://s3.test/a/video/old.mp4.poster.jpg');
+            assert.deepStrictEqual(uploads, [{ p: 'a/video/old.mp4.poster.jpg', type: 'image/jpeg' }]);
+            const row = fdb._tables.messages.find((m) => m.id === 7951);
+            assert.ok(row.media_meta.poster === true && row.media_meta.duration > 1, JSON.stringify(row.media_meta));
+            const again = await req(srv2, 'GET', '/api/media/7951?poster=1', { headers: { cookie }, redirect: 'manual' });
+            assert.strictEqual(again.status, 302);
+            assert.strictEqual(uploads.length, 1, 'made twice');
+            const notVideo = await req(srv2, 'GET', '/api/media/7904?poster=1', { headers: { cookie }, redirect: 'manual' });
+            assert.strictEqual(notVideo.status, 404);
+          } finally {
+            s.restore();
+          }
+        });
+      }
+    }
+
     await test('iPhone audio: an OGG voice note is transcoded once to AAC and cached', async () => {
       const uploads = [];
       let transcodes = 0;
@@ -2748,9 +2816,9 @@ function sign(body) {
 
     await test('names: membership reads in plain words', async () => {
       assert.strictEqual(names.memberLabel(member), 'Nawy Degla', 'everyone is a member, so the word is not shown');
-      assert.strictEqual(names.memberLabel({ ...member, active: false, company: 'Oasis' }), 'Former member · Oasis');
-      assert.strictEqual(names.memberLabel({ ...member, kind: 'hr' }), 'HR · Nawy Degla');
-      assert.strictEqual(names.memberLabel({ ...member, kind: 'coordinator' }), 'Coordinator · Nawy Degla');
+      assert.strictEqual(names.memberLabel({ ...member, active: false, company: 'Oasis' }), 'Former member, Oasis');
+      assert.strictEqual(names.memberLabel({ ...member, kind: 'hr' }), 'HR, Nawy Degla');
+      assert.strictEqual(names.memberLabel({ ...member, kind: 'coordinator' }), 'Coordinator, Nawy Degla');
       assert.strictEqual(names.memberLabel({ ...member, more: 1 }), 'Nawy Degla +1');
       assert.strictEqual(names.memberLabel({ ...member, company: null }), '');
       assert.strictEqual(names.memberTag(member), 'Nawy Degla');
