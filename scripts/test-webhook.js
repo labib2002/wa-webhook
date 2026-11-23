@@ -1931,7 +1931,8 @@ function sign(body) {
     const voiceRow = (id, wamid, extra = {}) => ({
       id, wa_message_id: wamid, wa_id: '201000000011', direction: 'out', type: 'audio', body: '🎤 Voice message', status: 'sent',
       error: null, media_path: `201000000011/out/k${id}.ogg`, media_status: 'stored',
-      media_meta: { voice: true, mime_type: 'audio/ogg', filename: 'voice-note.ogg', caption: null }, ...extra,
+      media_meta: { voice: true, mime_type: 'audio/ogg', filename: 'voice-note.ogg', caption: null },
+      created_at: new Date().toISOString(), ...extra,
     });
     const withAudioStubs = async (stubs, run) => {
       const transcode = require('../lib/transcode');
@@ -1939,6 +1940,21 @@ function sign(body) {
       transcode.toM4a = stubs.toM4a || (async () => ({ ok: true, buffer: Buffer.from('aac-bytes'), mime: 'audio/mp4', ext: 'm4a' }));
       try { await run(); } finally { transcode.toM4a = realM4a; }
     };
+
+    await test('a refused voice note from an hour ago does not re-send itself', async () => {
+      const calls = [];
+      wa.uploadMedia = async () => { calls.push('upload'); return { ok: true, mediaId: 'MEDIA_OLD' }; };
+      wa.sendMedia = async () => { calls.push('send'); return { ok: true, waMessageId: 'wamid.OLD_AUDIO' }; };
+      fdb._tables.messages.push(voiceRow(7919, 'wamid.REFUSED_OLD', { created_at: new Date(Date.now() - 60 * 60 * 1000).toISOString() }));
+      await withAudioStubs({}, async () => {
+        const summary = await ingestWebhook(refusedStatus('wamid.REFUSED_OLD', 'Unsupported audio'), fdb);
+        assert.ok(!summary.resent);
+      });
+      assert.deepStrictEqual(calls, []);
+      const row = fdb._tables.messages.find((m) => m.id === 7919);
+      assert.strictEqual(row.status, 'failed');
+      assert.strictEqual(row.wa_message_id, 'wamid.REFUSED_OLD');
+    });
 
     await test('a voice note WhatsApp refuses goes out again by itself, once, as an audio file in the same bubble', async () => {
       const calls = [];
