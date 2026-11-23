@@ -228,7 +228,7 @@ function sign(body) {
     const setCookie = r.headers.get('set-cookie') || '';
     assert.match(setCookie, /wa_session=/);
     assert.match(setCookie, /HttpOnly/);
-    assert.deepStrictEqual(JSON.parse(r.text).agent, { name: 'Naglaa', email: ME.email });
+    assert.deepStrictEqual(JSON.parse(r.text).agent, { name: 'Naglaa', email: ME.email, image: null });
     const token = decodeURIComponent(setCookie.split(';')[0].split('=')[1]);
     const held = Buffer.from(token.split('.')[1], 'base64url').toString('utf8');
     assert.deepStrictEqual(Object.keys(JSON.parse(held)).sort(), ['a', 'e', 'n', 'x']);
@@ -241,7 +241,7 @@ function sign(body) {
     const cookie = setCookie.split(';')[0];
     const session = JSON.parse((await req(srv, 'GET', '/api/session', { headers: { cookie } })).text);
     assert.strictEqual(session.authed, true);
-    assert.deepStrictEqual(session.agent, { name: 'Naglaa', email: ME.email });
+    assert.deepStrictEqual(session.agent, { name: 'Naglaa', email: ME.email, image: null });
     assert.strictEqual(JSON.parse((await req(srv, 'GET', '/api/session')).text).authed, false);
   });
   await test('sign-in: the name is the first and last name on the account', async () => {
@@ -251,6 +251,44 @@ function sign(body) {
     assert.strictEqual(JSON.parse((await login({ email: 'bare@byte.test', password: 'demo' })).text).agent.name, 'bare');
     backend.accounts['twice@byte.test'] = { password: 'demo', admin_id: 42, first_name: 'Labib', last_name: 'labib', opsRole: 'super_admin' };
     assert.strictEqual(JSON.parse((await login({ email: 'twice@byte.test', password: 'demo' })).text).agent.name, 'Labib');
+  });
+  await test('sign-in: the picture on the staff account comes with the session, and a bad one is dropped', async () => {
+    const PIC = { url: 'https://storage.test/uploads/profiles/2159', backgroundColor: '#00FFFF' };
+    backend.accounts['pic@byte.test'] = { password: 'demo', admin_id: 50, first_name: 'Ali', last_name: 'Farag', opsRole: 'super_admin', image: PIC };
+    const r = await login({ email: 'pic@byte.test', password: 'demo' });
+    assert.deepStrictEqual(JSON.parse(r.text).agent.image, PIC);
+    const cookie = (r.headers.get('set-cookie') || '').split(';')[0];
+    assert.deepStrictEqual(JSON.parse((await req(srv, 'GET', '/api/session', { headers: { cookie } })).text).agent.image, PIC);
+    const held = Buffer.from(decodeURIComponent(cookie.split('=')[1]).split('.')[1], 'base64url').toString('utf8');
+    assert.ok(!held.includes('storage.test'), 'the picture is not put in the cookie');
+    for (const [i, image] of [{ url: 'http://plain.test/a.png' }, { url: 'javascript:alert(1)' }, 'not json', { backgroundColor: '#fff' }].entries()) {
+      backend.accounts[`badpic${i}@byte.test`] = { password: 'demo', admin_id: 60 + i, first_name: 'Bad', last_name: 'Pic', opsRole: 'ops', image };
+      assert.strictEqual(JSON.parse((await login({ email: `badpic${i}@byte.test`, password: 'demo' })).text).agent.image, null);
+    }
+    assert.deepStrictEqual(staff.pictureOf(JSON.stringify(PIC)), PIC, 'the database may hand json back as text');
+    assert.deepStrictEqual(staff.pictureOf({ url: PIC.url, backgroundColor: 'red' }), { url: PIC.url, backgroundColor: null });
+  });
+  await test('the re-check picks up a new or removed picture; before 014 the picture comes from the sign-in only', async () => {
+    const NEW = { url: 'https://storage.test/uploads/profiles/staff-50', backgroundColor: '#00FFFFFF' };
+    const acc = backend.accounts['pic@byte.test'];
+    staff.__forget();
+    const r = await login({ email: 'pic@byte.test', password: 'demo' });
+    const cookie = (r.headers.get('set-cookie') || '').split(';')[0];
+    staff.__forget();
+    staff.__setLookupForTesting(backend.lookup);
+    let s = JSON.parse((await req(srv, 'GET', '/api/session', { headers: { cookie } })).text);
+    assert.strictEqual(s.authed, true);
+    assert.strictEqual(s.agent.image, null, 'a lookup without the picture column cannot invent one after a restart');
+    acc.lookupImage = NEW;
+    staff.__forget();
+    s = JSON.parse((await req(srv, 'GET', '/api/session', { headers: { cookie } })).text);
+    assert.deepStrictEqual(s.agent.image, NEW);
+    acc.lookupImage = null;
+    staff.__forget();
+    s = JSON.parse((await req(srv, 'GET', '/api/session', { headers: { cookie } })).text);
+    assert.strictEqual(s.agent.image, null, 'a picture removed on the dashboard goes away here too');
+    delete acc.lookupImage;
+    staff.__forget();
   });
   await test('the address sent to the backend sits where it reads it, whatever the hop count', async () => {
     assert.strictEqual(staff.forwardedFor('203.0.113.9'), '203.0.113.9', 'one value: read as the caller by a backend trusting one hop or two');
