@@ -5,7 +5,7 @@ const http = require('http');
 Object.assign(process.env, {
   WHATSAPP_TOKEN: '', PHONE_NUMBER_ID: '', APP_SECRET: '', DATABASE_URL: '',
   VERIFY_TOKEN: 'x', SESSION_SECRET: 'demo_session_secret_0123456789',
-  DASHBOARD_PASSCODE: 'demo', NODE_ENV: 'test',
+  NODE_ENV: 'test',
 });
 
 const { chromium } = require('playwright');
@@ -13,6 +13,7 @@ const { makeFakeDb } = require('./fake-db');
 const db = require('../lib/db');
 const fake = makeFakeDb();
 db.__setDbForTesting(fake);
+require('./fake-backend').install();
 
 const iso = (minAgo) => new Date(Date.now() - minAgo * 60000).toISOString();
 const A = '201001234567';
@@ -42,7 +43,6 @@ function check(name, ok, detail = '') {
   const browser = await chromium.launch();
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 832 } });
   await ctx.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: base });
-  await ctx.addInitScript(() => { try { localStorage.setItem('wa_agent', 'Check'); } catch (_) {} }); // the name box is checked in phone-check
   const page = await ctx.newPage();
   const pageErrors = [];
   page.on('pageerror', (e) => pageErrors.push(e.message));
@@ -61,7 +61,8 @@ function check(name, ok, detail = '') {
   await page.route('**/api/mark-read', (route) => route.fulfill({ json: { ok: true } }));
 
   await page.goto(base + '/app');
-  await page.fill('#passcode', 'demo');
+  await page.fill('#login-email', 'naglaa@byte.test');
+  await page.fill('#login-password', 'demo');
   await page.click('#login-btn');
   await page.waitForSelector('.conv-row');
   await page.click(`.conv-row >> text=Ada Lovelace`);

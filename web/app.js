@@ -1,6 +1,6 @@
 /* =============================================================================
    Agent Inbox — frontend SPA (vanilla, no build step)
-   Talks only to the passcode-gated /api/* routes. Stays live via smart polling
+   Talks only to the signed-in /api/* routes. Stays live via smart polling
    (list every 4s, open thread every 2.5s incrementally), paused when the tab
    is hidden and refreshed on focus. Optimistic send for instant feedback.
    ============================================================================= */
@@ -15,7 +15,8 @@ const els = {
   loginForm: $('#login-form'),
   loginBtn: $('#login-btn'),
   loginError: $('#login-error'),
-  passcode: $('#passcode'),
+  loginEmail: $('#login-email'),
+  loginPassword: $('#login-password'),
   app: $('#app'),
   logoutBtn: $('#logout-btn'),
   search: $('#search'),
@@ -92,10 +93,6 @@ const els = {
   toast: $('#toast'),
   agentBtn: $('#agent-btn'),
   agentInitials: $('#agent-initials'),
-  agentModal: $('#agent-modal'),
-  agentForm: $('#agent-form'),
-  agentInput: $('#agent-input'),
-  agentCancel: $('#agent-cancel'),
   doneBtn: $('#done-btn'),
   windowBar: $('#window-bar'),
   windowText: $('#window-text'),
@@ -245,7 +242,7 @@ async function api(path, opts = {}) {
   let res;
   try {
     res = await fetch(path, {
-      headers: { 'Content-Type': 'application/json', ...agentHeader(), ...(headers || {}) },
+      headers: { 'Content-Type': 'application/json', ...(headers || {}) },
       credentials: 'same-origin',
       ...rest,
     });
@@ -256,16 +253,21 @@ async function api(path, opts = {}) {
   }
   let data = null;
   try { data = await res.json(); } catch (_) {}
+  if (res.status === 401 && data && data.ended) endedNote = data.error;
   return { status: res.status, ok: res.ok, data: data || {} };
 }
 
-// The name the agent typed on this device, sent with every request so the
-// server can store who sent a message. Headers carry ASCII only.
-const AGENT_KEY = 'wa_agent';
-let agentName = (() => { try { return localStorage.getItem(AGENT_KEY) || ''; } catch (_) { return ''; } })();
-function agentHeader() {
-  return agentName ? { 'x-agent-name': encodeURIComponent(agentName) } : {};
+// Who is signed in on this device: the name on their staff account, which the
+// server stores on every message they send.
+let agentName = '';
+let agentEmail = '';
+// Set when the server ends a session because the account lost its access.
+let endedNote = '';
+function setAgent(agent) {
+  agentName = (agent && agent.name) || '';
+  agentEmail = (agent && agent.email) || '';
 }
+try { localStorage.removeItem('wa_agent'); } catch (_) {}
 
 // One idempotency key per user send action, REUSED when that same action is
 // retried, so the server dedupes instead of double-sending (x-idempotency-key).
@@ -395,21 +397,26 @@ function toast(msg, danger = false, ms = 3200) {
 async function boot() {
   const { data } = await api('/api/session');
   if (data.authed) {
+    setAgent(data.agent);
     showApp();
   } else {
-    showLogin();
+    showLogin(data.ended);
   }
   // reveal (drop the no-transition preload class)
   requestAnimationFrame(() => els.body.classList.remove('preload'));
 }
 
-function showLogin() {
+function showLogin(note) {
   stopLive();
   alerts.seen = null;
   updateTabBadge();
+  setAgent(null);
   els.app.hidden = true;
   els.login.hidden = false;
-  els.passcode.focus();
+  els.loginPassword.value = '';
+  els.loginError.textContent = note || '';
+  els.loginError.hidden = !note;
+  (els.loginEmail.value ? els.loginPassword : els.loginEmail).focus();
 }
 
 function showApp() {
@@ -435,20 +442,21 @@ els.loginForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   els.loginError.hidden = true;
   els.loginBtn.disabled = true;
-  els.loginBtn.textContent = 'Unlocking…';
+  els.loginBtn.textContent = 'Signing in…';
   const { ok, data } = await api('/api/login', {
     method: 'POST',
-    body: JSON.stringify({ passcode: els.passcode.value }),
+    body: JSON.stringify({ email: els.loginEmail.value.trim(), password: els.loginPassword.value }),
   });
   els.loginBtn.disabled = false;
-  els.loginBtn.textContent = 'Unlock';
+  els.loginBtn.textContent = 'Sign in';
   if (ok) {
-    els.passcode.value = '';
+    els.loginPassword.value = '';
+    setAgent(data.agent);
     showApp();
   } else {
-    els.loginError.textContent = data.error || 'Login failed.';
+    els.loginError.textContent = data.error || 'Could not sign you in. Try again.';
     els.loginError.hidden = false;
-    els.passcode.select();
+    els.loginPassword.select();
   }
 });
 
@@ -520,7 +528,7 @@ async function refreshConversations(initial = false) {
   state.teamwork = Boolean(data.teamwork);
   state.agentNames = Boolean(data.agent_names);
   state.savedRepliesOn = Boolean(data.saved_replies);
-  askAgentName();
+  renderAgent();
   noteIncoming(data.recent || rows);
   state.membersAvailable = Boolean(data.members_available);
   els.convLoading.hidden = true;
@@ -2493,8 +2501,10 @@ if ('serviceWorker' in navigator) {
 function handleAuthLost() {
   stopListPolling();
   stopThreadPolling();
-  toast('Session expired — please log in again.', true);
-  showLogin();
+  const note = endedNote;
+  endedNote = '';
+  if (!note) toast('You were signed out. Sign in again.', true);
+  showLogin(note);
 }
 
 /* ----------------------- new conversation ----------------------- */
@@ -3078,38 +3088,16 @@ document.addEventListener('keydown', (e) => {
   else if (e.key === 'ArrowRight') showViewerItem(viewer.index + 1);
 });
 
-/* ----------------------- who is using this device ----------------------- */
+/* ----------------------- who is signed in ----------------------- */
 
 function renderAgent() {
-  els.agentBtn.hidden = !state.agentNames;
-  els.agentInitials.textContent = agentName ? initials(agentName, '') : '?';
-  els.agentBtn.title = agentName ? `You are ${agentName} on this device` : 'Tell the team who you are';
+  els.agentBtn.hidden = !agentName;
+  els.agentInitials.textContent = initials(agentName, '');
+  els.agentBtn.title = `Signed in as ${agentName}`;
 }
 
-// Asked once per device, the first time the server says it keeps names.
-let agentAsked = false;
-function askAgentName(force = false) {
-  renderAgent();
-  if (!state.agentNames || (agentName && !force)) return;
-  if (!force) {
-    if (agentAsked) return;
-    agentAsked = true;
-  }
-  els.agentInput.value = agentName;
-  els.agentModal.hidden = false;
-  setTimeout(() => els.agentInput.focus(), 50);
-}
-function closeAgentModal() { els.agentModal.hidden = true; }
-
-els.agentBtn.addEventListener('click', () => askAgentName(true));
-els.agentCancel.addEventListener('click', closeAgentModal);
-els.agentModal.addEventListener('click', (e) => { if (e.target === els.agentModal) closeAgentModal(); });
-els.agentForm.addEventListener('submit', (e) => {
-  e.preventDefault();
-  agentName = els.agentInput.value.replace(/\s+/g, ' ').trim().slice(0, 40);
-  try { localStorage.setItem(AGENT_KEY, agentName); } catch (_) {}
-  closeAgentModal();
-  renderAgent();
+els.agentBtn.addEventListener('click', () => {
+  toast(`Signed in as ${agentName}${agentEmail ? ` (${agentEmail})` : ''}. Your name shows on the messages you send.`, false, 5000);
 });
 
 /* ----------------------- the 24-hour window ----------------------- */
@@ -3422,7 +3410,6 @@ document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   if (!els.sheet.hidden) closeSheet();
   else if (!els.repliesModal.hidden) closeRepliesModal();
-  else if (!els.agentModal.hidden) closeAgentModal();
 });
 
 function messageOfBubble(node) {

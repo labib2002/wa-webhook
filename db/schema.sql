@@ -67,7 +67,7 @@ CREATE TABLE IF NOT EXISTS wa.messages (
   updated_at      timestamptz NOT NULL DEFAULT now(),
   forwarded       boolean NOT NULL DEFAULT false,
   client_key      text,
-  agent           text                    -- who sent it, as typed on their device (011)
+  agent           text                    -- who sent it: the name on their staff account (011, 013)
 );
 
 CREATE INDEX IF NOT EXISTS messages_wa_id_created_idx ON wa.messages (wa_id, created_at);
@@ -126,7 +126,8 @@ CREATE TABLE IF NOT EXISTS wa.push_subscriptions (
   user_agent  text,
   created_at  timestamptz NOT NULL DEFAULT now(),
   seen_at     timestamptz NOT NULL DEFAULT now(),
-  pass_mark   text                    -- a mark of the passcode in force at sign-up (011)
+  pass_mark   text,                   -- unused since staff sign-in (013)
+  admin_id    integer                 -- the staff account signed in on the device (013)
 );
 
 CREATE TABLE IF NOT EXISTS wa.push_keys (
