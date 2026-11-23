@@ -1291,7 +1291,7 @@ function sign(body) {
       assert.strictEqual((await req(srv2, 'GET', '/api/saved-replies')).status, 401);
     });
 
-    await test("reacting to a member's message sends the reaction and shows it; our own messages cannot be reacted to", async () => {
+    await test("reacting to a member's message or one of ours sends the reaction and keeps the member's own beside ours", async () => {
       const sent = [];
       wa.sendReaction = async (to, id, emoji) => { sent.push({ to, id, emoji }); return { ok: true }; };
       fdb._tables.messages.push({ id: 7950, wa_id: T, wa_message_id: 'wamid.THEIRS', direction: 'in', type: 'text', body: 'thanks!', status: 'received' });
@@ -1302,7 +1302,17 @@ function sign(body) {
       await authed('POST', '/api/react', { message_id: 7950, emoji: '' });
       assert.strictEqual(fdb._tables.messages.find((m) => m.id === 7950).reaction, null);
       const ours = fdb._tables.messages.find((m) => m.wa_message_id === 'wamid.TEAM1');
-      assert.strictEqual((await authed('POST', '/api/react', { message_id: ours.id, emoji: '👍' })).status, 400);
+      ours.reaction = '😂';
+      sent.length = 0;
+      assert.strictEqual((await authed('POST', '/api/react', { message_id: ours.id, emoji: '👍' })).status, 200);
+      assert.deepStrictEqual(sent, [{ to: ours.wa_id, id: 'wamid.TEAM1', emoji: '👍' }]);
+      const after = fdb._tables.messages.find((m) => m.id === ours.id);
+      assert.strictEqual(after.media_meta.our_reaction, '👍');
+      assert.strictEqual(after.reaction, '😂', "the member's reaction to our message stays");
+      await authed('POST', '/api/react', { message_id: ours.id, emoji: '' });
+      assert.strictEqual(fdb._tables.messages.find((m) => m.id === ours.id).media_meta.our_reaction, null);
+      fdb._tables.messages.push({ id: 7988, wa_id: T, wa_message_id: 'wamid.FAILED', direction: 'out', type: 'text', body: 'x', status: 'failed' });
+      assert.strictEqual((await authed('POST', '/api/react', { message_id: 7988, emoji: '👍' })).status, 400);
       assert.strictEqual((await authed('POST', '/api/react', { message_id: 7950, emoji: 'lol' })).status, 400);
       wa.sendReaction = async () => ({ ok: false, error: 'Outside the 24-hour reply window' });
       assert.strictEqual((await authed('POST', '/api/react', { message_id: 7950, emoji: '👍' })).status, 502);
@@ -2620,6 +2630,7 @@ function sign(body) {
       ${src.split('\n').find((l) => l.startsWith('const TICK_RANK ='))}
       ${src.split('\n').find((l) => l.startsWith('const REFUSED_VOICE ='))}
       ${lift('resendingVoice')}
+      ${lift('ourReaction')}
       ${lift('shownStatus')}
       ${lift('mergeMessages')}
       ${lift('takeOver')}

@@ -215,7 +215,7 @@ function mergeMessages(t, rows) {
       const status = shownStatus(existing, m);
       const error = status === m.status ? (m.error || '') : (existing.error || '');
       if (
-        existing.status !== status || existing.reaction !== m.reaction ||
+        existing.status !== status || existing.reaction !== m.reaction || ourReaction(existing) !== ourReaction(m) ||
         existing.media_status !== m.media_status || existing.body !== m.body ||
         (existing.error || '') !== error
       ) {
@@ -1193,7 +1193,7 @@ function patchBubble(node, fresh) {
 function bubbleSig(m, continued) {
   const quoted = quotedMessage(m);
   const meta = m.media_meta || {};
-  return [m.id, m.status, m.error || '', m.reaction, m.media_status, m.forwarded ? 1 : 0, m._optimistic ? 1 : 0, continued ? 1 : 0, m.body, replyToOf(m) || '', quoted ? quoted.id : '', state.templates.length, meta.sent_as_audio ? 1 : 0, meta.voice ? 1 : 0, m.agent || '', m.wa_message_id ? 1 : 0].join('|');
+  return [m.id, m.status, m.error || '', m.reaction, ourReaction(m) || '', m.media_status, m.forwarded ? 1 : 0, m._optimistic ? 1 : 0, continued ? 1 : 0, m.body, replyToOf(m) || '', quoted ? quoted.id : '', state.templates.length, meta.sent_as_audio ? 1 : 0, meta.voice ? 1 : 0, m.agent || '', m.wa_message_id ? 1 : 0].join('|');
 }
 
 // The part of a bubble that is more than its ticks: when this is the same, the
@@ -1203,7 +1203,7 @@ function bodySig(m, continued) {
   const meta = m.media_meta || {};
   const failed = m.status === 'failed' ? `failed:${m.error || ''}` : '';
   const media = m._localUrl ? 'local' : m.media_status;
-  return [failed, m.reaction, media, m.forwarded ? 1 : 0, continued ? 1 : 0, m.body, replyToOf(m) || '', quoted ? quoted.id : '', state.templates.length, meta.sent_as_audio ? 1 : 0, meta.voice ? 1 : 0].join('|');
+  return [failed, m.reaction, ourReaction(m) || '', media, m.forwarded ? 1 : 0, continued ? 1 : 0, m.body, replyToOf(m) || '', quoted ? quoted.id : '', state.templates.length, meta.sent_as_audio ? 1 : 0, meta.voice ? 1 : 0].join('|');
 }
 
 function replyToOf(m) {
@@ -1287,7 +1287,7 @@ function renderBubble(m, continued) {
   if (continued) div.classList.add(dir === 'out' ? 'cont-out' : 'cont-in');
   if (m.status === 'failed') div.classList.add('failed');
   if (m._optimistic) div.classList.add('pending');
-  if (m.reaction) div.classList.add('has-reaction');
+  if (m.reaction || ourReaction(m)) div.classList.add('has-reaction');
 
   const iso = m.wa_timestamp || m.created_at;
 
@@ -1418,10 +1418,11 @@ function renderBubble(m, continued) {
 
   // Reaction emoji (customer reacted to one of our messages) — a small pill
   // pinned to the bubble's bottom edge, WhatsApp-style.
-  if (m.reaction) {
+  const pill = m.direction === 'in' ? m.reaction : [m.reaction, ourReaction(m)].filter(Boolean).join('');
+  if (pill) {
     const r = document.createElement('span');
     r.className = 'reaction-pill';
-    r.textContent = m.reaction;
+    r.textContent = pill;
     div.appendChild(r);
   }
 
@@ -4136,14 +4137,14 @@ function sheetActionsFor(m) {
 function openSheet(m) {
   if (!m || !els.sheet.hidden) return;
   const actions = sheetActionsFor(m);
-  const canReact = m.direction === 'in' && m.wa_message_id && typeof m.id === 'number';
+  const canReact = Boolean(m.wa_message_id) && typeof m.id === 'number' && m.status !== 'failed';
   if (!actions.length && !canReact) return;
   if (byTouch && window.getSelection) window.getSelection().removeAllRanges();
   sheet.msg = m;
   sheet.actions = actions;
   els.sheetReactions.hidden = !canReact;
   els.sheetReactions.innerHTML = canReact
-    ? QUICK_REACTIONS.map((e) => `<button type="button" class="sheet-react${m.reaction === e ? ' active' : ''}" data-emoji="${e}" aria-label="React ${e}">${e}</button>`).join('')
+    ? QUICK_REACTIONS.map((e) => `<button type="button" class="sheet-react${ourReaction(m) === e ? ' active' : ''}" data-emoji="${e}" aria-label="React ${e}">${e}</button>`).join('')
     : '';
   els.sheetActions.innerHTML = actions.map((a, i) => `<button type="button" class="sheet-action" role="menuitem" data-i="${i}">${escapeHtml(a.label)}</button>`).join('');
   els.sheet.hidden = false;
@@ -4155,17 +4156,29 @@ function closeSheet() {
   sheet.msg = null;
 }
 
+// Our own reaction: on a member's message it is the message's reaction; on
+// one of ours it rides in media_meta, beside the member's reaction to it.
+function ourReaction(m) {
+  if (!m) return null;
+  return m.direction === 'in' ? (m.reaction || null) : ((m.media_meta && m.media_meta.our_reaction) || null);
+}
+function withOurReaction(m, emoji) {
+  return m.direction === 'in'
+    ? { ...m, reaction: emoji || null }
+    : { ...m, media_meta: { ...(m.media_meta || {}), our_reaction: emoji || null } };
+}
+
 async function reactTo(m, emoji) {
   const waId = m.wa_id || state.activeWaId;
-  const next = m.reaction === emoji ? '' : emoji;
+  const next = ourReaction(m) === emoji ? '' : emoji;
   const t = thread(waId);
-  const before = m.reaction || null;
-  t.byId.set(m.id, { ...t.byId.get(m.id), reaction: next || null });
+  const before = t.byId.get(m.id);
+  t.byId.set(m.id, withOurReaction(before || m, next));
   if (waId === state.activeWaId) renderMessages();
   const { ok, status, data } = await api('/api/react', { method: 'POST', body: JSON.stringify({ message_id: m.id, emoji: next }) });
   if (status === 401) return handleAuthLost();
   if (ok) return;
-  if (t.byId.has(m.id)) t.byId.set(m.id, { ...t.byId.get(m.id), reaction: before });
+  if (t.byId.has(m.id) && before) t.byId.set(m.id, before);
   if (waId === state.activeWaId) renderMessages();
   toast(failureWords({ error: data.error }).text || 'Could not react.', true);
 }
