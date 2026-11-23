@@ -538,7 +538,6 @@ button.thread-name {
   direction: ltr; unicode-bidi: isolate;
 }
 .bubble.meta-tail .meta { position: absolute; float: none; margin: 0; bottom: 5px; right: 10px; }
-.bubble.meta-tail[data-tail="rtl"] .meta { right: auto; left: 10px; }
 .bubble:not(.meta-tail):not(.has-media) .meta { float: none; display: flex; justify-content: flex-end; margin: 4px 0 -2px; }
 .bubble .tick { font-size: 12px; line-height: 1; letter-spacing: -1px; }
 .bubble .tick.read { color: var(--read-tick); }
@@ -977,7 +976,14 @@ a.media-frame:focus-visible { outline: 2px solid var(--pine); outline-offset: 2p
 button.media-frame { border: 0; padding: 0; cursor: zoom-in; }
 button.media-frame:focus-visible { outline: 2px solid var(--pine); outline-offset: 2px; }
 .media-video { position: relative; cursor: pointer; }
-.media-video video { pointer-events: none; }
+.media-video video, .media-video img { pointer-events: none; }
+.media-video { background: #1c2421; }
+.video-length {
+  position: absolute; left: 8px; bottom: 7px;
+  font-size: 11.5px; line-height: 1; font-weight: 600; color: #fff;
+  padding: 3px 6px; border-radius: 999px; background: rgba(0, 0, 0, 0.5);
+  font-variant-numeric: tabular-nums;
+}
 .play-badge {
   position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
   width: 54px; height: 54px; border-radius: 50%;
@@ -1029,7 +1035,80 @@ body.viewer-open { overflow: hidden; }
   transform: translateY(var(--drag, 0px)) scale(calc(0.86 + 0.14 * var(--fade, 1)));
 }
 .viewer.dragging .viewer-bar, .viewer.dragging .viewer-caption, .viewer.dragging .viewer-strip { opacity: var(--fade, 1); }
-.viewer-img { cursor: zoom-in; user-select: none; }
+.viewer-img { cursor: zoom-in; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; -webkit-user-drag: none; touch-action: none; transform-origin: center; }
+.viewer-stage.pinched .viewer-img { transition: none; cursor: zoom-out; }
+.viewer-thumb { position: relative; }
+.viewer-thumb img { -webkit-user-drag: none; }
+.thumb-play {
+  position: absolute; inset: 0; display: grid; place-items: center; color: #fff;
+  background: rgba(0, 0, 0, 0.25); pointer-events: none;
+}
+.viewer, .viewer * { -webkit-touch-callout: none; }
+.viewer-btn[hidden] { display: none; }
+
+/* The video player in the viewer: the app's own controls, nothing from the browser. */
+.vv {
+  position: relative; width: 100%; height: 100%;
+  display: flex; align-items: center; justify-content: center;
+  -webkit-user-select: none; user-select: none;
+}
+.vv .vv-video { width: auto; max-width: 100%; max-height: 100%; background: #000; transition: none; }
+.vv-video::-webkit-media-controls { display: none !important; }
+.vv-video::-webkit-media-controls-enclosure { display: none !important; }
+.vv-video::-webkit-media-controls-start-playback-button { display: none !important; -webkit-appearance: none; }
+.vv-big {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: 68px; height: 68px; border-radius: 50%; border: 0; padding-left: 4px;
+  display: grid; place-items: center; cursor: pointer;
+  background: rgba(0, 0, 0, 0.55); color: #fff;
+}
+.vv-big svg { width: 30px; height: 30px; }
+.vv-big[hidden] { display: none; }
+.vv[data-state="loading"] .vv-big { display: grid; animation: vp-wait 1s ease-in-out infinite; }
+.vv-bar {
+  position: absolute; left: 10px; right: 10px; bottom: 10px;
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px; border-radius: 16px;
+  background: rgba(14, 20, 18, 0.72); color: #fff;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+.vv[data-ui="off"] .vv-bar { opacity: 0; transform: translateY(8px); pointer-events: none; }
+.vv-play, .vv-mute {
+  flex: none; width: 44px; height: 44px; border-radius: 50%; border: 0;
+  display: grid; place-items: center; background: transparent; color: #fff; cursor: pointer;
+  touch-action: manipulation;
+}
+.vv-time { flex: none; font-size: 12.5px; font-variant-numeric: tabular-nums; color: rgba(255, 255, 255, 0.85); min-width: 34px; text-align: center; }
+.vv-seek {
+  flex: 1; min-width: 0; height: 44px; margin: 0; background: transparent;
+  -webkit-appearance: none; appearance: none; cursor: pointer; touch-action: none;
+}
+.vv-seek::-webkit-slider-runnable-track {
+  height: 4px; border-radius: 999px;
+  background: linear-gradient(to right, #8fd0ba var(--done, 0%), rgba(255, 255, 255, 0.3) var(--done, 0%));
+}
+.vv-seek::-webkit-slider-thumb {
+  -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%;
+  background: #fff; margin-top: -6px; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+}
+.vv-seek::-moz-range-track { height: 4px; border-radius: 999px; background: rgba(255, 255, 255, 0.3); }
+.vv-seek::-moz-range-progress { height: 4px; border-radius: 999px; background: #8fd0ba; }
+.vv-seek::-moz-range-thumb { width: 16px; height: 16px; border: 0; border-radius: 50%; background: #fff; }
+.vv .vv-speed { flex: none; min-width: 44px; height: 30px; background: rgba(255, 255, 255, 0.16); color: #fff; }
+.vv-error {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  display: flex; flex-direction: column; align-items: center; gap: 12px;
+  padding: 18px 20px; border-radius: 14px; background: rgba(14, 20, 18, 0.85); text-align: center;
+}
+.vv-error[hidden] { display: none; }
+.vv-open {
+  display: inline-flex; align-items: center; min-height: 44px; padding: 0 16px; border-radius: 999px;
+  background: #8fd0ba; color: #0e1412; font-weight: 600; text-decoration: none;
+}
+.viewer.dragging .vv { transform: translateY(var(--drag, 0px)) scale(calc(0.86 + 0.14 * var(--fade, 1))); }
+.viewer.dragging .vv .viewer-media { transform: none; }
+.vv:fullscreen { background: #000; }
+@media (prefers-reduced-motion: reduce) { .vv[data-state="loading"] .vv-big { animation: none; } .vv-bar { transition: none; } }
 .viewer-stage.zoomed { overflow: auto; display: block; padding: 0; }
 .viewer-stage.zoomed .viewer-img { max-width: none; max-height: none; cursor: zoom-out; border-radius: 0; }
 .viewer-pdf { width: min(960px, 100%); height: 100%; border: 0; border-radius: 6px; background: #fff; }
@@ -1182,8 +1261,7 @@ button, a, .conv-row { touch-action: manipulation; -webkit-tap-highlight-color: 
 
 /* ============================== TEAMWORK + PHONE ============================== */
 
-.bubble .meta-agent { font-weight: 600; margin-right: 2px; max-width: 12ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bubble .meta-agent::after { content: ' ·'; font-weight: 400; }
+.bubble .meta-agent { font-weight: 600; margin-right: 4px; max-width: 12ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .msg-link { color: var(--pine-deep); text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; }
 .bubble.in .msg-link { color: #1a5f93; }
@@ -1319,3 +1397,9 @@ html.by-touch .row-readtoggle { display: none !important; }
   .modal-card { padding: 20px 18px 16px; max-height: calc(var(--app-h, 100dvh) - 24px); overflow-y: auto; }
 }
 @keyframes sheet-up { from { transform: translateY(100%); } to { transform: none; } }
+
+/* The page never zooms: pinch and double tap pan or do nothing; only a photo in
+   the viewer zooms, by its own gestures. Fields stay at 16px so iPhone does not
+   zoom into them. */
+html, body { touch-action: pan-x pan-y; }
+@media (pointer: coarse) { input, textarea, select { font-size: 16px !important; } }
