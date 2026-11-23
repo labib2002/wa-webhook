@@ -183,6 +183,27 @@ input, textarea, button { font-family: inherit; }
   position: relative;
 }
 
+/* The chat list on a wide screen: a drag on its edge resizes it, the button
+   in the chat header (or Ctrl+B) tucks it away so the chat takes the width. */
+.app { transition: grid-template-columns 0.2s ease; }
+.app.list-dragging { transition: none; cursor: col-resize; user-select: none; -webkit-user-select: none; }
+.app.list-hidden { grid-template-columns: 0 1fr; }
+.app.list-hidden .pane-list { overflow: hidden; border-right-width: 0; visibility: hidden; transition: visibility 0s 0.2s; }
+.list-handle {
+  position: absolute; top: 0; bottom: 0; z-index: 6;
+  inset-inline-start: calc(var(--list-w) - 3px);
+  width: 6px; cursor: col-resize; touch-action: none; outline: none;
+}
+.list-handle::after {
+  content: ''; position: absolute; top: 0; bottom: 0; left: 2px; width: 2px;
+  background: transparent; transition: background 0.14s;
+}
+.list-handle:hover::after, .list-handle:focus-visible::after, .app.list-dragging .list-handle::after { background: var(--pine); }
+.app.list-hidden .list-handle { display: none; }
+.list-toggle { margin-inline-end: 2px; }
+.list-toggle[aria-pressed="true"] { color: var(--pine); }
+@media (prefers-reduced-motion: reduce) { .app { transition: none; } }
+
 /* ---- search and the one menu ---- */
 .search-row { display: flex; align-items: center; gap: 8px; padding: 12px 12px 10px 14px; }
 .search-row .search-wrap { flex: 1 1 auto; min-width: 0; padding: 0; }
@@ -1164,6 +1185,9 @@ body.viewer-open { overflow: hidden; }
     overflow: hidden;
   }
   .pane-list { border-right: none; }
+  .list-handle, .list-toggle { display: none; }
+  .app.list-hidden { grid-template-columns: 1fr; }
+  .app.list-hidden .pane-list { visibility: visible; }
   .pane-thread {
     /* overlay the thread on top of the list area; .app already follows the keyboard */
     position: absolute; inset: 0; z-index: 10;
