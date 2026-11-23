@@ -3174,7 +3174,7 @@ els.forwardModal.addEventListener('click', (e) => {
   if (e.target === els.forwardModal) closeForwardModal();
 });
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && !els.forwardModal.hidden) closeForwardModal();
+  if (e.key === 'Escape' && !els.forwardModal.hidden) { e.stopImmediatePropagation(); closeForwardModal(); }
 });
 
 els.forwardSubmit.addEventListener('click', async () => {
@@ -3468,10 +3468,13 @@ viewer.el.querySelector('.viewer-main').addEventListener('click', (e) => {
 viewer.prev.addEventListener('click', () => showViewerItem(viewer.index - 1));
 viewer.next.addEventListener('click', () => showViewerItem(viewer.index + 1));
 $('#viewer-close').addEventListener('click', closeViewer);
-$('#viewer-forward').addEventListener('click', () => {
+$('#viewer-forward').addEventListener('click', (e) => {
+  e.stopPropagation();
   const m = viewer.items[viewer.index];
-  closeViewer();
-  if (m) openForwardModal(m);
+  if (!m) return;
+  const v = viewer.stage.querySelector('video');
+  if (v && !v.paused) v.pause();
+  openForwardModal(m);
 });
 viewer.strip.addEventListener('click', (e) => {
   const b = e.target.closest('.viewer-thumb');
@@ -3569,7 +3572,8 @@ function shareType(m, blob) {
 }
 function prepareShare(m) {
   if (!m || !canShareFiles() || shareFiles.has(m.id)) return shareFiles.get(m && m.id);
-  const job = fetch(mediaSrc(m), { credentials: 'same-origin' })
+  const own = m._localUrl ? m._localUrl : `/api/media/${m.id}?bytes=1`;
+  const job = fetch(own, { credentials: 'same-origin' })
     .then((resp) => (resp.ok ? resp.blob() : null))
     .then((blob) => {
       if (!blob || blob.size > SHARE_MAX_BYTES) return null;
@@ -3813,7 +3817,7 @@ document.addEventListener('touchmove', (e) => {
 }, { passive: false });
 
 document.addEventListener('keydown', (e) => {
-  if (viewer.el.hidden) return;
+  if (viewer.el.hidden || !els.forwardModal.hidden) return;
   if (e.key === 'Escape') closeViewer();
   else if (e.key === 'ArrowLeft') showViewerItem(viewer.index - 1);
   else if (e.key === 'ArrowRight') showViewerItem(viewer.index + 1);

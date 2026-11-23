@@ -49,7 +49,17 @@ fake._tables.messages.push(
   { id: 304, wa_message_id: 'v5', wa_id: C, direction: 'in', type: 'image', body: '📷 Image', status: 'received', wa_timestamp: iso(0.4), created_at: iso(0.4), media_meta: { mime_type: 'image/jpeg', w: 320, h: 240 }, media_status: 'stored', media_path: 'photo.jpg', error: null, forwarded: false },
 );
 const storage = fake.storage.from();
-fake.storage.from = () => ({ ...storage, exists: async (p) => ({ data: /\.poster\.jpg$/.test(p), error: null }), createSignedUrl: async (p) => ({ data: { signedUrl: `/_media/${p}` }, error: null }) });
+let mediaBase = '';
+const mediaFiles = {};
+fake.storage.from = () => ({
+  ...storage,
+  exists: async (p) => ({ data: /\.poster\.jpg$/.test(p), error: null }),
+  createSignedUrl: async (p) => ({ data: { signedUrl: `${mediaBase}/_media/${p}` }, error: null }),
+  download: async (p) => {
+    const buf = mediaFiles[p] ? require('fs').readFileSync(mediaFiles[p]) : Buffer.from('xxxx');
+    return { data: { arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.length) }, error: null };
+  },
+});
 
 // A real two-second video and a still from it, made with the bundled ffmpeg.
 function makeClip() {
@@ -125,7 +135,12 @@ const overlaps = (page) => page.evaluate(() => {
   const tone = wav();
   const clip = makeClip();
   const rangeHits = [];
-  app.get('/_media/:p', (req, res) => {
+  mediaFiles['clip.mp4'] = clip.mp4;
+  mediaFiles['photo.jpg'] = clip.jpg;
+  // Storage is another origin with no CORS, as in production: the page can show
+  // its files but cannot read their bytes.
+  const store = require('express')();
+  store.get('/_media/:p', (req, res) => {
     if (req.params.p.endsWith('.wav')) return res.set('Content-Type', 'audio/wav').send(tone);
     if (req.params.p.endsWith('.poster.jpg') || req.params.p === 'photo.jpg') return res.sendFile(clip.jpg);
     if (req.params.p === 'clip.mp4') {
@@ -134,6 +149,8 @@ const overlaps = (page) => page.evaluate(() => {
     }
     res.set('Content-Type', 'image/svg+xml').send('<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"/>');
   });
+  const storeSrv = http.createServer(store).listen(0);
+  mediaBase = `http://127.0.0.1:${storeSrv.address().port}`;
   const srv = http.createServer(app).listen(0);
   const base = `http://127.0.0.1:${srv.address().port}`;
   const shots = process.env.SHOTS_DIR;
@@ -243,6 +260,19 @@ const overlaps = (page) => page.evaluate(() => {
       });
       check(`${label}: Share opens the share sheet with the file and its real type, and never downloads instead`,
         Boolean(shared.shared) && shared.shared.type === 'video/mp4' && shared.shared.size > 0 && shared.downloads === 0, JSON.stringify(shared));
+    }
+    {
+      const fwd = await page.evaluate(async () => {
+        document.querySelector('#viewer-forward').click();
+        await new Promise((r) => setTimeout(r, 300));
+        const modal = document.querySelector('#forward-modal');
+        const open = !modal.hidden;
+        const onTop = Number(getComputedStyle(modal).zIndex) > Number(getComputedStyle(document.querySelector('#viewer')).zIndex);
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        await new Promise((r) => setTimeout(r, 200));
+        return { open, onTop, viewerStillOpen: !document.querySelector('#viewer').hidden, modalClosed: modal.hidden };
+      });
+      check(`${label}: Forward in the viewer opens the chat picker on top and keeps the viewer open`, fwd.open && fwd.onTop && fwd.viewerStillOpen && fwd.modalClosed, JSON.stringify(fwd));
     }
     await page.click('#viewer-close');
     await page.waitForTimeout(300);
@@ -402,6 +432,7 @@ const overlaps = (page) => page.evaluate(() => {
 
   check('no script errors', pageErrors.length === 0, pageErrors.join(' | '));
   srv.close();
+  storeSrv.close();
   const failed = results.filter((r) => !r.ok).length;
   console.log(`\n${results.length - failed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
