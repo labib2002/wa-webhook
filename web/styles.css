@@ -407,29 +407,32 @@ input, textarea, button { font-family: inherit; }
   z-index: 2;
 }
 .thread-header .avatar { width: 42px; height: 42px; font-size: 16px; }
-.thread-peer { min-width: 0; flex: 1; }
+/* One line beside the photo: the name, then the company as a small chip. The
+   phone and the WhatsApp name are in the sheet a tap on it opens. */
+.thread-peer { min-width: 0; flex: 1; display: flex; align-items: center; gap: 7px; cursor: pointer; }
+.thread-header .avatar { cursor: pointer; }
 .thread-name { font-weight: 600; font-size: 16px; line-height: 1.25; color: var(--ink); }
 /* A long name takes a second line instead of being cut. */
 .thread-name > bdi {
   display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
   overflow: hidden; overflow-wrap: anywhere;
 }
-.thread-sub {
-  font-size: 12.5px; color: var(--ink-2);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.thread-name-row { display: flex; align-items: center; gap: 2px; min-width: 0; }
 button.thread-name {
   border: none; background: none; padding: 0; font-family: inherit;
-  text-align: left; cursor: pointer; min-width: 0;
+  text-align: left; cursor: pointer; min-width: 0; flex: 0 1 auto;
 }
-button.thread-name:hover { text-decoration: underline; text-decoration-color: var(--ink-3); }
+.thread-peer:hover .thread-name { text-decoration: underline; text-decoration-color: var(--ink-3); }
 .thread-member {
-  font-size: 12px; font-weight: 600; color: var(--pine-deep);
-  overflow-wrap: anywhere;
+  flex: 0 0 auto; max-width: 46%;
+  font-size: 11.5px; font-weight: 600; line-height: 1.3; color: var(--pine-deep);
+  background: var(--pine-soft); border-radius: 999px; padding: 2px 8px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+.thread-peer.tight .thread-member { max-width: 5.5em; }
+.thread-peer.tighter .thread-member { display: none; }
+.thread-peer.small .thread-name { font-size: 13.5px; line-height: 1.2; }
+.thread-peer.small .thread-name > bdi { -webkit-line-clamp: 3; }
 .done-btn { color: var(--pine); }
-.thread-member.none { color: var(--ink-3); font-weight: 500; }
 .thread-header-actions { margin-left: auto; flex: none; }
 .back-btn { display: none; margin-left: -6px; }
 
@@ -470,7 +473,7 @@ button.thread-name:hover { text-decoration: underline; text-decoration-color: va
 .messages > * { flex: none; }
 .bubble .meta, .bubble .media-label, .bubble .fail-reason, .bubble .send-note,
 .bubble-retry, .forwarded-tag, .tpl-tag, .tapped-tag { direction: ltr; unicode-bidi: isolate; }
-.bubble .caption, .quote-text, .quote-name, .reply-text, .reply-name, .thread-sub { unicode-bidi: plaintext; }
+.bubble .caption, .quote-text, .quote-name, .reply-text, .reply-name { unicode-bidi: plaintext; }
 @keyframes pop {
   from { opacity: 0; transform: translateY(6px) scale(0.98); }
   to   { opacity: 1; transform: none; }
@@ -1004,6 +1007,8 @@ body.viewer-open { overflow: hidden; }
     transition: transform 0.26s cubic-bezier(0.22, 1, 0.36, 1);
   }
   .app[data-view="thread"] .pane-thread { transform: translateX(0); }
+  /* While it slides away it must not take the taps meant for the list. */
+  .app:not([data-view="thread"]) .pane-thread { pointer-events: none; }
   /* when viewing the thread, the placeholder shouldn't show under it */
   .back-btn { display: inline-grid; }
   .bubble { max-width: 78%; }
@@ -1022,15 +1027,21 @@ body.viewer-open { overflow: hidden; }
   .row-co { font-size: 12px; line-height: 1.35; }
   .conv-row .row-time { font-size: 12.5px; }
   .conv-list { padding-top: 0; }
-  .thread-header { gap: 9px; padding-left: 8px; padding-right: 8px; }
-  .thread-sub { white-space: normal; overflow-wrap: anywhere; font-size: 13px; }
-  .thread-member { font-size: 12.5px; }
-  .bubble { font-size: 15.5px; }
+  .thread-header { gap: 7px; padding-left: 8px; padding-right: 6px; }
+  .thread-header .avatar { width: 36px; height: 36px; font-size: 14px; }
+  /* the arrow keeps its 44px to press; only the air beside it goes */
+  .back-btn { margin-right: -5px; }
+  .thread-peer, button.thread-name { min-height: 44px; }
+  button.thread-name { display: flex; align-items: center; }
+  .bubble { font-size: 15.5px; padding: 6px 10px 5px; }
+  .messages { padding-top: 8px; padding-bottom: 6px; }
+  .day-sep { margin: 6px 0; padding: 3px 11px; }
   .bubble .meta { font-size: 11.5px; }
   .filter-chip { font-size: 13.5px; padding: 9px 14px; min-height: 40px; }
-  .list-filters { padding: 0 12px 8px; }
-  .search-wrap { padding: 0 12px 8px; }
-  .send-btn, .attach-btn, .mic-btn { width: 46px; height: 46px; }
+  .list-filters { padding: 0 12px 4px; }
+  .search-wrap { padding: 0 12px 6px; }
+  .send-btn, .attach-btn, .mic-btn { width: 44px; height: 44px; }
+  .composer-input { padding: 9px 14px; }
   /* Microphone while the box is empty, send once there is something to send. */
   .composer-form:not(.has-text) .send-btn { display: none; }
   .composer-form.has-text .mic-btn { display: none; }
@@ -1041,9 +1052,12 @@ body.viewer-open { overflow: hidden; }
 
   /* Only what the notch and the home bar need, and nothing on top of it. */
   .list-header { padding: calc(4px + env(safe-area-inset-top)) 8px 4px 14px; }
-  .thread-header { padding-top: calc(6px + env(safe-area-inset-top)); padding-bottom: 6px; }
+  .thread-header { padding-top: calc(2px + env(safe-area-inset-top)); padding-bottom: 2px; }
   .conv-list { padding-bottom: max(8px, env(safe-area-inset-bottom)); }
-  .composer { padding: 7px 8px max(7px, env(safe-area-inset-bottom)); }
+  .composer { padding: 5px 8px max(4px, env(safe-area-inset-bottom)); }
+  /* The keyboard covers the home bar, so nothing is kept free for it. */
+  html.kb-open .composer { padding-bottom: 4px; }
+  .window-bar, .composer-banner { margin-bottom: 6px; padding: 6px 10px; }
   .viewer-bar { padding-top: calc(6px + env(safe-area-inset-top)); }
   .viewer-strip { padding-bottom: max(10px, env(safe-area-inset-bottom)); }
 
@@ -1155,6 +1169,25 @@ button, a, .conv-row { touch-action: manipulation; -webkit-tap-highlight-color: 
   padding: 0 14px; font-size: 15.5px; color: var(--ink);
 }
 .sheet-action:hover { background: var(--paper-2); }
+
+/* who the chat is with */
+.peer-top { display: flex; align-items: center; gap: 12px; padding: 8px 10px 10px; }
+.peer-top .avatar { width: 46px; height: 46px; font-size: 17px; }
+.peer-name { font-weight: 600; font-size: 17px; line-height: 1.25; color: var(--ink); overflow-wrap: anywhere; min-width: 0; }
+.peer-rows { border-top: 1px solid var(--card-edge); border-bottom: 1px solid var(--card-edge); padding: 4px 0; margin-bottom: 6px; }
+.peer-row {
+  display: flex; align-items: baseline; gap: 12px; width: 100%; min-height: 44px;
+  padding: 9px 14px; border: none; background: transparent; border-radius: var(--r-sm);
+  font: inherit; text-align: left; color: var(--ink);
+}
+button.peer-row { cursor: pointer; }
+button.peer-row:hover { background: var(--paper-2); }
+.peer-label { flex: none; width: 96px; font-size: 12.5px; color: var(--ink-2); }
+.peer-value { flex: 1; min-width: 0; font-size: 15px; overflow-wrap: anywhere; unicode-bidi: plaintext; }
+@media (min-width: 721px) {
+  .peer-overlay { display: block; padding: 0; background: transparent; }
+  .peer-card { position: absolute; left: var(--peer-x, 40px); top: var(--peer-y, 60px); width: min(340px, 92vw); }
+}
 
 /* swipe a message to the right to reply to it */
 .bubble { touch-action: pan-y; }

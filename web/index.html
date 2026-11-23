@@ -120,12 +120,9 @@
             <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
           </button>
           <div id="thread-avatar" class="avatar" aria-hidden="true">?</div>
-          <div class="thread-peer">
-            <div class="thread-name-row">
-              <button id="thread-name" type="button" class="thread-name" title="Edit name" aria-label="Edit contact name"><bdi id="thread-name-text">—</bdi></button>
-            </div>
-            <div id="thread-sub" class="thread-sub">—</div>
-            <div id="thread-member" class="thread-member" hidden></div>
+          <div id="thread-peer" class="thread-peer">
+            <button id="thread-name" type="button" class="thread-name" aria-haspopup="dialog" aria-label="Contact details"><bdi id="thread-name-text"></bdi></button>
+            <span id="thread-member" class="thread-member" hidden></span>
           </div>
           <div class="thread-header-actions">
             <button id="done-btn" class="icon-btn done-btn" title="Mark as done" aria-label="Mark this chat as done" hidden>
@@ -268,6 +265,21 @@
     <div class="sheet-card" role="menu" aria-label="Message actions">
       <div id="sheet-reactions" class="sheet-reactions" role="group" aria-label="React"></div>
       <div id="sheet-actions" class="sheet-actions"></div>
+    </div>
+  </div>
+
+  <!-- who this chat is with: opened by a tap on the chat header -->
+  <div id="peer-sheet" class="sheet-overlay peer-overlay" hidden>
+    <div class="sheet-card peer-card" role="dialog" aria-modal="true" aria-labelledby="peer-name">
+      <div class="peer-top">
+        <div id="peer-avatar" class="avatar" aria-hidden="true">?</div>
+        <bdi id="peer-name" class="peer-name"></bdi>
+      </div>
+      <div id="peer-rows" class="peer-rows"></div>
+      <div class="sheet-actions">
+        <button type="button" class="sheet-action" data-peer="copy">Copy number</button>
+        <button type="button" class="sheet-action" data-peer="rename">Edit name</button>
+      </div>
     </div>
   </div>
 
