@@ -184,7 +184,7 @@ function check(name, ok, detail = '') {
   await settle();
   check('paste into the search box is left alone', !prevented && (await staged()) === null);
 
-  await page.click('#rename-btn');
+  await page.click('#thread-name');
   await page.waitForSelector('#rename-modal:not([hidden])');
   prevented = await page.evaluate(async () => __t.paste(document.body, [await __t.png(200, 100)]));
   await settle();
