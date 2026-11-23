@@ -56,6 +56,9 @@ html, body {
   height: 100%;
   margin: 0;
 }
+/* What the phone paints past the edges of the page (its own bars, an
+   overscroll) takes this colour, the same as the header and the message box. */
+html { background: var(--card); }
 
 body {
   font-family: var(--font-ui);
@@ -259,24 +262,23 @@ input, textarea, button { font-family: inherit; }
 /* The member's picture from the Byte+ app covers the initials. */
 .avatar img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: var(--paper-2); }
 .row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.row-top { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.row-top { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
 .row-name-text {
   flex: 1; min-width: 0; font-weight: 500; font-size: 15px; color: var(--ink);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .conv-row.has-unread .row-name-text { font-weight: 700; }
-/* The company has a line to itself, so neither it nor the name is cut short. */
+/* The company sits under the time, on the right of the last message. */
 .row-co {
-  align-self: flex-start; max-width: 100%;
+  flex: 0 1 auto; min-width: 0; max-width: 44%; text-align: right;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   font-size: 11.5px; font-weight: 600; color: var(--pine-deep);
-  border: 1px solid var(--card-edge); border-radius: 999px; padding: 0 8px; line-height: 18px;
 }
 .conv-row .row-time { flex: none; font-size: 12px; color: var(--ink-3); white-space: nowrap; }
 .conv-row.has-unread .row-time { color: var(--pine); font-weight: 600; }
 .row-bottom { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .conv-row .row-preview {
-  flex: 1; min-width: 0; font-size: 13.5px; color: var(--ink-2);
+  flex: 1 1 0; min-width: 0; font-size: 13.5px; color: var(--ink-2);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .conv-row.has-unread .row-preview { color: var(--ink); }
@@ -332,7 +334,12 @@ input, textarea, button { font-family: inherit; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* ---- list filter chips (compose with search) ---- */
-.list-filters { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 14px 10px; }
+.list-filters {
+  display: flex; flex-wrap: nowrap; gap: 6px; padding: 0 14px 10px; flex: none;
+  overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none;
+}
+.list-filters::-webkit-scrollbar { display: none; }
+.list-filters .filter-chip { flex: none; white-space: nowrap; }
 .chip-count {
   display: inline-block; margin-left: 6px; min-width: 18px; padding: 0 5px;
   border-radius: 999px; background: var(--pine); color: #fff;
@@ -364,9 +371,9 @@ input, textarea, button { font-family: inherit; }
 .row-readtoggle:hover { background: var(--paper-2); color: var(--pine-deep); }
 .row-readtoggle:focus-visible { outline: 2px solid var(--pine); outline-offset: 1px; display: grid; }
 @media (hover: hover) {
-  .conv-row:hover .row-readtoggle { display: grid; }
+  html:not(.by-touch) .conv-row:hover .row-readtoggle { display: grid; }
   /* the toggle sits where the time is; lift it clear on hover */
-  .conv-row:hover .row-time { visibility: hidden; }
+  html:not(.by-touch) .conv-row:hover .row-time { visibility: hidden; }
 }
 
 /* ============================== THREAD ============================== */
@@ -588,7 +595,7 @@ a.media-frame:focus-visible { outline: 2px solid var(--pine); outline-offset: 2p
 .composer {
   background: var(--card);
   border-top: 1px solid var(--card-edge);
-  padding: 10px 14px calc(10px + env(safe-area-inset-bottom));
+  padding: 10px 14px max(10px, env(safe-area-inset-bottom));
 }
 .composer-banner {
   background: var(--danger-soft); color: var(--danger);
@@ -927,7 +934,13 @@ body.viewer-open { overflow: hidden; }
   display: flex; align-items: center; justify-content: center;
   padding: 8px 64px; overflow: hidden;
 }
-.viewer-media { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 4px; }
+.viewer-media { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 4px; transition: transform 0.18s ease; }
+.viewer.dragging { animation: none; background: rgba(14, 20, 18, var(--fade, 1)); }
+.viewer.dragging .viewer-media {
+  transition: none;
+  transform: translateY(var(--drag, 0px)) scale(calc(0.86 + 0.14 * var(--fade, 1)));
+}
+.viewer.dragging .viewer-bar, .viewer.dragging .viewer-caption, .viewer.dragging .viewer-strip { opacity: var(--fade, 1); }
 .viewer-img { cursor: zoom-in; user-select: none; }
 .viewer-stage.zoomed { overflow: auto; display: block; padding: 0; }
 .viewer-stage.zoomed .viewer-img { max-width: none; max-height: none; cursor: zoom-out; border-radius: 0; }
@@ -997,23 +1010,26 @@ body.viewer-open { overflow: hidden; }
   .bubble.has-media { max-width: min(78%, 348px); }
   .messages { padding-left: 14px; padding-right: 14px; }
 
-  /* Names and previews get the room they need on a narrow screen. */
+  /* A long name takes a second line instead of being cut; the last message
+     and the company keep to one, so more chats fit on the screen. */
   .row-name-text {
     font-size: 16px; line-height: 1.25; white-space: normal; overflow-wrap: anywhere;
     display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
   }
-  .conv-row .row-preview {
-    font-size: 14px; line-height: 1.35; white-space: normal;
-    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
-  }
-  .row-co { font-size: 12px; white-space: normal; border-radius: 10px; line-height: 1.35; padding: 1px 8px; }
+  .conv-row { padding: 7px 10px; gap: 11px; }
+  .conv-row .avatar { width: 44px; height: 44px; font-size: 17px; }
+  .conv-row .row-preview { font-size: 14px; line-height: 1.35; }
+  .row-co { font-size: 12px; line-height: 1.35; }
   .conv-row .row-time { font-size: 12.5px; }
+  .conv-list { padding-top: 0; }
   .thread-header { gap: 9px; padding-left: 8px; padding-right: 8px; }
   .thread-sub { white-space: normal; overflow-wrap: anywhere; font-size: 13px; }
   .thread-member { font-size: 12.5px; }
   .bubble { font-size: 15.5px; }
   .bubble .meta { font-size: 11.5px; }
   .filter-chip { font-size: 13.5px; padding: 9px 14px; min-height: 40px; }
+  .list-filters { padding: 0 12px 8px; }
+  .search-wrap { padding: 0 12px 8px; }
   .send-btn, .attach-btn, .mic-btn { width: 46px; height: 46px; }
   /* Microphone while the box is empty, send once there is something to send. */
   .composer-form:not(.has-text) .send-btn { display: none; }
@@ -1023,10 +1039,13 @@ body.viewer-open { overflow: hidden; }
   input, textarea, select { font-size: 16px !important; }
   .search-ico { top: 11px; }
 
-  /* Clear the notch and the home bar when it runs as a Home Screen app. */
-  .list-header { padding-top: calc(16px + env(safe-area-inset-top)); }
-  .thread-header { padding-top: calc(11px + env(safe-area-inset-top)); }
-  .conv-list { padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
+  /* Only what the notch and the home bar need, and nothing on top of it. */
+  .list-header { padding: calc(4px + env(safe-area-inset-top)) 8px 4px 14px; }
+  .thread-header { padding-top: calc(6px + env(safe-area-inset-top)); padding-bottom: 6px; }
+  .conv-list { padding-bottom: max(8px, env(safe-area-inset-bottom)); }
+  .composer { padding: 7px 8px max(7px, env(safe-area-inset-bottom)); }
+  .viewer-bar { padding-top: calc(6px + env(safe-area-inset-top)); }
+  .viewer-strip { padding-bottom: max(10px, env(safe-area-inset-bottom)); }
 
   /* Scrolling a list to its end must not drag the whole page with it. */
   .conv-list, .messages { overscroll-behavior: contain; }
@@ -1148,12 +1167,15 @@ button, a, .conv-row { touch-action: manipulation; -webkit-tap-highlight-color: 
 .bubble.swiping.swipe-armed::before { background: var(--pine); color: #fff; }
 
 /* A finger has no hover: the small buttons beside a bubble give way to a long
-   press and a swipe, and a long press must not start a text selection. */
-@media (pointer: coarse) {
-  .bubble-actions { display: none; }
-  .bubble { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
-  .row-readtoggle { display: none !important; }
+   press and a swipe, and a long press opens the menu, which has Copy, never a
+   text selection or the phone's own menu. The class follows the last press
+   (web/app.js): a Samsung phone with a pen says its pointer is a mouse. */
+html.by-touch .bubble-actions { display: none; }
+html.by-touch .bubble, html.by-touch .conv-row, html.by-touch .day-sep {
+  -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
 }
+html.by-touch .bubble img, html.by-touch .conv-row img { -webkit-user-drag: none; }
+html.by-touch .row-readtoggle { display: none !important; }
 
 @media (max-width: 720px) {
   .agent-btn { min-width: 44px; }

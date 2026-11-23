@@ -123,7 +123,7 @@ const state = {
   membersAvailable: false, // false: the member lookup is off, so never say "Not a member"
   renameWaId: null,
   filter: '',             // what is typed in the search box
-  view: 'chats',          // 'chats' | 'needs_reply' | 'templates'
+  view: 'chats',          // 'chats' | 'needs_reply'
   known: new Map(),       // wa_id -> the newest row seen for that chat, in or out of the list
   recent: [],             // the newest chats whatever the view or search shows
   list: { total: 0, next: null, counts: {}, hits: [], more: false },
@@ -565,11 +565,10 @@ function renderViews() {
     const on = view === state.view;
     chip.classList.toggle('active', on);
     chip.setAttribute('aria-selected', on ? 'true' : 'false');
-    const n = view === 'needs_reply' ? counts.needs_reply : view === 'templates' ? counts.templates : 0;
+    const n = view === 'needs_reply' ? counts.needs_reply : 0;
     const count = chip.querySelector('.chip-count');
     count.textContent = n > 99 ? '99+' : n || '';
     count.hidden = !n;
-    if (view === 'templates') chip.hidden = !n && !on;
   });
 }
 
@@ -615,8 +614,7 @@ function rowHtml(c, hit) {
       ${avatarHtml(c)}
       <span class="row-main">
         <span class="row-top"><span class="row-name-text" title="${name}"><bdi>${name}</bdi></span><span class="row-time">${escapeHtml(fmtListTime(when))}</span></span>
-        ${tag ? `<span class="row-co" title="${escapeHtml(memberLabel(c.member))}"><bdi>${escapeHtml(tag)}</bdi></span>` : ''}
-        <span class="row-bottom"><span class="row-preview">${outTick}<bdi>${escapeHtml(preview)}</bdi></span><span class="row-badge">${badge}</span></span>
+        <span class="row-bottom"><span class="row-preview">${outTick}<bdi>${escapeHtml(preview)}</bdi></span>${tag ? `<span class="row-co" title="${escapeHtml(memberLabel(c.member))}"><bdi>${escapeHtml(tag)}</bdi></span>` : ''}<span class="row-badge">${badge}</span></span>
       </span>
       ${toggle}
       <span class="row-swipe" aria-hidden="true">${isWaiting ? ICO_DONE : ICO_FLAG}<span>${isWaiting ? 'Done' : 'Needs reply'}</span></span>
@@ -643,7 +641,6 @@ function renderConversations(forceRender = false) {
     els.convEmpty.hidden = false;
     const [title, sub] = q ? ['No matches', 'Try another name, number or word.']
       : state.view === 'needs_reply' ? ['Nobody is waiting', 'Every chat has been answered or marked done.']
-      : state.view === 'templates' ? ['Nothing here', 'Chats that hold only templates we sent show here.']
       : ['No conversations yet.', 'Incoming WhatsApp messages will appear here.'];
     els.convEmpty.querySelector('p').textContent = title;
     els.convEmpty.querySelector('span').textContent = sub;
@@ -705,7 +702,7 @@ els.search.addEventListener('input', () => {
   }, 250);
 });
 
-// Views: Chats / Needs reply / Templates. A search looks through all of them.
+// Views: Chats / Needs reply. A search looks through every chat.
 document.querySelectorAll('.list-filters .filter-chip').forEach((chip) => {
   chip.addEventListener('click', () => {
     if (state.view === chip.dataset.view) return;
@@ -1090,7 +1087,7 @@ function renderBubble(m, continued) {
       const audioSrc = compat && !canPlayAudio(meta.mime_type) ? compat : src;
       // One line: the bubble keeps line breaks, and one here drew an empty row.
       inner += `<span class="media-label">${isVoice ? '🎤 Voice message' : '🎵 Audio'}</span><audio class="media-audio" controls preload="metadata" src="${audioSrc}" data-compat="${compat}"></audio>`;
-      if (meta.sent_as_audio) inner += '<span class="send-note">Sent as an audio file, because WhatsApp refused the voice note for this person.</span>';
+      if (meta.sent_as_audio) inner += '<span class="send-note">Sent as an audio file. WhatsApp refused it as a voice note.</span>';
     } else if (stored && m.type === 'document') {
       const fname = escapeHtml(meta.filename || 'Document');
       inner += isPdf(m)
@@ -1167,7 +1164,7 @@ function renderBubble(m, continued) {
       retry.className = 'bubble-retry';
       retry.title = 'Retry sending';
       retry.setAttribute('aria-label', 'Retry sending');
-      const asAudio = (m.media_meta || {}).voice === true && REFUSED_MEDIA.test(m.error || '');
+      const asAudio = (m.media_meta || {}).voice === true && !(m.media_meta || {}).auto_resend && REFUSED_MEDIA.test(m.error || '');
       retry.innerHTML = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg><span>${asAudio ? 'Send as an audio file' : 'Retry'}</span>`;
       retry.addEventListener('click', (e) => { e.stopPropagation(); retrySend(m); });
       div.appendChild(retry);
@@ -1212,7 +1209,7 @@ function contactCardHtml(c) {
 const REFUSED_MEDIA = /media upload error|\b131053\b/i;
 const FAILURE_WORDS = [
   [/\b131047\b|re-engagement|24-hour reply window/i, 'More than 24 hours since their last message. Only a follow-up template can be sent now.'],
-  [/\b131053\b|media upload error/i, 'WhatsApp could not process this file for this person.'],
+  [/\b131053\b|media upload error/i, 'WhatsApp could not process this file.'],
   [/\b131052\b|media download error/i, 'WhatsApp could not fetch this file. Send it again.'],
   [/\b131026\b|undeliverable/i, 'WhatsApp could not deliver this. The number may not be on WhatsApp, may have blocked this number, or runs a very old WhatsApp.'],
   [/\b131049\b|healthy ecosystem/i, 'WhatsApp chose not to deliver this template to this person right now. Try again tomorrow.'],
@@ -1229,9 +1226,10 @@ function failureWords(m) {
   if (!raw) return { text: 'Failed to send.', said: '' };
   const hit = FAILURE_WORDS.find(([re]) => re.test(raw));
   if (!hit) return { text: raw, said: '' };
-  const text = REFUSED_MEDIA.test(raw) && (m.media_meta || {}).voice === true
-    ? `${hit[1]} Send it as an audio file instead, or type the message.`
-    : hit[1];
+  const meta = m.media_meta || {};
+  const text = !REFUSED_MEDIA.test(raw) || meta.voice !== true ? hit[1]
+    : meta.auto_resend ? 'WhatsApp refused this voice note, and the audio file sent in its place did not go out either. Try again, or type the message.'
+    : `${hit[1]} Send it as an audio file instead, or type the message.`;
   return { text, said: raw === text ? '' : raw };
 }
 
@@ -2084,7 +2082,7 @@ window.addEventListener('popstate', () => {
 // The on-screen keyboard covers the bottom of the page without resizing it.
 // Size the app to what is really visible, so the composer sits on top of the
 // keyboard and the chat header stays on screen.
-if (window.visualViewport && window.matchMedia('(pointer: coarse)').matches) {
+if (window.visualViewport && (navigator.maxTouchPoints > 0 || window.matchMedia('(pointer: coarse)').matches)) {
   const vv = window.visualViewport;
   const root = document.documentElement;
   let lastH = 0;
@@ -2899,6 +2897,14 @@ function mediaSrc(m) {
   return m._localUrl || `/api/media/${m.id}`;
 }
 
+// The phone's status bar takes the colour of what sits under it.
+const APP_COLOR = '#fbf8f2';
+const VIEWER_COLOR = '#0e1412';
+const themeMeta = document.querySelector('meta[name="theme-color"]');
+function setThemeColor(color) {
+  if (themeMeta) themeMeta.setAttribute('content', color);
+}
+
 function openViewer(msgId) {
   if (!state.activeWaId) return;
   const t = thread(state.activeWaId);
@@ -2915,6 +2921,7 @@ function openViewer(msgId) {
   viewer.strip.hidden = viewer.items.length < 2;
   viewer.el.hidden = false;
   document.body.classList.add('viewer-open');
+  setThemeColor(VIEWER_COLOR);
   showViewerItem(index);
   $('#viewer-close').focus();
 }
@@ -2922,9 +2929,11 @@ function openViewer(msgId) {
 function closeViewer() {
   if (viewer.el.hidden) return;
   viewer.el.hidden = true;
+  endViewerDrag();
   viewer.stage.innerHTML = '';
   viewer.strip.innerHTML = '';
   document.body.classList.remove('viewer-open');
+  setThemeColor(APP_COLOR);
   if (viewer.returnFocus && viewer.returnFocus.focus) viewer.returnFocus.focus();
 }
 
@@ -3007,15 +3016,61 @@ viewer.strip.addEventListener('click', (e) => {
   const b = e.target.closest('.viewer-thumb');
   if (b) showViewerItem(Number(b.dataset.i));
 });
+// A photo or video follows the finger down and closes when let go far enough
+// or flicked; sideways still moves to the next one.
+const viewerDrag = { on: false, axis: null, x0: 0, y0: 0, dy: 0, t0: 0 };
+const DISMISS_AT = 110;
+function endViewerDrag() {
+  viewerDrag.on = false;
+  viewerDrag.axis = null;
+  viewer.el.classList.remove('dragging');
+  viewer.el.style.removeProperty('--drag');
+  viewer.el.style.removeProperty('--fade');
+}
 viewer.stage.addEventListener('touchstart', (e) => {
-  viewer.touchX = e.touches.length === 1 && !viewer.stage.classList.contains('zoomed') ? e.touches[0].clientX : null;
+  const one = e.touches.length === 1 && !viewer.stage.classList.contains('zoomed')
+    && !(window.visualViewport && window.visualViewport.scale > 1.01);
+  viewer.touchX = one ? e.touches[0].clientX : null;
+  endViewerDrag();
+  if (!one || !viewer.stage.querySelector('.viewer-media')) return;
+  Object.assign(viewerDrag, { on: true, x0: e.touches[0].clientX, y0: e.touches[0].clientY, dy: 0, t0: performance.now() });
 }, { passive: true });
-viewer.stage.addEventListener('touchend', (e) => {
-  if (viewer.touchX == null) return;
-  const dx = e.changedTouches[0].clientX - viewer.touchX;
-  viewer.touchX = null;
-  if (Math.abs(dx) > 50) showViewerItem(viewer.index + (dx < 0 ? 1 : -1));
-});
+viewer.stage.addEventListener('touchmove', (e) => {
+  const d = viewerDrag;
+  if (!d.on) return;
+  if (e.touches.length !== 1) { endViewerDrag(); viewer.touchX = null; return; }
+  const dx = e.touches[0].clientX - d.x0;
+  const dy = e.touches[0].clientY - d.y0;
+  if (!d.axis) {
+    if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
+    d.axis = dy > 0 && Math.abs(dy) > Math.abs(dx) ? 'y' : 'x';
+    if (d.axis === 'y') viewer.el.classList.add('dragging');
+  }
+  if (d.axis !== 'y') return;
+  if (e.cancelable) e.preventDefault();
+  d.dy = Math.max(0, dy);
+  viewer.el.style.setProperty('--drag', `${d.dy}px`);
+  viewer.el.style.setProperty('--fade', String(Math.max(0.2, 1 - d.dy / 380)));
+}, { passive: false });
+for (const type of ['touchend', 'touchcancel']) {
+  viewer.stage.addEventListener(type, (e) => {
+    const d = viewerDrag;
+    if (d.on && d.axis === 'y') {
+      const flick = d.dy > 36 && d.dy / Math.max(1, performance.now() - d.t0) > 0.55;
+      const close = type === 'touchend' && (d.dy >= DISMISS_AT || flick);
+      viewer.touchX = null;
+      endViewerDrag();
+      if (e.cancelable) e.preventDefault();
+      if (close) closeViewer();
+      return;
+    }
+    endViewerDrag();
+    if (type !== 'touchend' || viewer.touchX == null) { viewer.touchX = null; return; }
+    const dx = e.changedTouches[0].clientX - viewer.touchX;
+    viewer.touchX = null;
+    if (Math.abs(dx) > 50) showViewerItem(viewer.index + (dx < 0 ? 1 : -1));
+  });
+}
 document.addEventListener('keydown', (e) => {
   if (viewer.el.hidden) return;
   if (e.key === 'Escape') closeViewer();
@@ -3320,6 +3375,7 @@ function openSheet(m) {
   const actions = sheetActionsFor(m);
   const canReact = m.direction === 'in' && m.wa_message_id && typeof m.id === 'number';
   if (!actions.length && !canReact) return;
+  if (byTouch && window.getSelection) window.getSelection().removeAllRanges();
   sheet.msg = m;
   sheet.actions = actions;
   els.sheetReactions.hidden = !canReact;
@@ -3377,6 +3433,14 @@ function messageOfBubble(node) {
 
 els.messages.addEventListener('contextmenu', (e) => {
   const m = messageOfBubble(e.target);
+  // A finger held down: the phone's own menu and text selection stay away,
+  // and whichever of this and the timer comes first opens ours.
+  if (byTouch) {
+    if (e.target.closest('audio, input, textarea')) return;
+    e.preventDefault();
+    if (m && !press.swiping) { clearTimeout(press.timer); press.fired = true; openSheet(m); }
+    return;
+  }
   if (!m || e.target.closest('a, audio, video')) return;
   // Someone who selected a few words wants the browser's own menu to copy them.
   if (String(window.getSelection ? window.getSelection() : '')) return;
@@ -3385,6 +3449,26 @@ els.messages.addEventListener('contextmenu', (e) => {
 });
 
 /* ----------------------- touch: long press and swipe to reply ----------------------- */
+
+// Whether a finger is in use. Asked of each press, because a Samsung phone
+// with a pen tells the page it has a mouse. Under a finger, text is not
+// selectable (the menu has Copy) and the phone's own menus stay closed.
+const coarsePointer = window.matchMedia('(pointer: coarse)');
+let byTouch = false;
+function setByTouch(on) {
+  byTouch = on || coarsePointer.matches;
+  document.documentElement.classList.toggle('by-touch', byTouch);
+}
+setByTouch(navigator.maxTouchPoints > 0 && phoneLayout.matches);
+document.addEventListener('pointerdown', (e) => {
+  if (e.pointerType) setByTouch(e.pointerType === 'touch');
+}, true);
+document.addEventListener('selectstart', (e) => {
+  if (!byTouch) return;
+  const el = e.target.nodeType === 1 ? e.target : e.target.parentElement;
+  if (el && el.closest('.bubble, .conv-row, .day-sep')) e.preventDefault();
+});
+els.convList.addEventListener('contextmenu', (e) => { if (byTouch) e.preventDefault(); });
 
 const press = { timer: null, bubble: null, x0: 0, y0: 0, swiping: false, dx: 0, fired: false };
 const LONG_PRESS_MS = 450;
@@ -3403,7 +3487,7 @@ function endPress() {
 els.messages.addEventListener('touchstart', (e) => {
   endPress();
   const bubble = e.target.closest('.bubble');
-  if (!bubble || e.touches.length !== 1 || e.target.closest('audio, .bubble-retry, a')) return;
+  if (!bubble || e.touches.length !== 1 || e.target.closest('audio, .bubble-retry')) return;
   Object.assign(press, { bubble, x0: e.touches[0].clientX, y0: e.touches[0].clientY, dx: 0, fired: false });
   press.timer = setTimeout(() => {
     if (!press.bubble || press.swiping) return;
