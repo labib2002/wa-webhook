@@ -47,6 +47,7 @@ function check(name, ok, detail = '') {
 
   const browser = await chromium.launch();
   const page = await browser.newPage();
+  await page.addInitScript(() => { try { localStorage.setItem('wa_agent', 'Check'); } catch (_) {} }); // the name box is checked in phone-check
   const pageErrors = [];
   page.on('pageerror', (e) => pageErrors.push(e.message));
 
@@ -145,6 +146,7 @@ function check(name, ok, detail = '') {
 
   // Fallback: the stream is refused, so the tab must poll as before.
   const page2 = await browser.newPage();
+  await page2.addInitScript(() => { try { localStorage.setItem('wa_agent', 'Check'); } catch (_) {} });
   await page2.route('**/api/events', (route) => route.fulfill({ status: 503, body: '' }));
   await page2.goto(base + '/app');
   await page2.fill('#passcode', 'demo');
