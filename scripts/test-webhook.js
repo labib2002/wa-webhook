@@ -2540,6 +2540,7 @@ function sign(body) {
       ${lift('resendingVoice')}
       ${lift('shownStatus')}
       ${lift('mergeMessages')}
+      ${lift('takeOver')}
       ${lift('threadMessages')}
       ${lift('isAlbumWrapper')}
       ${lift('addOptimistic')}
@@ -2563,6 +2564,21 @@ function sign(body) {
       ui.settleOptimistic(WA, opt, null, srvRow(587, 'yo'));
       assert.strictEqual(ui.threadMessages(t).length, 1, 'settled send drew twice');
       assert.deepStrictEqual(t.order, [587], 'id listed twice in t.order');
+    });
+
+    await test('the saved row keeps the place, photo and newer tick of the bubble drawn before it', async () => {
+      ui.state.threads = {};
+      const opt = ui.addOptimistic(WA, { type: 'image', body: '📷 Image', _localUrl: 'data:image/png;base64,AA' });
+      opt.client_key = 'key-1';
+      const t = ui.thread(WA);
+      ui.mergeMessages(t, [{ ...srvRow(700, 'a different label'), type: 'image', client_key: 'key-1', status: 'delivered' }]);
+      assert.strictEqual(ui.threadMessages(t).length, 1, 'matched by its key even when the label differs');
+      ui.settleOptimistic(WA, opt, null, { ...srvRow(700, 'a different label'), type: 'image', client_key: 'key-1', status: 'sent' });
+      const row = t.byId.get(700);
+      assert.strictEqual(row._key, opt._key, 'same bubble on screen');
+      assert.strictEqual(row._localUrl, 'data:image/png;base64,AA', 'the photo is not loaded again');
+      assert.strictEqual(row.status, 'delivered', 'the send answer does not take a tick back');
+      assert.strictEqual(ui.threadMessages(t).length, 1);
     });
 
     await test('send: POST resolves before the poll -> ONE bubble', async () => {

@@ -10,6 +10,7 @@
     "paste-check": "node scripts/paste-check.js",
     "alert-check": "node scripts/alert-check.js",
     "phone-check": "node scripts/phone-check.js",
+    "smooth-check": "node scripts/send-smooth-check.js",
     "test": "node scripts/test-webhook.js",
     "adapter-check": "node scripts/adapter-check.js",
     "live-check": "node scripts/live-check.js",
