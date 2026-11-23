@@ -90,14 +90,46 @@ const els = {
   forwardCancel: $('#forward-cancel'),
   forwardSubmit: $('#forward-submit'),
   toast: $('#toast'),
+  agentBtn: $('#agent-btn'),
+  agentInitials: $('#agent-initials'),
+  agentModal: $('#agent-modal'),
+  agentForm: $('#agent-form'),
+  agentInput: $('#agent-input'),
+  agentCancel: $('#agent-cancel'),
+  doneBtn: $('#done-btn'),
+  windowBar: $('#window-bar'),
+  windowText: $('#window-text'),
+  windowAction: $('#window-action'),
+  repliesBtn: $('#replies-btn'),
+  replyPicker: $('#reply-picker'),
+  replyPickerList: $('#reply-picker-list'),
+  replyPickerManage: $('#reply-picker-manage'),
+  repliesModal: $('#replies-modal'),
+  repliesList: $('#replies-list'),
+  repliesForm: $('#replies-form'),
+  repliesTitle: $('#replies-title-input'),
+  repliesBody: $('#replies-body-input'),
+  repliesError: $('#replies-error'),
+  repliesDelete: $('#replies-delete'),
+  repliesClose: $('#replies-close'),
+  repliesSave: $('#replies-save'),
+  sheet: $('#sheet'),
+  sheetReactions: $('#sheet-reactions'),
+  sheetActions: $('#sheet-actions'),
 };
 
 const state = {
   conversations: [],      // latest list snapshot
   membersAvailable: false, // false: the member lookup is off, so never say "Not a member"
   renameWaId: null,
-  filter: '',
-  listFilter: 'all',      // 'all' | 'unread' — composes WITH the search term
+  filter: '',             // what is typed in the search box
+  view: 'chats',          // 'chats' | 'needs_reply' | 'templates'
+  known: new Map(),       // wa_id -> the newest row seen for that chat, in or out of the list
+  recent: [],             // the newest chats whatever the view or search shows
+  list: { total: 0, next: null, counts: {}, hits: [], more: false },
+  teamwork: false,        // the server keeps a chat unread until it is answered or marked done
+  agentNames: false,      // the server stores who sent each message
+  savedReplies: [],
   activeWaId: null,
   forward: null,          // { msgId, selected: Set(wa_id), search } while the picker is open
   replyTo: null,          // { waId, msg } the next send quotes, set by a bubble's Reply
@@ -213,7 +245,7 @@ async function api(path, opts = {}) {
   let res;
   try {
     res = await fetch(path, {
-      headers: { 'Content-Type': 'application/json', ...(headers || {}) },
+      headers: { 'Content-Type': 'application/json', ...agentHeader(), ...(headers || {}) },
       credentials: 'same-origin',
       ...rest,
     });
@@ -225,6 +257,14 @@ async function api(path, opts = {}) {
   let data = null;
   try { data = await res.json(); } catch (_) {}
   return { status: res.status, ok: res.ok, data: data || {} };
+}
+
+// The name the agent typed on this device, sent with every request so the
+// server can store who sent a message. Headers carry ASCII only.
+const AGENT_KEY = 'wa_agent';
+let agentName = (() => { try { return localStorage.getItem(AGENT_KEY) || ''; } catch (_) { return ''; } })();
+function agentHeader() {
+  return agentName ? { 'x-agent-name': encodeURIComponent(agentName) } : {};
 }
 
 // One idempotency key per user send action, REUSED when that same action is
@@ -378,6 +418,7 @@ function showApp() {
   startLive();
   startListPolling();
   refreshConversations(true).then(openChatFromLink);
+  loadSavedReplies();
   loadTemplates();
   initPush();
 }
@@ -422,8 +463,31 @@ els.logoutBtn.addEventListener('click', async () => {
 
 /* ----------------------- conversation list ----------------------- */
 
+const LIST_PAGE = 60;
+const LIST_MAX = 300;
+let listSeq = 0;
+
+// Any chat the inbox has been told about, whether or not the list shows it
+// right now (a search or another view can leave the open chat out).
+function convOf(waId) {
+  return (state.known && state.known.get(waId)) || state.conversations.find((c) => c.wa_id === waId) || null;
+}
+function remember(rows) {
+  for (const c of rows || []) state.known.set(c.wa_id, c);
+}
+
+function listUrl(offset, limit) {
+  const params = new URLSearchParams({ view: state.view, offset: String(offset), limit: String(limit) });
+  const q = state.filter.trim();
+  if (q) params.set('q', q);
+  return `/api/conversations?${params}`;
+}
+
 async function refreshConversations(initial = false) {
-  const { ok, status, data } = await api('/api/conversations');
+  const seq = ++listSeq;
+  const want = Math.min(LIST_MAX, Math.max(LIST_PAGE, state.conversations.length));
+  const { ok, status, data } = await api(listUrl(0, want));
+  if (seq !== listSeq) return; // a newer search or view is already on its way
   if (!ok) {
     if (status === 401) return handleAuthLost();
     if (status === 503) {
@@ -437,81 +501,173 @@ async function refreshConversations(initial = false) {
     if (initial) { els.convLoading.hidden = true; }
     return;
   }
-  state.conversations = data.conversations || [];
-  noteIncoming(state.conversations);
+  const rows = data.conversations || [];
+  // Rows the agent scrolled to beyond what one refresh carries stay as they are.
+  const have = new Set(rows.map((c) => c.wa_id));
+  const tail = state.conversations.slice(want).filter((c) => !have.has(c.wa_id));
+  state.conversations = rows.concat(data.next == null ? [] : tail);
+  state.list = {
+    total: data.total ?? rows.length,
+    next: data.next == null ? null : state.conversations.length,
+    counts: data.counts || {},
+    hits: data.message_hits || [],
+    more: false,
+  };
+  state.recent = data.recent || [];
+  remember(state.recent);
+  remember(state.list.hits);
+  remember(state.conversations);
+  state.teamwork = Boolean(data.teamwork);
+  state.agentNames = Boolean(data.agent_names);
+  state.savedRepliesOn = Boolean(data.saved_replies);
+  askAgentName();
+  noteIncoming(data.recent || rows);
   state.membersAvailable = Boolean(data.members_available);
   els.convLoading.hidden = true;
+  renderViews();
   renderConversations();
   renderThreadHeader();
 }
 
+async function loadMoreConversations() {
+  if (state.list.next == null || state.list.more) return;
+  state.list.more = true;
+  const seq = listSeq;
+  const { ok, data } = await api(listUrl(state.conversations.length, LIST_PAGE));
+  state.list.more = false;
+  if (!ok || seq !== listSeq) return;
+  const have = new Set(state.conversations.map((c) => c.wa_id));
+  const fresh = (data.conversations || []).filter((c) => !have.has(c.wa_id));
+  state.conversations = state.conversations.concat(fresh);
+  remember(fresh);
+  state.list.next = data.next == null || !fresh.length ? null : state.conversations.length;
+  renderConversations(true);
+}
+
+// What this device has already opened: a chat the agent has read here shows
+// calmer than one with something new, while it still waits for a reply.
+const SEEN_KEY = 'wa_seen';
+const seenHere = (() => { try { return JSON.parse(localStorage.getItem(SEEN_KEY)) || {}; } catch (_) { return {}; } })();
+function markSeenHere(c) {
+  if (!c || !c.last_message_at || seenHere[c.wa_id] === c.last_message_at) return;
+  seenHere[c.wa_id] = c.last_message_at;
+  const ids = Object.keys(seenHere);
+  if (ids.length > 800) for (const id of ids.slice(0, 200)) delete seenHere[id];
+  try { localStorage.setItem(SEEN_KEY, JSON.stringify(seenHere)); } catch (_) {}
+}
+const waiting = (c) => (c.needs_reply != null ? Boolean(c.needs_reply) : c.unread_count > 0);
+const newHere = (c) => c.unread_count > 0 && (!state.teamwork || seenHere[c.wa_id] !== c.last_message_at);
+
+function renderViews() {
+  const counts = state.list.counts || {};
+  document.querySelectorAll('.list-filters .filter-chip').forEach((chip) => {
+    const view = chip.dataset.view;
+    const on = view === state.view;
+    chip.classList.toggle('active', on);
+    chip.setAttribute('aria-selected', on ? 'true' : 'false');
+    const n = view === 'needs_reply' ? counts.needs_reply : view === 'templates' ? counts.templates : 0;
+    const count = chip.querySelector('.chip-count');
+    count.textContent = n > 99 ? '99+' : n || '';
+    count.hidden = !n;
+    if (view === 'templates') chip.hidden = !n && !on;
+  });
+}
+
+// The member's picture from the Byte+ app when there is one, over the
+// initials, which stay underneath for a picture that fails to load.
+function avatarParts(c) {
+  const m = c.member || {};
+  const img = m.image
+    ? `<img src="${escapeHtml(m.image)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer"${m.image_bg ? ` style="background:${escapeHtml(m.image_bg)}"` : ''} />`
+    : '';
+  return { inner: `${escapeHtml(initials(knownName(c), c.wa_id))}${img}`, photo: Boolean(img) };
+}
+function avatarHtml(c) {
+  const a = avatarParts(c);
+  return `<span class="avatar${a.photo ? ' has-photo' : ''}" aria-hidden="true">${a.inner}</span>`;
+}
+document.addEventListener('error', (e) => {
+  const img = e.target;
+  if (img && img.tagName === 'IMG' && img.parentElement && img.parentElement.classList.contains('has-photo')) {
+    img.parentElement.classList.remove('has-photo');
+    img.remove();
+  }
+}, true);
+
+const ICO_DONE = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
+const ICO_FLAG = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21V4h13l-2 4 2 4H4"/></svg>';
+
+function rowHtml(c, hit) {
+  const name = escapeHtml(displayName(c));
+  const tag = memberTag(c.member);
+  const active = c.wa_id === state.activeWaId && !hit ? ' active' : '';
+  const isWaiting = waiting(c);
+  const isNew = newHere(c);
+  const cls = `${active}${isNew ? ' has-unread' : ''}${isWaiting && !isNew ? ' is-waiting' : ''}`;
+  const badge = c.unread_count > 99 ? '99+' : c.unread_count || '';
+  const outTick = !hit && c.last_message_direction === 'out' ? '<span class="tick">✓</span> ' : '';
+  const preview = hit ? hit.text : WaTpl.previewText(c.last_message_text, state.templates);
+  const when = hit ? hit.at : c.last_message_at;
+  const toggleTitle = isWaiting ? 'Mark as done' : 'Mark as needing a reply';
+  const toggle = hit ? '' : `<span class="row-readtoggle" role="button" tabindex="0" data-read="${isWaiting ? 'read' : 'unread'}" title="${toggleTitle}" aria-label="${toggleTitle}">${isWaiting ? ICO_DONE : ICO_FLAG}</span>`;
+  return `
+    <button class="conv-row${cls}" role="listitem" data-wa="${escapeHtml(c.wa_id)}"${hit ? ` data-hit="${hit.message_id}"` : ''}>
+      ${avatarHtml(c)}
+      <span class="row-main">
+        <span class="row-top"><span class="row-name-text" title="${name}"><bdi>${name}</bdi></span><span class="row-time">${escapeHtml(fmtListTime(when))}</span></span>
+        ${tag ? `<span class="row-co" title="${escapeHtml(memberLabel(c.member))}"><bdi>${escapeHtml(tag)}</bdi></span>` : ''}
+        <span class="row-bottom"><span class="row-preview">${outTick}<bdi>${escapeHtml(preview)}</bdi></span><span class="row-badge">${badge}</span></span>
+      </span>
+      ${toggle}
+      <span class="row-swipe" aria-hidden="true">${isWaiting ? ICO_DONE : ICO_FLAG}<span>${isWaiting ? 'Done' : 'Needs reply'}</span></span>
+    </button>`;
+}
+
 let _lastConvSig = '';
 function renderConversations(forceRender = false) {
-  const q = state.filter.trim().toLowerCase();
-  const onlyUnread = state.listFilter === 'unread';
-  let list = state.conversations;
+  const q = state.filter.trim();
+  const list = state.conversations;
+  const hits = q ? state.list.hits || [] : [];
   updateTabBadge();
-  // Filter first, then search WITHIN the active filter.
-  if (onlyUnread) list = list.filter((c) => c.unread_count > 0);
-  if (q) {
-    list = list.filter((c) => matchesQuery(c, state.filter));
-  }
 
-  // Skip the DOM rebuild if nothing the list shows has changed — avoids
-  // flicker, lost hover, and wasted work on every 4s poll. The active filter +
-  // search term are part of the signature so a row correctly appears/disappears
-  // as its unread state changes.
-  const sig = state.activeWaId + '|' + state.listFilter + '|' + q + '|' + list.map((c) =>
-    `${c.wa_id}:${c.last_message_at}:${c.unread_count}:${c.last_message_text}:${displayName(c)}:${memberTag(c.member)}:${c.last_message_direction || ''}`
-  ).join(';');
+  // Skip the DOM rebuild if nothing the list shows has changed: no flicker,
+  // no lost hover, no wasted work on every poll.
+  const sig = [state.activeWaId, state.view, q, state.list.next, state.teamwork].join('|') + '|' + list.map((c) =>
+    `${c.wa_id}:${c.last_message_at}:${c.unread_count}:${c.last_message_text}:${displayName(c)}:${memberTag(c.member)}:${c.last_message_direction || ''}:${waiting(c) ? 1 : 0}:${newHere(c) ? 1 : 0}:${(c.member || {}).image || ''}`
+  ).join(';') + '|' + hits.map((h) => `${h.wa_id}:${h.hit.message_id}`).join(';');
   if (!forceRender && sig === _lastConvSig) return;
   _lastConvSig = sig;
 
-  if (!list.length) {
+  if (!list.length && !hits.length) {
     els.convList.innerHTML = '';
     els.convEmpty.hidden = false;
-    if (onlyUnread && !q) {
-      els.convEmpty.querySelector('p').textContent = 'No unread chats';
-      els.convEmpty.querySelector('span').textContent = 'You’re all caught up.';
-    } else if (q) {
-      els.convEmpty.querySelector('p').textContent = 'No matches';
-      els.convEmpty.querySelector('span').textContent = 'Try a different name or number.';
-    }
+    const [title, sub] = q ? ['No matches', 'Try another name, number or word.']
+      : state.view === 'needs_reply' ? ['Nobody is waiting', 'Every chat has been answered or marked done.']
+      : state.view === 'templates' ? ['Nothing here', 'Chats that hold only templates we sent show here.']
+      : ['No conversations yet.', 'Incoming WhatsApp messages will appear here.'];
+    els.convEmpty.querySelector('p').textContent = title;
+    els.convEmpty.querySelector('span').textContent = sub;
     return;
   }
   els.convEmpty.hidden = true;
 
-  els.convList.innerHTML = list.map((c) => {
-    const name = escapeHtml(displayName(c));
-    const tag = memberTag(c.member);
-    const coTag = tag ? `<span class="row-co" title="${escapeHtml(memberLabel(c.member))}">${escapeHtml(tag)}</span>` : '';
-    const active = c.wa_id === state.activeWaId ? ' active' : '';
-    const hasUnread = c.unread_count > 0;
-    const unread = hasUnread ? ' has-unread' : '';
-    const badge = c.unread_count > 99 ? '99+' : c.unread_count;
-    const outTick =
-      c.last_message_direction === 'out'
-        ? '<span class="tick">✓</span> '
-        : '';
-    // Per-row read/unread control: a hovered chat with unread can be cleared;
-    // a read chat can be re-flagged unread.
-    const toggleTitle = hasUnread ? 'Mark as read' : 'Mark as unread';
-    const toggleIco = hasUnread
-      ? '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>'
-      : '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3" fill="currentColor" stroke="none"/></svg>';
-    return `
-      <button class="conv-row${active}${unread}" role="listitem" data-wa="${escapeHtml(c.wa_id)}">
-        <span class="avatar">${escapeHtml(initials(knownName(c), c.wa_id))}</span>
-        <span class="row-name"><span class="row-name-text"><bdi>${name}</bdi></span>${coTag}</span>
-        <span class="row-time">${escapeHtml(fmtListTime(c.last_message_at))}</span>
-        <span class="row-preview">${outTick}<bdi>${escapeHtml(WaTpl.previewText(c.last_message_text, state.templates))}</bdi></span>
-        <span class="row-badge">${badge}</span>
-        <span class="row-readtoggle" role="button" tabindex="0" data-read="${hasUnread ? 'read' : 'unread'}" title="${toggleTitle}" aria-label="${toggleTitle}">${toggleIco}</span>
-      </button>`;
-  }).join('');
+  const keepScroll = els.convList.scrollTop;
+  let html = list.map((c) => rowHtml(c)).join('');
+  if (hits.length) {
+    html += `<div class="list-section">In messages</div>${hits.map((h) => rowHtml(h, h.hit)).join('')}`;
+  }
+  if (state.list.next != null) html += '<div class="list-more" id="list-more">Loading more…</div>';
+  els.convList.innerHTML = html;
+  els.convList.scrollTop = keepScroll;
 }
 
+els.convList.addEventListener('scroll', () => {
+  const el = els.convList;
+  if (el.scrollHeight - el.scrollTop - el.clientHeight < 600) loadMoreConversations();
+}, { passive: true });
+
 els.convList.addEventListener('click', (e) => {
+  if (rowSwipe.justSwiped) { e.preventDefault(); return; }
   const toggle = e.target.closest('.row-readtoggle');
   if (toggle) {
     e.stopPropagation();
@@ -521,7 +677,7 @@ els.convList.addEventListener('click', (e) => {
   }
   const row = e.target.closest('.conv-row');
   if (!row) return;
-  openConversation(row.dataset.wa);
+  openConversation(row.dataset.wa, row.dataset.hit ? Number(row.dataset.hit) : null);
 });
 
 // Keyboard activation for the read/unread toggle (it's a role="button" span so
@@ -536,41 +692,92 @@ els.convList.addEventListener('keydown', (e) => {
   if (row) setConversationRead(row.dataset.wa, toggle.dataset.read === 'read');
 });
 
+// The search runs on the server, over every chat and the text of messages,
+// a moment after the typing stops.
+let searchTimer = null;
 els.search.addEventListener('input', () => {
   state.filter = els.search.value;
-  renderConversations();
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    state.conversations = state.conversations.slice(0, LIST_PAGE);
+    els.convList.scrollTop = 0;
+    refreshConversations();
+  }, 250);
 });
 
-// Filter chips (All / Unread) — compose with the search term.
+// Views: Chats / Needs reply / Templates. A search looks through all of them.
 document.querySelectorAll('.list-filters .filter-chip').forEach((chip) => {
   chip.addEventListener('click', () => {
-    state.listFilter = chip.dataset.filter;
-    document.querySelectorAll('.list-filters .filter-chip').forEach((c) => {
-      const on = c === chip;
-      c.classList.toggle('active', on);
-      c.setAttribute('aria-selected', on ? 'true' : 'false');
-    });
-    renderConversations();
+    if (state.view === chip.dataset.view) return;
+    state.view = chip.dataset.view;
+    state.conversations = [];
+    els.convList.innerHTML = '';
+    els.convList.scrollTop = 0;
+    els.convLoading.hidden = false;
+    els.convEmpty.hidden = true;
+    renderViews();
+    refreshConversations();
   });
 });
 
-// Manual read/unread flag (dashboard-local; does NOT touch WhatsApp blue ticks).
-// Optimistic: flip the local count, re-render, then persist; the list poll keeps
-// it in sync afterwards. Marking unread sets the count to 1 so the badge shows.
+// The inbox's own flag, shared by every agent. Done: the count clears and the
+// chat leaves "Needs reply" until the member writes again. It never touches
+// WhatsApp's blue ticks. Optimistic, then the list poll keeps it in step.
 async function setConversationRead(waId, read) {
-  const conv = state.conversations.find((c) => c.wa_id === waId);
+  const conv = convOf(waId);
   if (conv) {
     conv.unread_count = read ? 0 : 1;
+    conv.needs_reply = !read;
+    if (read) markSeenHere(conv);
+    else delete seenHere[waId];
     renderConversations();
   }
   const { ok, status, data } = await api(`/api/conversations/${encodeURIComponent(waId)}/read`, {
     method: 'POST', body: JSON.stringify({ read }),
   });
   if (status === 401) return handleAuthLost();
-  if (!ok) {
-    toast((data && data.error) || 'Could not update the chat.', true);
-    refreshConversations(); // resync from the server
+  if (!ok) toast((data && data.error) || 'Could not update the chat.', true);
+  refreshConversations(); // the counts on the views, and the view itself
+}
+
+// Swipe a chat to the left to mark it done, or to flag it as needing a reply.
+const rowSwipe = { row: null, x0: 0, y0: 0, dx: 0, on: false, justSwiped: false };
+const SWIPE_ROW_AT = 84;
+els.convList.addEventListener('touchstart', (e) => {
+  const row = e.target.closest('.conv-row');
+  if (!row || e.touches.length !== 1 || row.dataset.hit) return;
+  Object.assign(rowSwipe, { row, x0: e.touches[0].clientX, y0: e.touches[0].clientY, dx: 0, on: false });
+}, { passive: true });
+els.convList.addEventListener('touchmove', (e) => {
+  const s = rowSwipe;
+  if (!s.row) return;
+  const dx = e.touches[0].clientX - s.x0;
+  const dy = e.touches[0].clientY - s.y0;
+  if (!s.on) {
+    if (Math.abs(dy) > 10 && Math.abs(dy) > Math.abs(dx)) { s.row = null; return; } // scrolling the list
+    if (dx > -12) return;
+    s.on = true;
+    s.row.classList.add('swiping');
   }
+  s.dx = Math.max(-140, Math.min(0, dx));
+  s.row.style.setProperty('--swipe', `${s.dx}px`);
+  s.row.classList.toggle('swipe-armed', s.dx <= -SWIPE_ROW_AT);
+}, { passive: true });
+for (const type of ['touchend', 'touchcancel']) {
+  els.convList.addEventListener(type, () => {
+    const s = rowSwipe;
+    if (!s.row) return;
+    const { row } = s;
+    const fire = type === 'touchend' && s.on && s.dx <= -SWIPE_ROW_AT;
+    row.classList.remove('swiping', 'swipe-armed');
+    row.style.removeProperty('--swipe');
+    if (s.on) { s.justSwiped = true; setTimeout(() => { s.justSwiped = false; }, 350); }
+    s.row = null;
+    if (fire) {
+      const toggle = row.querySelector('.row-readtoggle');
+      setConversationRead(row.dataset.wa, toggle ? toggle.dataset.read === 'read' : true);
+    }
+  }, { passive: true });
 }
 
 /* --------------------------- open a thread --------------------------- */
@@ -580,23 +787,29 @@ async function setConversationRead(waId, read) {
 function renderThreadHeader() {
   const waId = state.activeWaId;
   if (!waId) return;
-  const conv = state.conversations.find((c) => c.wa_id === waId) || { wa_id: waId };
+  const conv = convOf(waId) || { wa_id: waId };
   const name = knownName(conv);
   const waName = (conv.profile_name || '').trim();
   els.threadName.textContent = name || formatPhone(waId);
   els.threadSub.textContent = name
     ? [formatPhone(waId), waName && waName !== name ? `WhatsApp: ${waName}` : ''].filter(Boolean).join(' · ')
     : 'WhatsApp';
-  els.threadAvatar.textContent = initials(name, waId);
+  const avatar = avatarParts(conv);
+  if (els.threadAvatar.dataset.sig !== avatar.inner) {
+    els.threadAvatar.dataset.sig = avatar.inner;
+    els.threadAvatar.innerHTML = avatar.inner;
+    els.threadAvatar.classList.toggle('has-photo', avatar.photo);
+  }
   const label = conv.member ? memberLabel(conv.member) : 'Not on a roster';
   els.threadMember.hidden = !state.membersAvailable || !label;
   els.threadMember.textContent = label;
   els.threadMember.classList.toggle('none', !conv.member);
+  els.doneBtn.hidden = !(state.teamwork && waiting(conv));
 }
 
-async function openConversation(waId) {
+async function openConversation(waId, jumpTo = null) {
   if (!waId) return;
-  const conv = state.conversations.find((c) => c.wa_id === waId);
+  const conv = convOf(waId);
 
   // Preserve the previous chat's unsent text as a per-chat draft before switching.
   saveDraft();
@@ -620,6 +833,8 @@ async function openConversation(waId) {
   clearPendingFile();
   els.composerInput.value = state.drafts[waId] || '';
   autoGrow();
+  closeReplyPicker();
+  renderWindow();
   refreshSendEnabled();
 
   // Render whatever we already have cached (instant — no flash, no reload),
@@ -633,16 +848,29 @@ async function openConversation(waId) {
   if (state.rec) setRecPausedUI(state.rec.paused);
 
   await loadThread(true);
+  if (state.activeWaId !== waId) return;
   els.threadLoading.hidden = true;
   startThreadPolling();
-  els.composerInput.focus();
-  // Place the caret at the END of a restored draft (focus alone leaves it at 0).
-  const end = els.composerInput.value.length;
-  els.composerInput.setSelectionRange(end, end);
+  // On a phone the keyboard would cover half the chat the agent came to read.
+  if (!phoneLayout.matches) {
+    els.composerInput.focus();
+    // Place the caret at the END of a restored draft (focus alone leaves it at 0).
+    const end = els.composerInput.value.length;
+    els.composerInput.setSelectionRange(end, end);
+  }
+  if (jumpTo != null) {
+    if (thread(waId).byId.has(jumpTo)) jumpToMessage(jumpTo);
+    else toast('That message is older than what this chat shows.');
+  }
 
-  // Always mark read on open (reset badge + blue ticks), regardless of the
-  // client-side unread count — polling may already have zeroed it locally.
-  if (conv) { conv.unread_count = 0; renderConversations(); }
+  // Opening sends the blue ticks. With teamwork on, the chat keeps its count
+  // for the other agents until someone replies or marks it done; this device
+  // just remembers it has been seen here.
+  if (conv) {
+    if (state.teamwork) markSeenHere(conv);
+    else conv.unread_count = 0;
+    renderConversations();
+  }
   api('/api/mark-read', { method: 'POST', body: JSON.stringify({ wa_id: waId }) }).catch(() => {});
 }
 
@@ -663,7 +891,9 @@ async function loadThread(initial = false) {
     return;
   }
   t.loaded = true;
+  if (data.last_inbound_at !== undefined) t.lastInboundAt = data.last_inbound_at;
   const changed = mergeMessages(t, data.messages || []);
+  renderWindow();
   if (changed || initial) {
     const atBottom = pin.stick || isNearBottom();
     renderMessages();
@@ -734,7 +964,7 @@ function renderMessages(force = false) {
 function bubbleSig(m, continued) {
   const quoted = quotedMessage(m);
   const meta = m.media_meta || {};
-  return [m.id, m.status, m.error || '', m.reaction, m.media_status, m.forwarded ? 1 : 0, m._optimistic ? 1 : 0, continued ? 1 : 0, m.body, replyToOf(m) || '', quoted ? quoted.id : '', state.templates.length, meta.sent_as_audio ? 1 : 0, meta.voice ? 1 : 0].join('|');
+  return [m.id, m.status, m.error || '', m.reaction, m.media_status, m.forwarded ? 1 : 0, m._optimistic ? 1 : 0, continued ? 1 : 0, m.body, replyToOf(m) || '', quoted ? quoted.id : '', state.templates.length, meta.sent_as_audio ? 1 : 0, meta.voice ? 1 : 0, m.agent || ''].join('|');
 }
 
 function replyToOf(m) {
@@ -754,7 +984,7 @@ function quotedMessage(m) {
 function senderName(m) {
   if (m.direction === 'out') return 'You';
   const waId = m.wa_id || state.activeWaId;
-  const conv = state.conversations.find((c) => c.wa_id === waId);
+  const conv = convOf(waId);
   return conv ? displayName(conv) : formatPhone(waId);
 }
 
@@ -887,15 +1117,16 @@ function renderBubble(m, continued) {
       inner += `<span class="media-label">${label}${note}</span>`;
     }
 
-    if (meta.caption) inner += `<span class="caption">${escapeHtml(meta.caption)}</span>`;
+    if (meta.caption) inner += `<span class="caption">${linkify(escapeHtml(meta.caption))}</span>`;
   } else {
     const sentTpl = WaTpl.render(WaTpl.sentTemplate(m), state.templates);
     if (m.media_meta && m.media_meta.tapped) inner += '<span class="tapped-tag">Tapped a button</span>';
-    inner += sentTpl ? templateHtml(sentTpl) : escapeHtml(m.body || '');
+    inner += sentTpl ? templateHtml(sentTpl) : linkify(escapeHtml(m.body || ''));
   }
 
   const metaClass = div.classList.contains('has-media') ? 'meta meta-block' : 'meta';
-  let metaHtml = `<span class="${metaClass}">${escapeHtml(fmtTime(iso))}`;
+  const by = dir === 'out' && m.agent ? `<span class="meta-agent"><bdi>${escapeHtml(m.agent)}</bdi></span>` : '';
+  let metaHtml = `<span class="${metaClass}">${by}${escapeHtml(fmtTime(iso))}`;
   if (dir === 'out') metaHtml += ' ' + tickGlyph(m._optimistic ? 'pending' : m.status);
   metaHtml += '</span>';
 
@@ -961,6 +1192,7 @@ function renderBubble(m, continued) {
       actions.appendChild(actionButton('Reply', '<polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/>', () => startReply(m)));
     }
     actions.appendChild(actionButton('Forward', '<polyline points="15 17 20 12 15 7"/><path d="M4 18v-2a4 4 0 0 1 4-4h12"/>', () => openForwardModal(m)));
+    actions.appendChild(actionButton('More for this', '<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>', () => openSheet(m)));
     div.appendChild(actions);
   }
   return div;
@@ -1001,6 +1233,17 @@ function failureWords(m) {
     ? `${hit[1]} Send it as an audio file instead, or type the message.`
     : hit[1];
   return { text, said: raw === text ? '' : raw };
+}
+
+// Web addresses in a message open in a new tab. Works on text that is
+// already escaped, so nothing a member types can become markup.
+function linkify(escaped) {
+  return escaped.replace(/\bhttps?:\/\/[^\s<]+/g, (url) => {
+    const m = /(?:&quot;|&#39;|&gt;|[.,;:!?)\]])+$/.exec(url);
+    const tail = m ? m[0] : '';
+    const href = tail ? url.slice(0, -tail.length) : url;
+    return `<a class="msg-link" href="${href}" target="_blank" rel="noopener noreferrer">${href}</a>${tail}`;
+  });
 }
 
 function actionButton(label, paths, onClick) {
@@ -1192,13 +1435,16 @@ function clearBanner() {
 }
 
 function refreshSendEnabled() {
-  els.sendBtn.disabled = state.sending || (!els.composerInput.value.trim() && !state.pendingFile);
+  const something = Boolean(els.composerInput.value.trim() || state.pendingFile);
+  els.sendBtn.disabled = state.sending || !something;
+  // On a phone the microphone and the send button share one place.
+  els.composerForm.classList.toggle('has-text', something);
 }
 
 function resetComposer() {
   clearPendingFile();
   els.composerInput.value = '';
-  if (state.activeWaId) delete state.drafts[state.activeWaId]; // content was sent
+  if (state.activeWaId) { delete state.drafts[state.activeWaId]; storeDrafts(); } // content was sent
   autoGrow();
   refreshSendEnabled();
 }
@@ -1210,15 +1456,30 @@ function saveDraft() {
   const text = els.composerInput.value;
   if (text && text.trim()) state.drafts[state.activeWaId] = text;
   else delete state.drafts[state.activeWaId];
+  storeDrafts();
 }
+
+// Kept on this device, so a reload or a closed tab does not lose a half
+// written answer.
+const DRAFTS_KEY = 'wa_drafts';
+let draftsTimer = null;
+function storeDrafts() {
+  clearTimeout(draftsTimer);
+  draftsTimer = setTimeout(() => {
+    try { localStorage.setItem(DRAFTS_KEY, JSON.stringify(state.drafts)); } catch (_) {}
+  }, 300);
+}
+try { Object.assign(state.drafts, JSON.parse(localStorage.getItem(DRAFTS_KEY)) || {}); } catch (_) {}
 
 els.composerInput.addEventListener('input', () => {
   autoGrow();
   refreshSendEnabled();
   saveDraft(); // keep the per-chat draft current as the user types
+  slashPicker();
 });
 
 els.composerInput.addEventListener('keydown', (e) => {
+  if (replyPickerKey(e)) return;
   if (e.key === 'Escape' && state.replyTo) {
     e.preventDefault();
     clearReply();
@@ -1529,7 +1790,7 @@ function recElapsedMs(rec) {
 function recHintText(paused) {
   const rec = state.rec;
   if (rec && rec.waId !== state.activeWaId) {
-    const conv = state.conversations.find((c) => c.wa_id === rec.waId) || { wa_id: rec.waId };
+    const conv = convOf(rec.waId) || { wa_id: rec.waId };
     return `${paused ? 'Paused' : 'Recording'} for ${displayName(conv)}. Send or cancel it first.`;
   }
   return paused ? 'Paused. Tap ▶ to resume' : 'Recording… tap send to finish';
@@ -1607,7 +1868,7 @@ function finishRecording(rec) {
     // Voice notes send immediately on stop (WhatsApp-style), with no staging preview.
     sendFile(rec.waId, { name: `voice-note.${ext}`, mime: bareMime, size: blob.size, base64, dataUrl, voice: true });
     if (rec.waId !== state.activeWaId) {
-      const conv = state.conversations.find((c) => c.wa_id === rec.waId) || { wa_id: rec.waId };
+      const conv = convOf(rec.waId) || { wa_id: rec.waId };
       toast(`Sending the voice note to ${displayName(conv)}.`);
     }
   };
@@ -1628,6 +1889,7 @@ function addOptimistic(waId, fields) {
     wa_id: waId,
     direction: 'out',
     status: 'pending',
+    agent: state.agentNames && agentName ? agentName : undefined,
     created_at: new Date().toISOString(),
     wa_timestamp: new Date().toISOString(),
     ...fields,
@@ -1673,9 +1935,10 @@ els.composerForm.addEventListener('submit', async (e) => {
   const opt = addOptimistic(waId, { type: 'text', body: text, media_meta: replyTo ? { reply_to: replyTo } : null });
   els.composerInput.value = '';
   delete state.drafts[waId]; // sent → no lingering draft
+  storeDrafts();
   autoGrow();
   state.sending = true;
-  els.sendBtn.disabled = true;
+  refreshSendEnabled();
   clearBanner();
 
   const sendKey = newSendKey();
@@ -1686,7 +1949,7 @@ els.composerForm.addEventListener('submit', async (e) => {
   });
 
   state.sending = false;
-  els.sendBtn.disabled = !els.composerInput.value.trim();
+  refreshSendEnabled();
   if (status === 401) return handleAuthLost();
 
   if (ok && data.message) {
@@ -1708,11 +1971,12 @@ els.composerForm.addEventListener('submit', async (e) => {
 });
 
 function bumpConversationPreview(waId, text, direction) {
-  const conv = state.conversations.find((c) => c.wa_id === waId);
+  const conv = convOf(waId);
   if (conv) {
     conv.last_message_text = text;
     conv.last_message_at = new Date().toISOString();
     conv.last_message_direction = direction || 'out';
+    if (state.teamwork && conv.last_message_direction === 'out') { conv.unread_count = 0; conv.needs_reply = false; }
     // re-sort: most recent first
     state.conversations.sort((a, b) =>
       new Date(b.last_message_at || 0) - new Date(a.last_message_at || 0)
@@ -1944,8 +2208,14 @@ function inboxInFront() {
   return !document.hidden && document.hasFocus();
 }
 
+// With teamwork on, a chat keeps its count until it is answered, so the tab
+// counts the chats with something this device has not seen yet. Without it,
+// the tab counts unread messages as it always did.
 function updateTabBadge() {
+  const counted = (state.list.counts || {}).unread;
   const total = els.app.hidden ? 0
+    : state.teamwork ? new Set(state.recent.concat(state.conversations).filter(newHere).map((c) => c.wa_id)).size
+    : counted != null ? counted
     : state.conversations.reduce((n, c) => n + (c.unread_count || 0), 0);
   const title = total ? `(${total > 99 ? '99+' : total}) ${BASE_TITLE}` : BASE_TITLE;
   if (document.title !== title) document.title = title;
@@ -1957,18 +2227,26 @@ function updateTabBadge() {
 }
 
 function noteIncoming(conversations) {
+  // A chat counts as fresh when its last message changed since the last look,
+  // or when it is one this tab has never seen and newer than everything it had.
   const prev = alerts.seen;
-  alerts.seen = new Map(conversations.map((c) => [c.wa_id, c.last_message_at]));
+  const newestBefore = alerts.newest || '';
+  alerts.seen = new Map(prev || []);
+  for (const c of conversations) {
+    alerts.seen.set(c.wa_id, c.last_message_at);
+    if (c.last_message_at && c.last_message_at > (alerts.newest || '')) alerts.newest = c.last_message_at;
+  }
   if (!prev) return;
-  const fresh = conversations.filter((c) => c.last_message_direction === 'in'
-    && c.last_message_at && c.last_message_at !== prev.get(c.wa_id));
+  const fresh = conversations.filter((c) => c.last_message_direction === 'in' && c.last_message_at
+    && (prev.has(c.wa_id) ? c.last_message_at !== prev.get(c.wa_id) : c.last_message_at > newestBefore));
   if (!fresh.length) return;
 
   const front = inboxInFront();
   const others = [];
   for (const c of fresh) {
     if (c.wa_id === state.activeWaId && front) {
-      c.unread_count = 0;
+      if (state.teamwork) markSeenHere(c);
+      else c.unread_count = 0;
       api('/api/mark-read', { method: 'POST', body: JSON.stringify({ wa_id: c.wa_id }) }).catch(() => {});
     } else {
       if (c.wa_id === state.activeWaId) alerts.missedActive = true;
@@ -1983,8 +2261,12 @@ function noteIncoming(conversations) {
 function readActiveIfMissed() {
   if (!alerts.missedActive || !state.activeWaId || !inboxInFront()) return;
   alerts.missedActive = false;
-  const conv = state.conversations.find((c) => c.wa_id === state.activeWaId);
-  if (conv) { conv.unread_count = 0; renderConversations(); }
+  const conv = convOf(state.activeWaId);
+  if (conv) {
+    if (state.teamwork) markSeenHere(conv);
+    else conv.unread_count = 0;
+    renderConversations();
+  }
   api('/api/mark-read', { method: 'POST', body: JSON.stringify({ wa_id: state.activeWaId }) }).catch(() => {});
 }
 
@@ -2192,8 +2474,8 @@ els.notifyBtn.addEventListener('click', async () => {
 // A tapped notification opens its chat: by message when the inbox is already
 // open, by #chat= in the address when it had to be opened.
 async function openChatIfKnown(waId) {
-  if (!state.conversations.some((c) => c.wa_id === waId)) await refreshConversations();
-  if (state.conversations.some((c) => c.wa_id === waId)) openConversation(waId);
+  if (!convOf(waId)) await refreshConversations();
+  if (convOf(waId)) openConversation(waId);
 }
 
 function openChatFromLink() {
@@ -2232,7 +2514,7 @@ function closeNewChatModal() { els.newChatModal.hidden = true; }
 // Shows which number the typed text becomes, and whether that chat exists.
 function renderNewChatHint() {
   const id = toWaId(els.newChatNumber.value);
-  const known = id && state.conversations.find((c) => c.wa_id === id);
+  const known = id && convOf(id);
   els.newChatHint.textContent = !id ? ''
     : known ? `Opens your chat with ${displayName(known)} (${formatPhone(id)})`
     : `Opens ${formatPhone(id)}`;
@@ -2268,15 +2550,18 @@ els.newChatForm.addEventListener('submit', async (e) => {
   closeNewChatModal();
   // make sure it's in our list, then open it
   await refreshConversations();
-  if (!state.conversations.find((c) => c.wa_id === data.wa_id)) {
-    state.conversations.unshift({
+  if (!convOf(data.wa_id)) {
+    const row = {
       wa_id: data.wa_id,
       display_name: data.display_name || null,
       profile_name: null,
       member: null,
       last_message_text: '', last_message_at: new Date().toISOString(),
       last_message_direction: 'out', unread_count: 0,
-    });
+    };
+    state.conversations.unshift(row);
+    remember([row]);
+    renderConversations(true);
   }
   openConversation(data.wa_id);
   if (name && !data.display_name) toast('Chat opened, but the name was not saved.', true);
@@ -2292,7 +2577,7 @@ document.addEventListener('keydown', (e) => {
 function openRenameModal() {
   const waId = state.activeWaId;
   if (!waId) return;
-  const conv = state.conversations.find((c) => c.wa_id === waId) || {};
+  const conv = convOf(waId) || {};
   state.renameWaId = waId;
   els.renameError.hidden = true;
   els.renameInput.value = conv.display_name || '';
@@ -2331,7 +2616,7 @@ els.renameForm.addEventListener('submit', async (e) => {
     els.renameError.hidden = false;
     return;
   }
-  const conv = state.conversations.find((c) => c.wa_id === waId);
+  const conv = convOf(waId);
   if (conv) conv.display_name = data.display_name || null;
   closeRenameModal();
   renderConversations(true);
@@ -2359,6 +2644,7 @@ function openForwardModal(m) {
   els.forwardSearch.value = '';
   els.forwardModal.hidden = false;
   renderForwardList();
+  loadForwardRows();
   updateForwardSubmit();
   setTimeout(() => els.forwardSearch.focus(), 50);
 }
@@ -2372,20 +2658,32 @@ function renderForwardList() {
   if (!f) return;
   // All existing conversations except the source chat (forwarding to itself is
   // pointless). New numbers are handled by the existing New-conversation flow.
-  let list = state.conversations.filter((c) => c.wa_id !== f.srcWaId);
-  if ((f.search || '').trim()) {
-    list = list.filter((c) => matchesQuery(c, f.search));
-  }
+  const list = (f.rows || state.conversations).filter((c) => c.wa_id !== f.srcWaId);
   els.forwardEmpty.hidden = list.length > 0;
   els.forwardList.innerHTML = list.map((c) => {
     const sel = f.selected.has(c.wa_id) ? ' selected' : '';
+    const sub = [knownName(c) ? formatPhone(c.wa_id) : '', memberTag(c.member)].filter(Boolean).join(' · ');
     return `
       <button type="button" class="forward-opt${sel}" data-wa="${escapeHtml(c.wa_id)}">
-        <span class="avatar">${escapeHtml(initials(knownName(c), c.wa_id))}</span>
-        <span class="fo-name">${escapeHtml(displayName(c))}</span>
+        ${avatarHtml(c)}
+        <span class="fo-who"><span class="fo-name"><bdi>${escapeHtml(displayName(c))}</bdi></span>${sub ? `<span class="fo-sub">${escapeHtml(sub)}</span>` : ''}</span>
         <span class="fo-check">${f.selected.has(c.wa_id) ? '✓' : ''}</span>
       </button>`;
   }).join('');
+}
+
+// The picker searches the server too, so a chat far down the list is found.
+let forwardTimer = null;
+async function loadForwardRows() {
+  const f = state.forward;
+  if (!f) return;
+  const params = new URLSearchParams({ view: 'chats', limit: '80' });
+  if ((f.search || '').trim()) params.set('q', f.search.trim());
+  const { ok, data } = await api(`/api/conversations?${params}`);
+  if (!ok || state.forward !== f) return;
+  f.rows = data.conversations || [];
+  remember(f.rows);
+  renderForwardList();
 }
 
 function updateForwardSubmit() {
@@ -2408,7 +2706,8 @@ els.forwardList.addEventListener('click', (e) => {
 els.forwardSearch.addEventListener('input', () => {
   if (!state.forward) return;
   state.forward.search = els.forwardSearch.value;
-  renderForwardList();
+  clearTimeout(forwardTimer);
+  forwardTimer = setTimeout(loadForwardRows, 250);
 });
 
 els.forwardCancel.addEventListener('click', closeForwardModal);
@@ -2490,7 +2789,7 @@ function saveProgram(v) { try { localStorage.setItem(PROGRAM_KEY, v); } catch (_
 
 function openFollowupModal() {
   if (!state.activeWaId) return;
-  const conv = state.conversations.find((c) => c.wa_id === state.activeWaId);
+  const conv = convOf(state.activeWaId);
   const first = (conv ? knownName(conv) : '').split(/\s+/)[0] || '';
   els.followupName.value = first;
   els.followupProgram.value = (conv && conv.member && conv.member.company) || loadProgram();
@@ -2636,7 +2935,7 @@ function showViewerItem(index) {
   const m = items[index];
   const src = mediaSrc(m);
   const meta = m.media_meta || {};
-  const conv = state.conversations.find((c) => c.wa_id === state.activeWaId) || { wa_id: state.activeWaId };
+  const conv = convOf(state.activeWaId) || { wa_id: state.activeWaId };
   const iso = m.wa_timestamp || m.created_at;
   const d = iso ? new Date(iso) : null;
 
@@ -2723,3 +3022,444 @@ document.addEventListener('keydown', (e) => {
   else if (e.key === 'ArrowLeft') showViewerItem(viewer.index - 1);
   else if (e.key === 'ArrowRight') showViewerItem(viewer.index + 1);
 });
+
+/* ----------------------- who is using this device ----------------------- */
+
+function renderAgent() {
+  els.agentBtn.hidden = !state.agentNames;
+  els.agentInitials.textContent = agentName ? initials(agentName, '') : '?';
+  els.agentBtn.title = agentName ? `You are ${agentName} on this device` : 'Tell the team who you are';
+}
+
+// Asked once per device, the first time the server says it keeps names.
+let agentAsked = false;
+function askAgentName(force = false) {
+  renderAgent();
+  if (!state.agentNames || (agentName && !force)) return;
+  if (!force) {
+    if (agentAsked) return;
+    agentAsked = true;
+  }
+  els.agentInput.value = agentName;
+  els.agentModal.hidden = false;
+  setTimeout(() => els.agentInput.focus(), 50);
+}
+function closeAgentModal() { els.agentModal.hidden = true; }
+
+els.agentBtn.addEventListener('click', () => askAgentName(true));
+els.agentCancel.addEventListener('click', closeAgentModal);
+els.agentModal.addEventListener('click', (e) => { if (e.target === els.agentModal) closeAgentModal(); });
+els.agentForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  agentName = els.agentInput.value.replace(/\s+/g, ' ').trim().slice(0, 40);
+  try { localStorage.setItem(AGENT_KEY, agentName); } catch (_) {}
+  closeAgentModal();
+  renderAgent();
+});
+
+/* ----------------------- the 24-hour window ----------------------- */
+
+// WhatsApp lets a free message through only within 24 hours of the member's
+// last one. The chat says where it stands before anything is sent. The
+// composer stays usable: this is read from our own copy of the chat, and a
+// wrong guess must not stop an agent from answering.
+const WINDOW_MS = 24 * 60 * 60 * 1000;
+const WINDOW_SOON_MS = 2 * 60 * 60 * 1000;
+
+function windowState(waId) {
+  const t = thread(waId);
+  if (!t.loaded) return null;
+  let last = t.lastInboundAt ? Date.parse(t.lastInboundAt) : 0;
+  for (const m of t.byId.values()) {
+    if (m.direction === 'in') last = Math.max(last, Date.parse(m.wa_timestamp || m.created_at) || 0);
+  }
+  if (!last) return { open: false, never: true };
+  const left = last + WINDOW_MS - Date.now();
+  return { open: left > 0, left, until: last + WINDOW_MS };
+}
+
+function windowWords(w) {
+  if (!w) return '';
+  if (w.never) return 'They have not written to this number yet. WhatsApp only lets a follow-up template through.';
+  if (!w.open) return 'More than 24 hours since their last message. WhatsApp only lets a follow-up template through now.';
+  if (w.left > WINDOW_SOON_MS) return '';
+  const mins = Math.max(1, Math.round(w.left / 60000));
+  const left = mins >= 60 ? `${Math.floor(mins / 60)} h ${mins % 60} min` : `${mins} min`;
+  return `You can write freely until ${fmtTime(new Date(w.until).toISOString())} (${left} left). After that only a template goes through.`;
+}
+
+function renderWindow() {
+  if (!state.activeWaId) return;
+  const w = windowState(state.activeWaId);
+  const words = windowWords(w);
+  els.windowBar.hidden = !words;
+  els.windowText.textContent = words;
+  els.windowBar.classList.toggle('is-closed', Boolean(w && !w.open));
+  els.windowAction.hidden = !(w && !w.open);
+}
+els.windowAction.addEventListener('click', () => openFollowupModal());
+setInterval(() => { if (!els.thread.hidden) renderWindow(); }, 60000);
+
+els.doneBtn.addEventListener('click', () => {
+  if (!state.activeWaId) return;
+  setConversationRead(state.activeWaId, true);
+  els.doneBtn.hidden = true;
+  toast('Marked done. It comes back when they write again.');
+});
+
+/* ----------------------- saved replies ----------------------- */
+
+const picker = { open: false, slash: false, index: 0, shown: [] };
+const repliesEdit = { id: null };
+
+async function loadSavedReplies() {
+  const { ok, data } = await api('/api/saved-replies');
+  if (!ok) return;
+  state.savedRepliesOn = Boolean(data.on);
+  state.savedReplies = data.replies || [];
+  els.repliesBtn.hidden = !state.savedRepliesOn;
+  if (picker.open) renderReplyPicker();
+  if (!els.repliesModal.hidden) renderRepliesList();
+}
+
+function renderReplyPicker() {
+  const q = picker.slash ? els.composerInput.value.slice(1).trim().toLowerCase() : '';
+  picker.shown = state.savedReplies.filter((r) => !q || r.title.toLowerCase().includes(q) || r.body.toLowerCase().includes(q));
+  picker.index = Math.min(picker.index, Math.max(0, picker.shown.length - 1));
+  els.replyPickerList.innerHTML = picker.shown.length
+    ? picker.shown.map((r, i) => `
+      <button type="button" class="reply-opt${i === picker.index ? ' active' : ''}" role="option" data-i="${i}">
+        <span class="reply-opt-title"><bdi>${escapeHtml(r.title)}</bdi></span>
+        <span class="reply-opt-body"><bdi>${escapeHtml(r.body)}</bdi></span>
+      </button>`).join('')
+    : `<p class="reply-picker-empty">${state.savedReplies.length ? 'No saved reply matches.' : 'No saved replies yet.'}</p>`;
+}
+
+function openReplyPicker(slash = false) {
+  if (!state.savedRepliesOn) return;
+  picker.open = true;
+  picker.slash = slash;
+  picker.index = 0;
+  els.replyPicker.hidden = false;
+  renderReplyPicker();
+}
+function closeReplyPicker() {
+  picker.open = false;
+  els.replyPicker.hidden = true;
+}
+
+// "/" as the first thing typed opens the picker, and what follows narrows it.
+function slashPicker() {
+  const v = els.composerInput.value;
+  if (v.startsWith('/') && !v.includes('\n')) {
+    if (picker.open && picker.slash) renderReplyPicker();
+    else openReplyPicker(true);
+  } else if (picker.open && picker.slash) {
+    closeReplyPicker();
+  }
+}
+
+function useSavedReply(r) {
+  if (!r) return;
+  const input = els.composerInput;
+  if (picker.slash || !input.value.trim()) {
+    input.value = r.body;
+  } else {
+    const at = input.selectionStart ?? input.value.length;
+    input.value = `${input.value.slice(0, at)}${r.body}${input.value.slice(at)}`;
+  }
+  closeReplyPicker();
+  autoGrow();
+  refreshSendEnabled();
+  saveDraft();
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
+}
+
+// True when the picker used the key, so the composer leaves it alone.
+function replyPickerKey(e) {
+  if (!picker.open) return false;
+  if (e.key === 'Escape') { e.preventDefault(); closeReplyPicker(); return true; }
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    if (!picker.shown.length) return false;
+    e.preventDefault();
+    picker.index = (picker.index + (e.key === 'ArrowDown' ? 1 : picker.shown.length - 1)) % picker.shown.length;
+    renderReplyPicker();
+    const on = els.replyPickerList.querySelector('.reply-opt.active');
+    if (on) on.scrollIntoView({ block: 'nearest' });
+    return true;
+  }
+  if (e.key === 'Enter' && !e.shiftKey && picker.shown.length) {
+    e.preventDefault();
+    useSavedReply(picker.shown[picker.index]);
+    return true;
+  }
+  return false;
+}
+
+els.repliesBtn.addEventListener('click', () => {
+  if (picker.open) closeReplyPicker();
+  else openReplyPicker(false);
+});
+els.replyPickerList.addEventListener('click', (e) => {
+  const opt = e.target.closest('.reply-opt');
+  if (opt) useSavedReply(picker.shown[Number(opt.dataset.i)]);
+});
+els.replyPickerManage.addEventListener('click', () => { closeReplyPicker(); openRepliesModal(); });
+document.addEventListener('click', (e) => {
+  if (picker.open && !picker.slash && !e.target.closest('#reply-picker, #replies-btn')) closeReplyPicker();
+});
+
+function renderRepliesList() {
+  els.repliesList.innerHTML = state.savedReplies.length
+    ? state.savedReplies.map((r) => `
+      <button type="button" class="reply-opt${r.id === repliesEdit.id ? ' active' : ''}" data-id="${r.id}">
+        <span class="reply-opt-title"><bdi>${escapeHtml(r.title)}</bdi></span>
+        <span class="reply-opt-body"><bdi>${escapeHtml(r.body)}</bdi></span>
+      </button>`).join('')
+    : '<p class="reply-picker-empty">None yet. Add the first one below.</p>';
+}
+
+function editReply(r) {
+  repliesEdit.id = r ? r.id : null;
+  els.repliesTitle.value = r ? r.title : '';
+  els.repliesBody.value = r ? r.body : '';
+  els.repliesSave.textContent = r ? 'Save' : 'Add';
+  els.repliesDelete.hidden = !r;
+  els.repliesError.hidden = true;
+  renderRepliesList();
+}
+
+function openRepliesModal() {
+  els.repliesModal.hidden = false;
+  editReply(null);
+  loadSavedReplies();
+}
+function closeRepliesModal() { els.repliesModal.hidden = true; }
+
+els.repliesClose.addEventListener('click', closeRepliesModal);
+els.repliesModal.addEventListener('click', (e) => { if (e.target === els.repliesModal) closeRepliesModal(); });
+els.repliesList.addEventListener('click', (e) => {
+  const opt = e.target.closest('.reply-opt');
+  if (!opt) return;
+  const r = state.savedReplies.find((x) => x.id === Number(opt.dataset.id));
+  editReply(r && r.id === repliesEdit.id ? null : r);
+});
+els.repliesForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const body = JSON.stringify({ title: els.repliesTitle.value, body: els.repliesBody.value });
+  const { ok, status, data } = repliesEdit.id
+    ? await api(`/api/saved-replies/${repliesEdit.id}`, { method: 'PATCH', body })
+    : await api('/api/saved-replies', { method: 'POST', body });
+  if (status === 401) return handleAuthLost();
+  if (!ok) {
+    els.repliesError.textContent = data.error || 'Could not save it.';
+    els.repliesError.hidden = false;
+    return;
+  }
+  editReply(null);
+  await loadSavedReplies();
+});
+els.repliesDelete.addEventListener('click', async () => {
+  if (!repliesEdit.id) return;
+  const { ok, status, data } = await api(`/api/saved-replies/${repliesEdit.id}`, { method: 'DELETE' });
+  if (status === 401) return handleAuthLost();
+  if (!ok) {
+    els.repliesError.textContent = data.error || 'Could not delete it.';
+    els.repliesError.hidden = false;
+    return;
+  }
+  editReply(null);
+  await loadSavedReplies();
+});
+
+/* ----------------------- message actions ----------------------- */
+
+// One menu for everything a message can take: a long press on a phone, a
+// right click or the three dots on a computer.
+const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
+const sheet = { msg: null };
+
+function copyText(text) {
+  const done = () => toast('Copied.');
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(done, () => toast('Could not copy.', true));
+    return;
+  }
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.cssText = 'position:fixed;opacity:0';
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand('copy'); done(); } catch (_) { toast('Could not copy.', true); }
+  ta.remove();
+}
+
+function textOf(m) {
+  if (isTextLike(m)) return WaTpl.messageText(m, state.templates);
+  return (m.media_meta && m.media_meta.caption) || '';
+}
+
+function sheetActionsFor(m) {
+  const out = [];
+  const real = !m._optimistic && typeof m.id === 'number' && m.id > 0;
+  if (real && m.wa_message_id && m.status !== 'failed') out.push({ label: 'Reply', run: () => startReply(m) });
+  const text = textOf(m);
+  if (text) out.push({ label: 'Copy', run: () => copyText(text) });
+  if (real) out.push({ label: 'Forward', run: () => openForwardModal(m) });
+  if (real && isViewable(m)) out.push({ label: 'Open', run: () => openViewer(m.id) });
+  if (real && m.media_status === 'stored' && !isTextLike(m) && m.type !== 'contacts' && m.type !== 'location') {
+    out.push({ label: 'Download', run: () => { const a = document.createElement('a'); a.href = mediaSrc(m); a.download = ''; a.click(); } });
+  }
+  if (m.status === 'failed' && m.direction === 'out' && !m._optimistic) out.push({ label: 'Send again', run: () => retrySend(m) });
+  return out;
+}
+
+function openSheet(m) {
+  if (!m || !els.sheet.hidden) return;
+  const actions = sheetActionsFor(m);
+  const canReact = m.direction === 'in' && m.wa_message_id && typeof m.id === 'number';
+  if (!actions.length && !canReact) return;
+  sheet.msg = m;
+  sheet.actions = actions;
+  els.sheetReactions.hidden = !canReact;
+  els.sheetReactions.innerHTML = canReact
+    ? QUICK_REACTIONS.map((e) => `<button type="button" class="sheet-react${m.reaction === e ? ' active' : ''}" data-emoji="${e}" aria-label="React ${e}">${e}</button>`).join('')
+    : '';
+  els.sheetActions.innerHTML = actions.map((a, i) => `<button type="button" class="sheet-action" role="menuitem" data-i="${i}">${escapeHtml(a.label)}</button>`).join('');
+  els.sheet.hidden = false;
+  sheet.openedAt = performance.now();
+  if (navigator.vibrate) { try { navigator.vibrate(8); } catch (_) {} }
+}
+function closeSheet() {
+  els.sheet.hidden = true;
+  sheet.msg = null;
+}
+
+async function reactTo(m, emoji) {
+  const waId = m.wa_id || state.activeWaId;
+  const next = m.reaction === emoji ? '' : emoji;
+  const t = thread(waId);
+  const before = m.reaction || null;
+  t.byId.set(m.id, { ...t.byId.get(m.id), reaction: next || null });
+  if (waId === state.activeWaId) renderMessages();
+  const { ok, status, data } = await api('/api/react', { method: 'POST', body: JSON.stringify({ message_id: m.id, emoji: next }) });
+  if (status === 401) return handleAuthLost();
+  if (ok) return;
+  if (t.byId.has(m.id)) t.byId.set(m.id, { ...t.byId.get(m.id), reaction: before });
+  if (waId === state.activeWaId) renderMessages();
+  toast(failureWords({ error: data.error }).text || 'Could not react.', true);
+}
+
+els.sheet.addEventListener('click', (e) => {
+  const react = e.target.closest('.sheet-react');
+  const action = e.target.closest('.sheet-action');
+  const m = sheet.msg;
+  const actions = sheet.actions || [];
+  if (react && m) { closeSheet(); reactTo(m, react.dataset.emoji); return; }
+  if (action && m) { const a = actions[Number(action.dataset.i)]; closeSheet(); if (a) a.run(); return; }
+  // The finger that opened it by a long press lifts over the backdrop a moment
+  // later; that must not close it again.
+  if (e.target === els.sheet && performance.now() - sheet.openedAt > 400) closeSheet();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if (!els.sheet.hidden) closeSheet();
+  else if (!els.repliesModal.hidden) closeRepliesModal();
+  else if (!els.agentModal.hidden) closeAgentModal();
+});
+
+function messageOfBubble(node) {
+  const bubble = node && node.closest ? node.closest('.bubble') : null;
+  if (!bubble || !state.activeWaId) return null;
+  return thread(state.activeWaId).byId.get(Number(bubble.dataset.mid)) || null;
+}
+
+els.messages.addEventListener('contextmenu', (e) => {
+  const m = messageOfBubble(e.target);
+  if (!m || e.target.closest('a, audio, video')) return;
+  // Someone who selected a few words wants the browser's own menu to copy them.
+  if (String(window.getSelection ? window.getSelection() : '')) return;
+  e.preventDefault();
+  openSheet(m);
+});
+
+/* ----------------------- touch: long press and swipe to reply ----------------------- */
+
+const press = { timer: null, bubble: null, x0: 0, y0: 0, swiping: false, dx: 0, fired: false };
+const LONG_PRESS_MS = 450;
+const SWIPE_REPLY_AT = 56;
+
+function endPress() {
+  clearTimeout(press.timer);
+  if (press.bubble) {
+    press.bubble.classList.remove('swiping', 'swipe-armed');
+    press.bubble.style.removeProperty('--swipe');
+  }
+  press.bubble = null;
+  press.swiping = false;
+}
+
+els.messages.addEventListener('touchstart', (e) => {
+  endPress();
+  const bubble = e.target.closest('.bubble');
+  if (!bubble || e.touches.length !== 1 || e.target.closest('audio, .bubble-retry, a')) return;
+  Object.assign(press, { bubble, x0: e.touches[0].clientX, y0: e.touches[0].clientY, dx: 0, fired: false });
+  press.timer = setTimeout(() => {
+    if (!press.bubble || press.swiping) return;
+    press.fired = true;
+    openSheet(messageOfBubble(press.bubble));
+  }, LONG_PRESS_MS);
+}, { passive: true });
+
+els.messages.addEventListener('touchmove', (e) => {
+  if (!press.bubble) return;
+  const dx = e.touches[0].clientX - press.x0;
+  const dy = e.touches[0].clientY - press.y0;
+  if (!press.swiping) {
+    if (Math.abs(dx) > 8 || Math.abs(dy) > 8) clearTimeout(press.timer);
+    if (Math.abs(dy) > 10 && Math.abs(dy) > Math.abs(dx)) { endPress(); return; } // reading up or down
+    const m = messageOfBubble(press.bubble);
+    if (dx < 14 || !m || !m.wa_message_id || m.status === 'failed') return;
+    press.swiping = true;
+    press.bubble.classList.add('swiping');
+  }
+  press.dx = Math.max(0, Math.min(96, dx));
+  press.bubble.style.setProperty('--swipe', `${press.dx}px`);
+  press.bubble.classList.toggle('swipe-armed', press.dx >= SWIPE_REPLY_AT);
+}, { passive: true });
+
+for (const type of ['touchend', 'touchcancel']) {
+  els.messages.addEventListener(type, (e) => {
+    const { bubble, swiping, dx, fired } = press;
+    const m = bubble ? messageOfBubble(bubble) : null;
+    endPress();
+    // The finger lifting after a long press must not also open the photo under it.
+    if (fired && e.cancelable) e.preventDefault();
+    if (type === 'touchend' && swiping && dx >= SWIPE_REPLY_AT && m) {
+      if (navigator.vibrate) { try { navigator.vibrate(8); } catch (_) {} }
+      startReply(m);
+    }
+  });
+}
+
+// As a Home Screen app there is no browser bar to go back with: a swipe in
+// from the left edge returns to the list. In a browser tab the browser's own
+// back gesture already does this, and this stays out of its way.
+if (IS_HOME_SCREEN_APP) {
+  const edge = { on: false, x0: 0, y0: 0 };
+  els.thread.addEventListener('touchstart', (e) => {
+    edge.on = e.touches.length === 1 && e.touches[0].clientX < 22;
+    edge.x0 = e.touches[0].clientX;
+    edge.y0 = e.touches[0].clientY;
+  }, { passive: true });
+  els.thread.addEventListener('touchend', (e) => {
+    if (!edge.on) return;
+    edge.on = false;
+    const t = e.changedTouches[0];
+    if (t.clientX - edge.x0 > 70 && Math.abs(t.clientY - edge.y0) < 60 && els.app.dataset.view === 'thread') {
+      if (history.state && history.state.chat) history.back();
+      else closeThread();
+    }
+  }, { passive: true });
+}

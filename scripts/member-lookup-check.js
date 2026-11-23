@@ -37,7 +37,7 @@ END $$;
 CREATE TABLE IF NOT EXISTS public.companies (company_id serial PRIMARY KEY, company_name text NOT NULL);
 CREATE TABLE IF NOT EXISTS public.employees (
   employee_id serial PRIMARY KEY, company_id int NOT NULL, first_name text, last_name text,
-  first_name_ar text, last_name_ar text, phone_number text NOT NULL DEFAULT '', status text);
+  first_name_ar text, last_name_ar text, phone_number text NOT NULL DEFAULT '', status text, employee_image json);
 CREATE TABLE IF NOT EXISTS public.ops_companies (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(), slug text NOT NULL UNIQUE, name text NOT NULL,
   status ops_company_status NOT NULL DEFAULT 'pipeline');
@@ -60,6 +60,9 @@ CREATE TABLE IF NOT EXISTS public.ops_company_contacts (
     await c.query('BEGIN');
     await c.query(SCAFFOLD);
     await c.query(migration);
+    // 012 replaces members() with one that also returns the app picture.
+    const picture = fs.readFileSync(path.join(__dirname, '..', 'db', 'migrations', '012_member_picture.sql'), 'utf8');
+    await c.query(picture.replace(/^\s*(BEGIN|COMMIT);\s*$/gm, ''));
 
     console.log('\nPHONE KEY PARITY (SQL vs web/phone.js lenient)');
     for (const raw of PARITY) {
@@ -82,6 +85,7 @@ CREATE TABLE IF NOT EXISTS public.ops_company_contacts (
     await roster(degla, 'Ahmed Roster', null, '+201000000101');
     await account(appDegla, 'Ahmed', 'Ahmed', '201000000101', 'Active');
     await account(appDegla, 'Sara', 'App', '201000000102', 'duck');
+    await c.query(`UPDATE public.employees SET employee_image = '{"url":"https://storage.bytepluslife.com/uploads/profiles/7","backgroundColor":"#00FFFFFF"}' WHERE phone_number = '201000000102'`);
     await account(appDegla, 'Old', 'Member', '201000000103', 'inActive');
     await c.query('INSERT INTO public.ops_company_contacts (company_id, kind, name, phone) VALUES ($1, $2, $3, $4)', [degla, 'hr', 'Mona HR', '01000000104']);
     await roster(oasis, 'Moved Person', null, '+201000000105');
@@ -114,6 +118,13 @@ CREATE TABLE IF NOT EXISTS public.ops_company_contacts (
     eq(by('201000000105'), ['app:member:Moved Person:ZZ Degla:true', 'roster:member:Moved Person:ZZ Oasis:false'], 'a moved member shows both companies');
     eq(by('201000000106'), ['roster:member:سهر احمد:ZZ Degla:true'], 'a spaced +20 phone with an Arabic-only name matches');
     eq(by('201000000199'), [], 'an unknown number matches nothing');
+    await c.query('SET LOCAL ROLE wa_app');
+    const pics = await c.query('SELECT wa_id, source, image, image_bg FROM wa_lookup.members($1::text[]) ORDER BY wa_id, source', [['201000000101', '201000000102']]);
+    await c.query('RESET ROLE');
+    eq(pics.rows.map((r) => `${r.wa_id}:${r.source}:${r.image}:${r.image_bg}`), [
+      '201000000101:app:null:null', '201000000101:roster:null:null',
+      '201000000102:app:https://storage.bytepluslife.com/uploads/profiles/7:#00FFFFFF',
+    ], 'the app picture comes back with the app account and nowhere else');
   } catch (e) {
     bad(`unexpected error: ${e.message}`);
   } finally {

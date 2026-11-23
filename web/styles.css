@@ -13,8 +13,8 @@
 
   /* ink */
   --ink:          #20302c;   /* primary text */
-  --ink-2:        #5d6b64;   /* secondary text */
-  --ink-3:        #93a098;   /* tertiary / placeholders */
+  --ink-2:        #4a5852;   /* secondary text */
+  --ink-3:        #66746c;   /* tertiary / placeholders: 4.6:1 on the card */
 
   /* pine accent (agent) */
   --pine:         #1f6f5c;
@@ -232,11 +232,8 @@ input, textarea, button { font-family: inherit; }
 /* ---- conversation list ---- */
 .conv-list { flex: 1; overflow-y: auto; padding: 4px 8px 12px; }
 .conv-row {
-  display: grid;
-  grid-template-columns: 48px 1fr auto;
-  grid-template-rows: auto auto;
-  column-gap: 12px;
-  align-items: center;
+  position: relative;
+  display: flex; align-items: center; gap: 12px;
   padding: 10px 11px;
   border-radius: var(--r-md);
   cursor: pointer;
@@ -245,12 +242,13 @@ input, textarea, button { font-family: inherit; }
   text-align: left;
   border: none;
   background: transparent;
+  touch-action: pan-y;
 }
 .conv-row:hover { background: var(--paper-2); }
 .conv-row.active { background: var(--pine-soft); }
 .conv-row:focus-visible { outline: 2px solid var(--pine); outline-offset: -2px; }
 .avatar {
-  grid-row: 1 / 3;
+  position: relative; flex: none; overflow: hidden;
   width: 48px; height: 48px; border-radius: 50%;
   display: grid; place-content: center;
   font-weight: 600; font-size: 18px; color: #fff;
@@ -258,39 +256,63 @@ input, textarea, button { font-family: inherit; }
   box-shadow: var(--sh-1);
   user-select: none;
 }
-.conv-row .row-name {
-  font-weight: 600; font-size: 15px; color: var(--ink);
-  display: flex; align-items: baseline; gap: 6px; min-width: 0;
-  align-self: end;
+/* The member's picture from the Byte+ app covers the initials. */
+.avatar img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: var(--paper-2); }
+.row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.row-top { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.row-name-text {
+  flex: 1; min-width: 0; font-weight: 500; font-size: 15px; color: var(--ink);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.row-name-text { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.conv-row.has-unread .row-name-text { font-weight: 700; }
+/* The company has a line to itself, so neither it nor the name is cut short. */
 .row-co {
-  flex: 0 4 auto; min-width: 48px; max-width: 55%;
+  align-self: flex-start; max-width: 100%;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  font-size: 11px; font-weight: 600; color: var(--pine-deep);
-  border: 1px solid var(--card-edge); border-radius: 999px; padding: 0 7px;
+  font-size: 11.5px; font-weight: 600; color: var(--pine-deep);
+  border: 1px solid var(--card-edge); border-radius: 999px; padding: 0 8px; line-height: 18px;
 }
-.conv-row .row-time {
-  font-size: 11.5px; color: var(--ink-3); white-space: nowrap; align-self: end;
-}
+.conv-row .row-time { flex: none; font-size: 12px; color: var(--ink-3); white-space: nowrap; }
 .conv-row.has-unread .row-time { color: var(--pine); font-weight: 600; }
+.row-bottom { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .conv-row .row-preview {
-  font-size: 13.5px; color: var(--ink-2);
+  flex: 1; min-width: 0; font-size: 13.5px; color: var(--ink-2);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  align-self: start; padding-top: 1px;
 }
+.conv-row.has-unread .row-preview { color: var(--ink); }
 .row-preview .tick { color: var(--ink-3); margin-right: 3px; font-size: 12px; }
 .row-preview .tick.read { color: var(--read-tick); }
 .conv-row .row-badge {
-  justify-self: end; align-self: start;
-  min-width: 20px; height: 20px; padding: 0 6px;
+  flex: none; min-width: 20px; height: 20px; padding: 0 6px;
   border-radius: 999px;
   background: var(--pine); color: #fff;
   font-size: 11.5px; font-weight: 700;
-  display: grid; place-content: center;
-  margin-top: 1px;
+  display: none; place-content: center;
 }
-.conv-row:not(.has-unread) .row-badge { display: none; }
+.conv-row.has-unread .row-badge { display: grid; }
+/* Opened on this device and still waiting for a reply: an outline, not a fill. */
+.conv-row.is-waiting .row-badge {
+  display: grid; background: transparent; color: var(--pine-deep);
+  box-shadow: inset 0 0 0 1.5px var(--pine);
+}
+.conv-row.is-waiting .row-badge:empty { min-width: 12px; width: 12px; height: 12px; padding: 0; }
+.list-section {
+  padding: 14px 12px 6px; font-size: 11.5px; font-weight: 700;
+  letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-3);
+}
+.list-more { padding: 14px; text-align: center; font-size: 12.5px; color: var(--ink-3); }
+
+/* swipe a chat to the left: done, or needs reply */
+.row-swipe { display: none; }
+.conv-row.swiping { transition: none; }
+.conv-row.swiping > .avatar, .conv-row.swiping > .row-main { transform: translateX(var(--swipe, 0)); }
+.conv-row.swiping .row-swipe {
+  display: flex; align-items: center; gap: 6px;
+  position: absolute; right: 14px; top: 50%; transform: translateY(-50%);
+  font-size: 12.5px; font-weight: 700; color: var(--ink-3);
+}
+.conv-row.swiping.swipe-armed .row-swipe { color: var(--pine); }
+.conv-row.swiping .row-readtoggle { display: none; }
 
 /* empty / loading panels */
 .pane-empty {
@@ -310,7 +332,13 @@ input, textarea, button { font-family: inherit; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* ---- list filter chips (compose with search) ---- */
-.list-filters { display: flex; gap: 6px; padding: 0 14px 10px; }
+.list-filters { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 14px 10px; }
+.chip-count {
+  display: inline-block; margin-left: 6px; min-width: 18px; padding: 0 5px;
+  border-radius: 999px; background: var(--pine); color: #fff;
+  font-size: 11px; font-weight: 700; line-height: 17px; text-align: center;
+}
+.filter-chip.active .chip-count { background: #fff; color: var(--pine-deep); }
 .filter-chip {
   border: 1px solid var(--card-edge);
   background: var(--paper-2); color: var(--ink-2);
@@ -324,11 +352,10 @@ input, textarea, button { font-family: inherit; }
 }
 .filter-chip:focus-visible { outline: 2px solid var(--pine); outline-offset: 2px; }
 
-/* ---- per-row read/unread control (hover desktop, always-tappable mobile) ---- */
-.conv-row { position: relative; }
+/* ---- per-row done / needs reply control (hover on a computer; swipe on a phone) ---- */
 .row-readtoggle {
   position: absolute; top: 8px; right: 8px;
-  width: 26px; height: 26px; border-radius: 8px;
+  width: 28px; height: 28px; border-radius: 8px;
   border: none; background: var(--card); color: var(--ink-2);
   display: none; place-content: center;
   box-shadow: var(--sh-1);
@@ -336,9 +363,11 @@ input, textarea, button { font-family: inherit; }
 }
 .row-readtoggle:hover { background: var(--paper-2); color: var(--pine-deep); }
 .row-readtoggle:focus-visible { outline: 2px solid var(--pine); outline-offset: 1px; display: grid; }
-.conv-row:hover .row-readtoggle { display: grid; }
-/* the toggle sits where the time/badge are; lift them clear on hover */
-.conv-row:hover .row-time { visibility: hidden; }
+@media (hover: hover) {
+  .conv-row:hover .row-readtoggle { display: grid; }
+  /* the toggle sits where the time is; lift it clear on hover */
+  .conv-row:hover .row-time { visibility: hidden; }
+}
 
 /* ============================== THREAD ============================== */
 .pane-thread { background: var(--paper); position: relative; }
@@ -371,10 +400,12 @@ input, textarea, button { font-family: inherit; }
   z-index: 2;
 }
 .thread-header .avatar { width: 42px; height: 42px; font-size: 16px; }
-.thread-peer { min-width: 0; }
-.thread-name {
-  font-weight: 600; font-size: 16px; color: var(--ink);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+.thread-peer { min-width: 0; flex: 1; }
+.thread-name { font-weight: 600; font-size: 16px; line-height: 1.25; color: var(--ink); }
+/* A long name takes a second line instead of being cut. */
+.thread-name > bdi {
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+  overflow: hidden; overflow-wrap: anywhere;
 }
 .thread-sub {
   font-size: 12.5px; color: var(--ink-2);
@@ -388,10 +419,11 @@ button.thread-name {
 button.thread-name:hover { text-decoration: underline; text-decoration-color: var(--ink-3); }
 .thread-member {
   font-size: 12px; font-weight: 600; color: var(--pine-deep);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  overflow-wrap: anywhere;
 }
+.done-btn { color: var(--pine); }
 .thread-member.none { color: var(--ink-3); font-weight: 500; }
-.thread-header-actions { margin-left: auto; }
+.thread-header-actions { margin-left: auto; flex: none; }
 .back-btn { display: none; margin-left: -6px; }
 
 /* message area — warm woven backdrop instead of stock doodles */
@@ -778,8 +810,13 @@ a.media-frame:focus-visible { outline: 2px solid var(--pine); outline-offset: 2p
 .forward-opt:hover { background: #fff; }
 .forward-opt.selected { background: var(--pine-soft); }
 .forward-opt .avatar { width: 38px; height: 38px; font-size: 15px; }
+.forward-opt .fo-who { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .forward-opt .fo-name {
-  flex: 1; min-width: 0; font-weight: 600; font-size: 14px; color: var(--ink);
+  font-weight: 600; font-size: 14px; color: var(--ink);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.forward-opt .fo-sub {
+  font-size: 12px; color: var(--ink-2);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .forward-opt .fo-check {
@@ -941,12 +978,15 @@ body.viewer-open { overflow: hidden; }
 @media (max-width: 720px) {
   .app {
     grid-template-columns: 1fr;
+    /* The chat waits off to the right of the list. Clipped here, it cannot
+       make the page wider than the screen, which on a phone let the whole
+       inbox slide sideways and cut names off at the edge. */
+    overflow: hidden;
   }
   .pane-list { border-right: none; }
   .pane-thread {
-    /* overlay the thread on top of the list area */
-    position: fixed; inset: 0; z-index: 10;
-    bottom: auto; top: var(--app-top, 0px); height: var(--app-h, 100dvh);
+    /* overlay the thread on top of the list area; .app already follows the keyboard */
+    position: absolute; inset: 0; z-index: 10;
     transform: translateX(100%);
     transition: transform 0.26s cubic-bezier(0.22, 1, 0.36, 1);
   }
@@ -957,14 +997,27 @@ body.viewer-open { overflow: hidden; }
   .bubble.has-media { max-width: min(78%, 348px); }
   .messages { padding-left: 14px; padding-right: 14px; }
 
-  /* On touch screens there's no hover, so keep the inline controls reachable. */
-  .conv-row .row-readtoggle { display: grid; }
-  .conv-row:hover .row-time { visibility: visible; }
-  .row-readtoggle { top: auto; bottom: 8px; }
-  .bubble-actions { opacity: 0.8; gap: 3px; }
-  .bubble.out .bubble-actions { right: calc(100% + 5px); }
-  .bubble.in  .bubble-actions { left: calc(100% + 5px); }
-  .bubble-action { width: 26px; height: 26px; }
+  /* Names and previews get the room they need on a narrow screen. */
+  .row-name-text {
+    font-size: 16px; line-height: 1.25; white-space: normal; overflow-wrap: anywhere;
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+  }
+  .conv-row .row-preview {
+    font-size: 14px; line-height: 1.35; white-space: normal;
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+  }
+  .row-co { font-size: 12px; white-space: normal; border-radius: 10px; line-height: 1.35; padding: 1px 8px; }
+  .conv-row .row-time { font-size: 12.5px; }
+  .thread-header { gap: 9px; padding-left: 8px; padding-right: 8px; }
+  .thread-sub { white-space: normal; overflow-wrap: anywhere; font-size: 13px; }
+  .thread-member { font-size: 12.5px; }
+  .bubble { font-size: 15.5px; }
+  .bubble .meta { font-size: 11.5px; }
+  .filter-chip { font-size: 13.5px; padding: 9px 14px; min-height: 40px; }
+  .send-btn, .attach-btn, .mic-btn { width: 46px; height: 46px; }
+  /* Microphone while the box is empty, send once there is something to send. */
+  .composer-form:not(.has-text) .send-btn { display: none; }
+  .composer-form.has-text .mic-btn { display: none; }
 
   /* iOS zooms the page into any field with text smaller than 16px. */
   input, textarea, select { font-size: 16px !important; }
@@ -977,7 +1030,9 @@ body.viewer-open { overflow: hidden; }
 
   /* Scrolling a list to its end must not drag the whole page with it. */
   .conv-list, .messages { overscroll-behavior: contain; }
-  .icon-btn { width: 40px; height: 40px; }
+  .icon-btn { width: 44px; height: 44px; }
+  .list-header-actions, .thread-header-actions { gap: 2px; }
+  .composer-form { gap: 4px; }
   .toast {
     border-radius: 16px; width: max-content; text-align: center; line-height: 1.4;
     bottom: calc(22px + env(safe-area-inset-bottom));
@@ -995,3 +1050,121 @@ button, a, .conv-row { touch-action: manipulation; -webkit-tap-highlight-color: 
   .messages { scroll-behavior: auto; }
   .pane-thread { transition: none; }
 }
+
+/* ============================== TEAMWORK + PHONE ============================== */
+
+/* who is using this device */
+.agent-btn { width: auto; min-width: 36px; padding: 0 4px; }
+.agent-initials {
+  display: grid; place-content: center; width: 28px; height: 28px; border-radius: 50%;
+  background: var(--pine-soft); color: var(--pine-deep); font-size: 11.5px; font-weight: 700;
+}
+.bubble .meta-agent { font-weight: 600; margin-right: 2px; max-width: 12ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bubble .meta-agent::after { content: ' ·'; font-weight: 400; }
+
+.msg-link { color: var(--pine-deep); text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; }
+.bubble.in .msg-link { color: #1a5f93; }
+
+/* the 24-hour window, said before a send rather than after a failed one */
+.window-bar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px;
+  background: var(--paper-2); color: var(--ink-2);
+  border-radius: var(--r-sm); padding: 8px 12px; margin-bottom: 9px;
+  font-size: 13px; line-height: 1.4;
+}
+.window-bar.is-closed { background: var(--danger-soft); color: #7a2c1d; font-weight: 500; }
+.window-bar .window-text { flex: 1 1 220px; }
+.window-bar .banner-action { margin-top: 0; }
+
+/* saved replies */
+.composer { position: relative; }
+.reply-picker {
+  position: absolute; left: 10px; right: 10px; bottom: calc(100% + 6px); z-index: 5;
+  max-height: min(46vh, 340px); display: flex; flex-direction: column;
+  background: var(--card); border: 1px solid var(--card-edge);
+  border-radius: var(--r-md); box-shadow: var(--sh-3); overflow: hidden;
+}
+.reply-picker-list { overflow-y: auto; padding: 4px; }
+.reply-opt {
+  display: flex; flex-direction: column; gap: 2px; width: 100%; text-align: left;
+  border: none; background: transparent; padding: 9px 11px; border-radius: var(--r-sm);
+  min-height: 44px;
+}
+.reply-opt:hover, .reply-opt.active { background: var(--pine-soft); }
+.reply-opt-title { font-weight: 600; font-size: 14px; color: var(--ink); }
+.reply-opt-body {
+  font-size: 13px; color: var(--ink-2); line-height: 1.35;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;
+}
+.reply-picker-empty { margin: 0; padding: 14px; font-size: 13px; color: var(--ink-3); text-align: center; }
+.reply-picker-manage {
+  border: none; border-top: 1px solid var(--card-edge); background: var(--paper-2);
+  padding: 11px; font-size: 13px; font-weight: 600; color: var(--pine-deep);
+}
+.reply-picker-manage:hover { background: #fff; }
+.replies-card { width: min(520px, 94vw); max-height: 90dvh; display: flex; flex-direction: column; }
+.replies-list {
+  max-height: 34vh; overflow-y: auto; margin-bottom: 14px; padding: 4px;
+  border: 1px solid var(--card-edge); border-radius: var(--r-md); background: var(--paper-2);
+}
+.replies-form textarea {
+  width: 100%; border: 1px solid var(--card-edge); border-radius: var(--r-sm);
+  padding: 10px 12px; font: inherit; font-size: 14px; color: var(--ink); background: #fff; resize: vertical;
+}
+.replies-form textarea:focus { outline: none; border-color: var(--pine); box-shadow: 0 0 0 3px var(--pine-ring); }
+.btn-danger { color: var(--danger); border-color: var(--danger-soft); margin-right: auto; }
+
+/* message actions: a sheet from the bottom on a phone, a card on a computer */
+.sheet-overlay {
+  position: fixed; inset: 0; z-index: 70; background: rgba(20, 28, 26, 0.42);
+  display: grid; place-content: center; padding: 22px;
+  animation: fade 0.14s ease both;
+}
+.sheet-card {
+  width: min(320px, 92vw); background: var(--card); border: 1px solid var(--card-edge);
+  border-radius: var(--r-lg); box-shadow: var(--sh-3); padding: 8px; overflow: hidden;
+}
+.sheet-reactions { display: flex; justify-content: space-between; gap: 2px; padding: 4px 4px 10px; border-bottom: 1px solid var(--card-edge); margin-bottom: 6px; }
+.sheet-react {
+  width: 44px; height: 44px; border: none; background: transparent; border-radius: 50%;
+  font-size: 24px; line-height: 1; display: grid; place-content: center;
+}
+.sheet-react:hover, .sheet-react.active { background: var(--pine-soft); }
+.sheet-action {
+  display: block; width: 100%; min-height: 46px; text-align: left;
+  border: none; background: transparent; border-radius: var(--r-sm);
+  padding: 0 14px; font-size: 15.5px; color: var(--ink);
+}
+.sheet-action:hover { background: var(--paper-2); }
+
+/* swipe a message to the right to reply to it */
+.bubble { touch-action: pan-y; }
+.bubble.swiping { transform: translateX(var(--swipe, 0)); transition: none; animation: none; }
+.bubble.swiping::before {
+  content: '↩'; position: absolute; top: 50%; left: -34px; transform: translateY(-50%);
+  width: 26px; height: 26px; border-radius: 50%; display: grid; place-content: center;
+  background: var(--card); color: var(--ink-3); font-size: 14px; box-shadow: var(--sh-1);
+}
+.bubble.swiping.swipe-armed::before { background: var(--pine); color: #fff; }
+
+/* A finger has no hover: the small buttons beside a bubble give way to a long
+   press and a swipe, and a long press must not start a text selection. */
+@media (pointer: coarse) {
+  .bubble-actions { display: none; }
+  .bubble { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+  .row-readtoggle { display: none !important; }
+}
+
+@media (max-width: 720px) {
+  .agent-btn { min-width: 44px; }
+  .sheet-overlay { place-content: end stretch; padding: 0; }
+  .sheet-card {
+    width: 100%; border-radius: 20px 20px 0 0; border-bottom: 0;
+    padding: 10px 10px calc(12px + env(safe-area-inset-bottom));
+    animation: sheet-up 0.2s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+  .sheet-action { min-height: 50px; font-size: 16.5px; }
+  .modal-overlay { padding: 12px; }
+  .modal-card { padding: 20px 18px 16px; max-height: calc(var(--app-h, 100dvh) - 24px); overflow-y: auto; }
+}
+@keyframes sheet-up { from { transform: translateY(100%); } to { transform: none; } }
