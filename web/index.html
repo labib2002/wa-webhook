@@ -72,7 +72,7 @@
       </header>
       <div class="search-wrap">
         <svg class="search-ico" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-        <input id="search" type="search" placeholder="Search name or number" aria-label="Search conversations" />
+        <input id="search" type="search" dir="auto" placeholder="Search name or number" aria-label="Search conversations" />
       </div>
       <div class="list-filters" role="tablist" aria-label="Filter conversations">
         <button class="filter-chip active" data-filter="all" role="tab" aria-selected="true">All</button>
@@ -111,10 +111,7 @@
           <div id="thread-avatar" class="avatar" aria-hidden="true">?</div>
           <div class="thread-peer">
             <div class="thread-name-row">
-              <button id="thread-name" type="button" class="thread-name" title="Edit name">—</button>
-              <button id="rename-btn" type="button" class="icon-btn rename-btn" title="Edit name" aria-label="Edit contact name">
-                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
-              </button>
+              <button id="thread-name" type="button" class="thread-name" title="Edit name" aria-label="Edit contact name"><bdi id="thread-name-text">—</bdi></button>
             </div>
             <div id="thread-sub" class="thread-sub">—</div>
             <div id="thread-member" class="thread-member" hidden></div>
@@ -159,6 +156,7 @@
             </button>
             <textarea
               id="composer-input"
+              dir="auto"
               class="composer-input"
               rows="1"
               placeholder="Type a message"
@@ -205,7 +203,7 @@
       </label>
       <label class="field">
         <span class="field-label">Name <span class="field-opt">(optional, saved for this number)</span></span>
-        <input id="new-chat-name" type="text" maxlength="80" placeholder="Contact name" />
+        <input id="new-chat-name" type="text" dir="auto" maxlength="80" placeholder="Contact name" />
       </label>
       <p id="new-chat-error" class="login-error" role="alert" hidden></p>
       <div class="modal-actions">
@@ -222,7 +220,7 @@
       <p class="modal-sub">Saved in this inbox for everyone. Leave it empty to show the member or WhatsApp name instead.</p>
       <label class="field">
         <span class="field-label">Name</span>
-        <input id="rename-input" type="text" maxlength="80" placeholder="Contact name" />
+        <input id="rename-input" type="text" dir="auto" maxlength="80" placeholder="Contact name" />
       </label>
       <p id="rename-error" class="login-error" role="alert" hidden></p>
       <div class="modal-actions">
@@ -239,7 +237,7 @@
       <p class="modal-sub">Sends the approved follow-up template, the only message WhatsApp allows outside the 24-hour window. Their reply reopens it.</p>
       <label class="field">
         <span class="field-label">First name</span>
-        <input id="followup-name" type="text" placeholder="Omar" required />
+        <input id="followup-name" type="text" dir="auto" placeholder="Omar" required />
       </label>
       <label class="field">
         <span class="field-label">Program / company</span>

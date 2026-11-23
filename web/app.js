@@ -26,10 +26,10 @@ const els = {
   thread: $('#thread'),
   backBtn: $('#back-btn'),
   threadAvatar: $('#thread-avatar'),
-  threadName: $('#thread-name'),
+  threadName: $('#thread-name-text'),
+  threadNameBtn: $('#thread-name'),
   threadSub: $('#thread-sub'),
   threadMember: $('#thread-member'),
-  renameBtn: $('#rename-btn'),
   renameModal: $('#rename-modal'),
   renameForm: $('#rename-form'),
   renameInput: $('#rename-input'),
@@ -145,7 +145,8 @@ function mergeMessages(t, rows) {
       changed = true;
     } else if (
       existing.status !== m.status || existing.reaction !== m.reaction ||
-      existing.media_status !== m.media_status || existing.body !== m.body
+      existing.media_status !== m.media_status || existing.body !== m.body ||
+      (existing.error || '') !== (m.error || '')
     ) {
       t.byId.set(m.id, { ...existing, ...m });
       changed = true;
@@ -209,11 +210,18 @@ const THREAD_POLL_MS = 1500;
 
 async function api(path, opts = {}) {
   const { headers, ...rest } = opts;
-  const res = await fetch(path, {
-    headers: { 'Content-Type': 'application/json', ...(headers || {}) },
-    credentials: 'same-origin',
-    ...rest,
-  });
+  let res;
+  try {
+    res = await fetch(path, {
+      headers: { 'Content-Type': 'application/json', ...(headers || {}) },
+      credentials: 'same-origin',
+      ...rest,
+    });
+  } catch (_) {
+    // No connection. Callers get an ordinary failed answer; a throw here used
+    // to leave the composer locked until the page was reloaded.
+    return { status: 0, ok: false, data: { error: 'No connection. Check the internet and try again.' } };
+  }
   let data = null;
   try { data = await res.json(); } catch (_) {}
   return { status: res.status, ok: res.ok, data: data || {} };
@@ -254,11 +262,13 @@ function displayName(c) {
   return knownName(c) || formatPhone(c.wa_id);
 }
 
-const MEMBER_ROLES = { member: 'Member', hr: 'HR', coordinator: 'Coordinator' };
+const MEMBER_ROLES = { hr: 'HR', coordinator: 'Coordinator' };
 
+// Everyone in the inbox is a member, so only the other kinds are named.
 function memberLabel(m) {
-  const role = m.kind === 'member' && !m.active ? 'Former member' : (MEMBER_ROLES[m.kind] || 'Member');
-  return m.company ? `${role} · ${m.company}${m.more ? ` +${m.more}` : ''}` : role;
+  const role = m.kind === 'member' && !m.active ? 'Former member' : (MEMBER_ROLES[m.kind] || '');
+  const company = m.company ? `${m.company}${m.more ? ` +${m.more}` : ''}` : '';
+  return [role, company].filter(Boolean).join(' · ');
 }
 
 function memberTag(m) {
@@ -492,9 +502,9 @@ function renderConversations(forceRender = false) {
     return `
       <button class="conv-row${active}${unread}" role="listitem" data-wa="${escapeHtml(c.wa_id)}">
         <span class="avatar">${escapeHtml(initials(knownName(c), c.wa_id))}</span>
-        <span class="row-name"><span class="row-name-text">${name}</span>${coTag}</span>
+        <span class="row-name"><span class="row-name-text"><bdi>${name}</bdi></span>${coTag}</span>
         <span class="row-time">${escapeHtml(fmtListTime(c.last_message_at))}</span>
-        <span class="row-preview">${outTick}${escapeHtml(WaTpl.previewText(c.last_message_text, state.templates))}</span>
+        <span class="row-preview">${outTick}<bdi>${escapeHtml(WaTpl.previewText(c.last_message_text, state.templates))}</bdi></span>
         <span class="row-badge">${badge}</span>
         <span class="row-readtoggle" role="button" tabindex="0" data-read="${hasUnread ? 'read' : 'unread'}" title="${toggleTitle}" aria-label="${toggleTitle}">${toggleIco}</span>
       </button>`;
@@ -578,8 +588,9 @@ function renderThreadHeader() {
     ? [formatPhone(waId), waName && waName !== name ? `WhatsApp: ${waName}` : ''].filter(Boolean).join(' · ')
     : 'WhatsApp';
   els.threadAvatar.textContent = initials(name, waId);
-  els.threadMember.hidden = !state.membersAvailable;
-  els.threadMember.textContent = conv.member ? memberLabel(conv.member) : 'Not a member';
+  const label = conv.member ? memberLabel(conv.member) : 'Not on a roster';
+  els.threadMember.hidden = !state.membersAvailable || !label;
+  els.threadMember.textContent = label;
   els.threadMember.classList.toggle('none', !conv.member);
 }
 
@@ -619,6 +630,7 @@ async function openConversation(waId) {
   els.threadLoading.hidden = t.loaded || t.order.length > 0;
 
   renderConversations(); // reflect active highlight
+  if (state.rec) setRecPausedUI(state.rec.paused);
 
   await loadThread(true);
   els.threadLoading.hidden = true;
@@ -721,7 +733,8 @@ function renderMessages(force = false) {
 // only re-render when something visible actually changed.
 function bubbleSig(m, continued) {
   const quoted = quotedMessage(m);
-  return [m.id, m.status, m.error || '', m.reaction, m.media_status, m.forwarded ? 1 : 0, m._optimistic ? 1 : 0, continued ? 1 : 0, m.body, replyToOf(m) || '', quoted ? quoted.id : '', state.templates.length].join('|');
+  const meta = m.media_meta || {};
+  return [m.id, m.status, m.error || '', m.reaction, m.media_status, m.forwarded ? 1 : 0, m._optimistic ? 1 : 0, continued ? 1 : 0, m.body, replyToOf(m) || '', quoted ? quoted.id : '', state.templates.length, meta.sent_as_audio ? 1 : 0, meta.voice ? 1 : 0].join('|');
 }
 
 function replyToOf(m) {
@@ -745,9 +758,14 @@ function senderName(m) {
   return conv ? displayName(conv) : formatPhone(waId);
 }
 
+// A tapped template button or list choice arrives as its own type, and reads
+// as the text the person chose.
+const TEXT_TYPES = new Set(['text', 'button', 'interactive']);
+const isTextLike = (m) => !m.type || TEXT_TYPES.has(m.type);
+
 // One line of text standing for a message, for quotes and the reply bar.
 function snippetOf(m) {
-  if (!m.type || m.type === 'text') return WaTpl.messageText(m, state.templates);
+  if (isTextLike(m)) return WaTpl.messageText(m, state.templates);
   const meta = m.media_meta || {};
   const label = m.type === 'unsupported' ? UNSUPPORTED_LABEL : stripCaption(m.body) || labelForType(m.type);
   return meta.caption ? `${label} · ${meta.caption}` : label;
@@ -766,6 +784,27 @@ function quoteHtml(m) {
 const audioProbe = document.createElement('audio');
 function canPlayAudio(mime) {
   return Boolean(mime) && audioProbe.canPlayType(mime) !== '';
+}
+
+// The space a photo, sticker or video takes in a bubble, known before its
+// bytes arrive. Its own shape is kept; only something taller than a phone
+// screenshot or wider than a panorama is cropped, and opens whole in the viewer.
+const MEDIA_MAX_W = 340;
+const MEDIA_MAX_H = 420;
+const STICKER_MAX = 150;
+function frameBox(w, h, sticker = false) {
+  if (!(w > 0 && h > 0)) return null;
+  const ratio = Math.min(3, Math.max(0.45, w / h));
+  const widest = sticker ? STICKER_MAX : MEDIA_MAX_W;
+  const tallest = sticker ? STICKER_MAX : MEDIA_MAX_H;
+  return { width: Math.max(64, Math.round(Math.min(widest, tallest * ratio, w))), ratio };
+}
+function frameAttrs(m) {
+  const meta = m.media_meta || {};
+  const sticker = m.type === 'sticker';
+  const box = frameBox(Number(meta.w), Number(meta.h), sticker);
+  const cls = `media-frame${m.type === 'video' ? ' media-video' : ''}${sticker ? ' is-sticker' : ''}`;
+  return box ? `class="${cls}" style="--w:${box.width}px;--ar:${box.ratio.toFixed(4)}"` : `class="${cls}"`;
 }
 
 function renderBubble(m, continued) {
@@ -789,7 +828,9 @@ function renderBubble(m, continued) {
     inner += `<span class="forwarded-tag"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 17 20 12 15 7"/><path d="M4 18v-2a4 4 0 0 1 4-4h12"/></svg>Forwarded</span>`;
   }
 
-  if (m.type && m.type !== 'text') {
+  if (m.type === 'contacts' && m.media_meta && Array.isArray(m.media_meta.contacts) && m.media_meta.contacts.length) {
+    inner += m.media_meta.contacts.map(contactCardHtml).join('');
+  } else if (!isTextLike(m)) {
     const meta = m.media_meta || {};
     // Prefer the local data-URL for an optimistic image so it shows instantly.
     const src = m._localUrl || `/api/media/${m.id}`;
@@ -803,12 +844,12 @@ function renderBubble(m, continued) {
       inner += `<a class="media-link" href="https://maps.google.com/?q=${q}" target="_blank" rel="noopener">${q}</a>`;
     } else if (stored && (m.type === 'image' || m.type === 'sticker')) {
       div.classList.add('has-media');
-      inner += `<button type="button" class="media-frame" data-view title="Open">
+      inner += `<button type="button" ${frameAttrs(m)} data-view title="Open">
         <img src="${src}" alt="${escapeHtml(labelForType(m.type))}" loading="lazy" />
       </button>`;
     } else if (stored && m.type === 'video') {
       div.classList.add('has-media');
-      inner += `<button type="button" class="media-frame media-video" data-view title="Play">
+      inner += `<button type="button" ${frameAttrs(m)} data-view title="Play">
         <video preload="metadata" muted playsinline src="${src}"></video>
         <span class="play-badge" aria-hidden="true"><svg viewBox="0 0 24 24" width="26" height="26" fill="currentColor"><polygon points="7 4 20 12 7 20 7 4"/></svg></span>
       </button>`;
@@ -817,8 +858,9 @@ function renderBubble(m, continued) {
       div.classList.add(isVoice ? 'is-voice' : 'is-audio');
       const compat = m._localUrl ? '' : `/api/media/${m.id}?compat=1`;
       const audioSrc = compat && !canPlayAudio(meta.mime_type) ? compat : src;
-      inner += `<span class="media-label">${isVoice ? '🎤 Voice message' : '🎵 Audio'}</span>
-        <audio class="media-audio" controls preload="metadata" src="${audioSrc}" data-compat="${compat}"></audio>`;
+      // One line: the bubble keeps line breaks, and one here drew an empty row.
+      inner += `<span class="media-label">${isVoice ? '🎤 Voice message' : '🎵 Audio'}</span><audio class="media-audio" controls preload="metadata" src="${audioSrc}" data-compat="${compat}"></audio>`;
+      if (meta.sent_as_audio) inner += '<span class="send-note">Sent as an audio file, because WhatsApp refused the voice note for this person.</span>';
     } else if (stored && m.type === 'document') {
       const fname = escapeHtml(meta.filename || 'Document');
       inner += isPdf(m)
@@ -848,6 +890,7 @@ function renderBubble(m, continued) {
     if (meta.caption) inner += `<span class="caption">${escapeHtml(meta.caption)}</span>`;
   } else {
     const sentTpl = WaTpl.render(WaTpl.sentTemplate(m), state.templates);
+    if (m.media_meta && m.media_meta.tapped) inner += '<span class="tapped-tag">Tapped a button</span>';
     inner += sentTpl ? templateHtml(sentTpl) : escapeHtml(m.body || '');
   }
 
@@ -871,10 +914,20 @@ function renderBubble(m, continued) {
   const quote = div.querySelector('.bubble-quote[data-quote]');
   if (quote) quote.addEventListener('click', (e) => { e.stopPropagation(); jumpToMessage(Number(quote.dataset.quote)); });
 
-  if (m.status === 'failed') {
+  // A resend that died half way leaves the row pending with nothing to press.
+  const stuck = dir === 'out' && m.status === 'pending' && !m._optimistic && !m._retrying && typeof m.id === 'number' && m.id > 0
+    && m.updated_at && Date.now() - Date.parse(m.updated_at) > 2 * 60 * 1000;
+  if (m.status === 'failed' || stuck) {
+    const why = stuck ? { text: 'This did not finish sending.', said: '' } : failureWords(m);
     const reason = document.createElement('span');
     reason.className = 'fail-reason';
-    reason.textContent = '⚠ ' + (m.error || 'Failed to send.');
+    reason.textContent = '⚠ ' + why.text;
+    if (why.said) {
+      const said = document.createElement('span');
+      said.className = 'fail-said';
+      said.textContent = `WhatsApp said: ${why.said}`;
+      reason.appendChild(said);
+    }
     div.appendChild(reason);
 
     // Retry control — only on genuinely failed outgoing messages.
@@ -883,7 +936,8 @@ function renderBubble(m, continued) {
       retry.className = 'bubble-retry';
       retry.title = 'Retry sending';
       retry.setAttribute('aria-label', 'Retry sending');
-      retry.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg><span>Retry</span>';
+      const asAudio = (m.media_meta || {}).voice === true && REFUSED_MEDIA.test(m.error || '');
+      retry.innerHTML = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg><span>${asAudio ? 'Send as an audio file' : 'Retry'}</span>`;
       retry.addEventListener('click', (e) => { e.stopPropagation(); retrySend(m); });
       div.appendChild(retry);
     }
@@ -912,6 +966,43 @@ function renderBubble(m, continued) {
   return div;
 }
 
+function contactCardHtml(c) {
+  const phones = (c.phones || []).map((ph) => {
+    const shown = ph.phone || (ph.wa_id ? `+${ph.wa_id}` : '');
+    return `<a class="contact-phone" href="tel:${escapeHtml(shown.replace(/[^\d+]/g, ''))}">${escapeHtml(shown)}</a>`;
+  }).join('');
+  return `<span class="contact-card"><span class="contact-name"><span aria-hidden="true">👤</span> <bdi>${escapeHtml(c.name || 'Contact')}</bdi></span>${phones}</span>`;
+}
+
+// What WhatsApp answers when it refuses a message, in words an agent can act
+// on. The code sits in brackets in the stored reason (lib/ingest.js); older
+// rows carry the title only.
+const REFUSED_MEDIA = /media upload error|\b131053\b/i;
+const FAILURE_WORDS = [
+  [/\b131047\b|re-engagement|24-hour reply window/i, 'More than 24 hours since their last message. Only a follow-up template can be sent now.'],
+  [/\b131053\b|media upload error/i, 'WhatsApp could not process this file for this person.'],
+  [/\b131052\b|media download error/i, 'WhatsApp could not fetch this file. Send it again.'],
+  [/\b131026\b|undeliverable/i, 'WhatsApp could not deliver this. The number may not be on WhatsApp, may have blocked this number, or runs a very old WhatsApp.'],
+  [/\b131049\b|healthy ecosystem/i, 'WhatsApp chose not to deliver this template to this person right now. Try again tomorrow.'],
+  [/\b130472\b|part of an experiment/i, 'WhatsApp held this template back for this person. A normal message works once they write in.'],
+  [/\b131048\b|\b131056\b|\b130429\b|rate limit/i, 'Too many messages in a short time. Wait a minute and send again.'],
+  [/\b131031\b|account has been locked/i, 'The business WhatsApp account is locked. Report it to the tech team.'],
+  [/\b131042\b|payment/i, 'WhatsApp refused this over the payment method on the business account. Report it to the tech team.'],
+  [/\b132\d{3}\b|template/i, 'WhatsApp refused this template. Report it to the tech team.'],
+  [/\b133010\b|not registered/i, 'The business number is not registered with WhatsApp right now. Report it to the tech team.'],
+  [/No connection/i, 'No connection. Check the internet and try again.'],
+];
+function failureWords(m) {
+  const raw = String(m.error || '').trim();
+  if (!raw) return { text: 'Failed to send.', said: '' };
+  const hit = FAILURE_WORDS.find(([re]) => re.test(raw));
+  if (!hit) return { text: raw, said: '' };
+  const text = REFUSED_MEDIA.test(raw) && (m.media_meta || {}).voice === true
+    ? `${hit[1]} Send it as an audio file instead, or type the message.`
+    : hit[1];
+  return { text, said: raw === text ? '' : raw };
+}
+
 function actionButton(label, paths, onClick) {
   const b = document.createElement('button');
   b.type = 'button';
@@ -926,6 +1017,8 @@ function actionButton(label, paths, onClick) {
 function jumpToMessage(id) {
   const node = els.messages.querySelector(`.bubble[data-mid="${id}"]`);
   if (!node) return;
+  pin.stick = false;
+  notePerson(1500);
   node.scrollIntoView({ behavior: 'smooth', block: 'center' });
   node.classList.remove('flash');
   void node.offsetWidth;
@@ -986,23 +1079,30 @@ function labelForType(type) {
   return map[type] || '💬 Message';
 }
 
-// `stick` is true while the agent is reading the newest messages. Photos,
-// videos and voice notes get their height only once they load, which pushed
-// the newest message out of view after the jump; while stick is on, each one
-// that finishes loading re-pins the chat to its end.
-const pin = { stick: true };
+// `stick` is true while the agent is reading the newest messages, and only
+// the agent can turn it off: by wheel, touch, keys, dragging the scrollbar or
+// jumping to a quoted message. A chat that grows (a photo arriving, the
+// keyboard opening) is pulled back to its end instead.
+const pin = { stick: true, size: '', held: false, moved: false, personUntil: 0, glideUntil: 0 };
+
+const sizeOfMessages = () => `${els.messages.scrollHeight}:${els.messages.clientHeight}`;
+const personScrolling = () => pin.held || performance.now() < pin.personUntil;
+function notePerson(ms = 1000) { pin.personUntil = performance.now() + ms; }
 
 function scrollMessagesToBottom(instant = false) {
+  const el = els.messages;
   pin.stick = true;
+  pin.size = sizeOfMessages();
   if (instant) {
     // The smooth glide from the top of a long chat was cut short by the next
     // render and left the chat part-way down.
-    els.messages.style.scrollBehavior = 'auto';
-    els.messages.scrollTop = els.messages.scrollHeight;
-    els.messages.style.scrollBehavior = '';
+    el.style.scrollBehavior = 'auto';
+    el.scrollTop = el.scrollHeight;
+    el.style.scrollBehavior = '';
     return;
   }
-  els.messages.scrollTop = els.messages.scrollHeight;
+  pin.glideUntil = performance.now() + 900;
+  el.scrollTop = el.scrollHeight;
 }
 
 // Re-attempt a failed outgoing message. Two cases:
@@ -1253,11 +1353,18 @@ function humanSize(n) {
   return (n / 1048576).toFixed(1) + ' MB';
 }
 
-async function sendPendingFile() {
+function sendPendingFile() {
   const waId = state.activeWaId;
   const f = state.pendingFile;
-  if (!f || !waId) return;
+  if (!f || !waId) return null;
   const caption = els.composerInput.value.trim();
+  resetComposer();
+  return sendFile(waId, f, caption);
+}
+
+// A voice note goes to the chat it was recorded in, and leaves whatever is
+// typed in the composer alone.
+async function sendFile(waId, f, caption = '') {
   const isVoice = Boolean(f.voice);
   const kind = f.mime.startsWith('image/') ? 'image'
     : f.mime.startsWith('video/') ? 'video'
@@ -1277,7 +1384,6 @@ async function sendPendingFile() {
   });
 
   const payload = { wa_id: waId, file_base64: f.base64, mime: f.mime, filename: f.name, caption, voice: isVoice, reply_to: replyTo };
-  resetComposer();
   state.sending = true;
   els.sendBtn.disabled = true;
   clearBanner();
@@ -1294,7 +1400,7 @@ async function sendPendingFile() {
 
   if (ok && data.message) {
     settleOptimistic(waId, opt, null, data.message);
-    scrollMessagesToBottom();
+    if (waId === state.activeWaId) scrollMessagesToBottom();
     bumpConversationPreview(waId, opt.body, 'out');
   } else if (status === 207) {
     settleOptimistic(waId, opt, { _optimistic: false, status: 'sent' });
@@ -1306,7 +1412,8 @@ async function sendPendingFile() {
       _optimistic: false, status: 'failed', error: data.error || 'Failed to send.',
       _retry: { endpoint: '/api/send-media', payload, key: sendKey },
     });
-    setBanner(data.error || 'Failed to send attachment.');
+    if (waId === state.activeWaId) setBanner(data.error || 'Failed to send attachment.');
+    else toast(data.error || 'Failed to send attachment.', true);
   }
 }
 
@@ -1346,6 +1453,7 @@ function showRecBar(on) {
 
 async function startRecording() {
   if (state.rec || !state.activeWaId) return;
+  const waId = state.activeWaId;
   if (typeof MediaRecorder === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
     setBanner('Voice recording is not supported in this browser.');
     return;
@@ -1383,7 +1491,12 @@ async function startRecording() {
   // Timing fields support pause/resume: elapsed = (now - startedAt) - pausedMs,
   // and while paused we freeze using pauseStartedAt.
   const startedAt = performance.now();
+  if (state.activeWaId !== waId) {
+    stream.getTracks().forEach((t) => t.stop());
+    return;
+  }
   const rec = {
+    waId,
     mediaRecorder, stream, chunks, startedAt, timer: null, canceled: false,
     requestedMime: mime, paused: false, pausedMs: 0, pauseStartedAt: 0,
   };
@@ -1412,9 +1525,19 @@ function recElapsedMs(rec) {
   return Math.max(0, raw - pausedSoFar);
 }
 
+// While a voice note is being recorded for another chat, the bar says whose.
+function recHintText(paused) {
+  const rec = state.rec;
+  if (rec && rec.waId !== state.activeWaId) {
+    const conv = state.conversations.find((c) => c.wa_id === rec.waId) || { wa_id: rec.waId };
+    return `${paused ? 'Paused' : 'Recording'} for ${displayName(conv)}. Send or cancel it first.`;
+  }
+  return paused ? 'Paused. Tap ▶ to resume' : 'Recording… tap send to finish';
+}
+
 function setRecPausedUI(paused) {
   els.recBar.classList.toggle('paused', paused);
-  els.recHint.textContent = paused ? 'Paused — tap ▶ to resume' : 'Recording… tap send to finish';
+  els.recHint.textContent = recHintText(paused);
   els.recPause.title = paused ? 'Resume' : 'Pause';
   els.recPause.setAttribute('aria-label', paused ? 'Resume recording' : 'Pause recording');
   // NB: SVGElement doesn't reliably reflect the `.hidden` IDL property to the
@@ -1481,11 +1604,12 @@ function finishRecording(rec) {
     const base64 = String(dataUrl).split(',')[1] || '';
     const ext = bareMime.includes('ogg') ? 'ogg' : bareMime.includes('webm') ? 'webm'
       : bareMime.includes('mp4') ? 'm4a' : bareMime.includes('aac') ? 'aac' : 'webm';
-    state.pendingFile = {
-      name: `voice-note.${ext}`, mime: bareMime, size: blob.size, base64, dataUrl, voice: true,
-    };
-    // Voice notes send immediately on stop (WhatsApp-style) — no staging preview.
-    sendPendingFile();
+    // Voice notes send immediately on stop (WhatsApp-style), with no staging preview.
+    sendFile(rec.waId, { name: `voice-note.${ext}`, mime: bareMime, size: blob.size, base64, dataUrl, voice: true });
+    if (rec.waId !== state.activeWaId) {
+      const conv = state.conversations.find((c) => c.wa_id === rec.waId) || { wa_id: rec.waId };
+      toast(`Sending the voice note to ${displayName(conv)}.`);
+    }
   };
   reader.readAsDataURL(blob);
 }
@@ -1510,8 +1634,10 @@ function addOptimistic(waId, fields) {
   };
   t.byId.set(opt.id, opt);
   t.order.push(opt.id);
-  renderMessages();
-  scrollMessagesToBottom();
+  if (waId === state.activeWaId) {
+    renderMessages();
+    scrollMessagesToBottom();
+  }
   return opt;
 }
 
@@ -1529,7 +1655,7 @@ function settleOptimistic(waId, opt, patch, persisted) {
   if (!t.order.includes(row.id)) t.order.push(row.id);
   if (typeof row.id === 'number' && row.id > t.lastMsgId) t.lastMsgId = row.id;
   mergeMessages(t, []); // re-sort
-  renderMessages();
+  if (waId === state.activeWaId) renderMessages();
 }
 
 els.composerForm.addEventListener('submit', async (e) => {
@@ -1600,13 +1726,64 @@ function isNearBottom() {
   return el.scrollHeight - el.scrollTop - el.clientHeight < 120;
 }
 
-// Scrolling up to read lets go of the end of the chat; coming back takes it again.
-els.messages.addEventListener('scroll', () => { pin.stick = isNearBottom(); }, { passive: true });
+// Scrolling up to read lets go of the end of the chat; coming back takes it
+// again. A scroll event also fires when the chat merely grew, and reading
+// that as the agent scrolling away is what used to leave a chat part-way up.
+els.messages.addEventListener('scroll', () => {
+  const size = sizeOfMessages();
+  const grew = size !== pin.size;
+  pin.size = size;
+  if (personScrolling()) { pin.stick = isNearBottom(); return; }
+  if (performance.now() < pin.glideUntil) return;
+  if (!grew) { pin.stick = isNearBottom(); return; }
+  if (pin.stick) scrollMessagesToBottom(true);
+}, { passive: true });
+
+els.messages.addEventListener('wheel', () => notePerson(), { passive: true });
+els.messages.addEventListener('touchstart', () => { pin.held = true; pin.moved = false; }, { passive: true });
+els.messages.addEventListener('touchmove', () => { pin.moved = true; }, { passive: true });
+for (const type of ['touchend', 'touchcancel']) {
+  els.messages.addEventListener(type, () => {
+    pin.held = false;
+    if (pin.moved) notePerson(2500); // the flick keeps rolling after the finger lifts
+  }, { passive: true });
+}
+els.messages.addEventListener('pointerdown', (e) => {
+  if (e.pointerType === 'mouse' && e.target === els.messages) pin.held = true; // the scrollbar
+});
+window.addEventListener('pointerup', (e) => {
+  if (e.pointerType === 'mouse' && pin.held) { pin.held = false; notePerson(300); }
+});
+const SCROLL_KEYS = new Set(['PageUp', 'PageDown', 'Home', 'End', 'ArrowUp', 'ArrowDown', ' ']);
+els.messages.addEventListener('keydown', (e) => { if (SCROLL_KEYS.has(e.key)) notePerson(); });
+
+// A photo or video whose size was not known beforehand takes its real shape
+// once the browser has read it.
+function sizeFrameFrom(el) {
+  const frame = el.closest('.media-frame');
+  if (!frame || frame.style.getPropertyValue('--ar')) return;
+  const w = el.naturalWidth || el.videoWidth;
+  const h = el.naturalHeight || el.videoHeight;
+  const box = frameBox(w, h, frame.classList.contains('is-sticker'));
+  if (!box) return;
+  frame.style.setProperty('--w', `${box.width}px`);
+  frame.style.setProperty('--ar', box.ratio.toFixed(4));
+  const bubble = frame.closest('.bubble');
+  const m = bubble && state.activeWaId && thread(state.activeWaId).byId.get(Number(bubble.dataset.mid));
+  if (m) m.media_meta = { ...(m.media_meta || {}), w, h };
+}
+
 for (const type of ['load', 'loadedmetadata', 'error']) {
   // These events do not bubble, so they are caught on the way down.
   els.messages.addEventListener(type, (e) => {
-    if (pin.stick && e.target !== els.messages) scrollMessagesToBottom(true);
+    if (e.target === els.messages) return;
+    if (type !== 'error') sizeFrameFrom(e.target);
+    if (pin.stick) scrollMessagesToBottom(true);
   }, true);
+}
+window.addEventListener('resize', () => { if (pin.stick && !els.thread.hidden) scrollMessagesToBottom(true); });
+if (document.fonts && document.fonts.ready) {
+  document.fonts.ready.then(() => { if (pin.stick && !els.thread.hidden) scrollMessagesToBottom(true); });
 }
 
 /* --------------------------- back (mobile) --------------------------- */
@@ -2128,8 +2305,7 @@ function closeRenameModal() {
   state.renameWaId = null;
 }
 
-els.renameBtn.addEventListener('click', openRenameModal);
-els.threadName.addEventListener('click', openRenameModal);
+els.threadNameBtn.addEventListener('click', openRenameModal);
 els.renameCancel.addEventListener('click', closeRenameModal);
 els.renameModal.addEventListener('click', (e) => {
   if (e.target === els.renameModal) closeRenameModal();
@@ -2174,8 +2350,8 @@ const NOT_FORWARDABLE = {
   expired: 'This media is past the storage window and was deleted, so it can’t be forwarded.',
 };
 function openForwardModal(m) {
-  if (m.type && m.type !== 'text' && m.media_status !== 'stored') {
-    toast(NOT_FORWARDABLE[m.media_status] || 'This message has no stored media to forward.', true);
+  if (!isTextLike(m) && m.media_status !== 'stored') {
+    toast(NOT_FORWARDABLE[m.media_status] || (m.type === 'contacts' ? 'A contact card can’t be forwarded from here.' : 'This message has no stored media to forward.'), true);
     return;
   }
   state.forward = { msgId: m.id, srcWaId: m.wa_id || state.activeWaId, selected: new Set(), search: '' };

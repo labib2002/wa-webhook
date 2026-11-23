@@ -331,6 +331,100 @@ function sign(body) {
     assert.ok(m.error && m.error.length, 'no error reason recorded');
   });
 
+  await test('a late "delivered" does not take the blue ticks back', async () => {
+    db._tables.messages.push({
+      id: 1001, wa_message_id: 'wamid.OUT3', wa_id: '201001234567',
+      direction: 'out', type: 'text', body: 'seen', status: 'sent',
+    });
+    const row = () => db._tables.messages.find((m) => m.id === 1001);
+    await ingestWebhook(statusUpdate('wamid.OUT3', 'read'), db);
+    await ingestWebhook(statusUpdate('wamid.OUT3', 'delivered'), db);
+    assert.strictEqual(row().status, 'read');
+    await ingestWebhook(statusUpdate('wamid.OUT3', 'sent'), db);
+    assert.strictEqual(row().status, 'read');
+    await ingestWebhook(statusUpdate('wamid.OUT3', 'failed'), db);
+    assert.strictEqual(row().status, 'read', 'a message that was read cannot have failed');
+    await ingestWebhook(statusUpdate('wamid.OUT3', 'played'), db);
+    assert.strictEqual(row().status, 'played');
+  });
+
+  await test('a refusal keeps everything WhatsApp said: code, title and the detail line', async () => {
+    const { failureText } = require('../lib/ingest');
+    assert.strictEqual(
+      failureText({ code: 131053, title: 'Media upload error', message: 'Media upload error', error_data: { details: 'Audio file is not a valid ogg' } }),
+      'Media upload error (131053): Audio file is not a valid ogg',
+    );
+    assert.strictEqual(failureText({ code: 131047, title: 'Re-engagement message' }), 'Re-engagement message (131047)');
+    assert.strictEqual(failureText({}), 'Delivery failed');
+    db._tables.messages.push({
+      id: 1002, wa_message_id: 'wamid.OUT4', wa_id: '201001234567',
+      direction: 'out', type: 'audio', body: 'v', status: 'sent',
+    });
+    const payload = statusUpdate('wamid.OUT4', 'failed');
+    payload.entry[0].changes[0].value.statuses[0].errors = [{ code: 131053, title: 'Media upload error', error_data: { details: 'Unsupported audio' } }];
+    await ingestWebhook(payload, db);
+    assert.strictEqual(db._tables.messages.find((m) => m.id === 1002).error, 'Media upload error (131053): Unsupported audio');
+  });
+
+  await test('a tapped template button or list choice arrives as the text the person chose', async () => {
+    const btn = describeMessage({ type: 'button', button: { text: 'Yes, I will come', payload: 'yes' }, context: { id: 'wamid.TPL' } });
+    assert.strictEqual(btn.body, 'Yes, I will come');
+    assert.deepStrictEqual(btn.media_meta, { tapped: true, reply_to: 'wamid.TPL' });
+    assert.strictEqual(describeMessage({ type: 'interactive', interactive: { type: 'button_reply', button_reply: { id: 'a', title: 'Morning' } } }).body, 'Morning');
+    assert.strictEqual(describeMessage({ type: 'interactive', interactive: { type: 'list_reply', list_reply: { id: 'b', title: 'Sunday' } } }).body, 'Sunday');
+    assert.strictEqual(describeMessage({ type: 'button' }).body, 'Tapped a button');
+  });
+
+  await test('a shared contact card keeps the name and the numbers', async () => {
+    const d = describeMessage({ type: 'contacts', contacts: [
+      { name: { formatted_name: 'Dr Mona Adel', first_name: 'Mona' }, phones: [{ phone: '+20 100 123 4567', wa_id: '201001234567', type: 'CELL' }] },
+      { name: { first_name: 'Omar', last_name: 'Said' }, phones: [{ phone: '0100 000 0000' }] },
+    ] });
+    assert.strictEqual(d.body, '👤 Contact · Dr Mona Adel +1');
+    assert.deepStrictEqual(d.media_meta.contacts, [
+      { name: 'Dr Mona Adel', phones: [{ phone: '+20 100 123 4567', wa_id: '201001234567' }] },
+      { name: 'Omar Said', phones: [{ phone: '0100 000 0000', wa_id: null }] },
+    ]);
+    assert.strictEqual(describeMessage({ type: 'contacts' }).body, '👤 Contact');
+  });
+
+  await test("a photo's pixel size is stored with it, so the inbox can hold its place", async () => {
+    __setMediaFetcher(async (mediaId, waId, kind) => ({ path: `${waId}/${kind}/${mediaId}.jpg`, mime: 'image/jpeg', size: 1, pixels: { w: 1170, h: 2532 } }));
+    await ingestWebhook(inboundImage('wamid.IMGSIZE'), db);
+    const msg = db._tables.messages.find((m) => m.wa_message_id === 'wamid.IMGSIZE');
+    assert.strictEqual(msg.media_meta.w, 1170);
+    assert.strictEqual(msg.media_meta.h, 2532);
+    assert.strictEqual(msg.media_meta.caption, 'a graph', 'the rest of media_meta is kept');
+    __setMediaFetcher(async (mediaId, waId, kind) => ({ path: `${waId}/${kind}/${mediaId}.jpg`, mime: 'image/jpeg', size: 1 }));
+  });
+
+  await test('pixel size is read from JPEG (turned photos too), PNG, GIF and WebP headers', async () => {
+    const { imageSize, parseVideoInfo } = require('../lib/dims');
+    const u16 = (n) => [n >> 8, n & 255];
+    const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]), Buffer.from('IHDR'), Buffer.from([0, 0, 4, 0x92, 0, 0, 9, 0xe4, 8, 6, 0, 0, 0])]);
+    assert.deepStrictEqual(imageSize(png), { w: 1170, h: 2532 });
+    const sof = Buffer.from([0xff, 0xc0, 0, 17, 8, ...u16(900), ...u16(1600), 3, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1]);
+    const app0 = Buffer.from([0xff, 0xe0, 0, 16, 0x4a, 0x46, 0x49, 0x46, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0]);
+    const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8]), app0, sof, Buffer.from([0xff, 0xd9])]);
+    assert.deepStrictEqual(imageSize(jpeg), { w: 1600, h: 900 });
+    // Orientation 6: the camera was held upright, the file is stored on its side.
+    const tiff = Buffer.concat([Buffer.from('MM'), Buffer.from([0, 42, 0, 0, 0, 8, 0, 1, 0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, 6, 0, 0, 0, 0, 0, 0])]);
+    const exifBody = Buffer.concat([Buffer.from('Exif\0\0', 'latin1'), tiff]);
+    const app1 = Buffer.concat([Buffer.from([0xff, 0xe1, ...u16(exifBody.length + 2)]), exifBody]);
+    const turned = Buffer.concat([Buffer.from([0xff, 0xd8]), app1, sof, Buffer.from([0xff, 0xd9])]);
+    assert.deepStrictEqual(imageSize(turned), { w: 900, h: 1600 });
+    const gif = Buffer.concat([Buffer.from('GIF89a'), Buffer.from([0x40, 1, 0xf0, 0, 0, 0, 0])]);
+    assert.deepStrictEqual(imageSize(gif), { w: 320, h: 240 });
+    const riff = (kind, body) => Buffer.concat([Buffer.from('RIFF'), Buffer.from([0, 0, 0, 0]), Buffer.from('WEBP'), Buffer.from(kind), Buffer.from([0, 0, 0, 0]), body]);
+    assert.deepStrictEqual(imageSize(riff('VP8X', Buffer.from([0, 0, 0, 0, 0xff, 1, 0, 0xff, 1, 0]))), { w: 512, h: 512 });
+    assert.deepStrictEqual(imageSize(riff('VP8 ', Buffer.from([0, 0, 0, 0x9d, 0x01, 0x2a, 0x00, 0x02, 0x00, 0x02]))), { w: 512, h: 512 });
+    assert.strictEqual(imageSize(Buffer.from('not a picture at all, just some text')), null);
+    assert.strictEqual(imageSize(Buffer.alloc(0)), null);
+    assert.deepStrictEqual(parseVideoInfo('  Stream #0:0(und): Video: h264 (High), yuv420p, 720x1280 [SAR 1:1 DAR 9:16], 30 fps'), { w: 720, h: 1280 });
+    assert.deepStrictEqual(parseVideoInfo('  Stream #0:0: Video: h264, yuv420p, 1920x1080, 30 fps\n    Side data:\n      displaymatrix: rotation of -90.00 degrees'), { w: 1080, h: 1920 });
+    assert.strictEqual(parseVideoInfo('  Stream #0:0: Audio: opus, 48000 Hz, mono'), null);
+  });
+
   await test('malformed payload (empty entry) does not throw', async () => {
     await ingestWebhook({ entry: [] }, db);
     await ingestWebhook({}, db);
@@ -1508,6 +1602,101 @@ function sign(body) {
       assert.strictEqual(textOpts.replyTo, 'wamid.ORIG3');
     });
 
+    await test('two agents pressing Retry on one bubble: only the first sends', async () => {
+      let sends = 0;
+      let release;
+      const gate = new Promise((r) => { release = r; });
+      wa.sendText = async () => { sends++; await gate; return { ok: true, waMessageId: 'wamid.ONCE' }; };
+      fdb._tables.messages.push({ id: 7910, wa_id: '201000000011', direction: 'out', type: 'text', body: 'once', status: 'failed', error: 'x' });
+      const first = authed('POST', '/api/retry/7910');
+      await new Promise((r) => setTimeout(r, 60));
+      const second = await authed('POST', '/api/retry/7910');
+      assert.strictEqual(second.status, 409);
+      release();
+      assert.strictEqual((await first).status, 200);
+      assert.strictEqual(sends, 1, `WhatsApp was called ${sends} times`);
+      const row = fdb._tables.messages.find((m) => m.id === 7910);
+      assert.strictEqual(row.status, 'sent');
+      assert.strictEqual((await authed('POST', '/api/retry/7910')).status, 409, 'a message that went through is not sent again');
+    });
+
+    await test('a retry WhatsApp refuses again goes back to failed with the new reason', async () => {
+      wa.sendText = async () => ({ ok: false, error: 'Outside the 24-hour reply window' });
+      fdb._tables.messages.push({ id: 7911, wa_id: '201000000011', direction: 'out', type: 'text', body: 'late', status: 'failed', error: 'old' });
+      const r = await authed('POST', '/api/retry/7911');
+      assert.strictEqual(r.status, 502);
+      const row = fdb._tables.messages.find((m) => m.id === 7911);
+      assert.strictEqual(row.status, 'failed');
+      assert.strictEqual(row.error, 'Outside the 24-hour reply window');
+    });
+
+    await test('a resend that died half way can be taken again after two minutes, not before', async () => {
+      wa.sendText = async () => ({ ok: true, waMessageId: 'wamid.STALE' });
+      fdb._tables.messages.push({ id: 7912, wa_id: '201000000011', direction: 'out', type: 'text', body: 's', status: 'pending', updated_at: new Date(Date.now() - 30 * 1000).toISOString() });
+      assert.strictEqual((await authed('POST', '/api/retry/7912')).status, 409);
+      fdb._tables.messages.find((m) => m.id === 7912).updated_at = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+      assert.strictEqual((await authed('POST', '/api/retry/7912')).status, 200);
+    });
+
+    await test('a voice note WhatsApp refused is sent again as an ordinary audio file', async () => {
+      const transcode = require('../lib/transcode');
+      const realM4a = transcode.toM4a;
+      transcode.toM4a = async () => ({ ok: true, buffer: Buffer.from('aac-bytes'), mime: 'audio/mp4', ext: 'm4a' });
+      const calls = [];
+      wa.uploadMedia = async (buf, mime, name) => { calls.push({ mime, name, bytes: buf.toString() }); return { ok: true, mediaId: 'MEDIA_AAC' }; };
+      wa.sendMedia = async (to, cat, id, opts) => { calls.push({ cat, voice: opts.voice }); return { ok: true, waMessageId: 'wamid.ASAUDIO' }; };
+      fdb._tables.messages.push({
+        id: 7913, wa_id: '201000000011', direction: 'out', type: 'audio', body: '🎤 Voice message', status: 'failed',
+        error: 'Media upload error', media_path: '201000000011/out/k7913.ogg', media_status: 'stored',
+        media_meta: { voice: true, mime_type: 'audio/ogg', filename: 'voice-note.ogg', caption: null },
+      });
+      const r = await authed('POST', '/api/retry/7913');
+      transcode.toM4a = realM4a;
+      assert.strictEqual(r.status, 200);
+      assert.deepStrictEqual(calls, [{ mime: 'audio/mp4', name: 'voice-note.m4a', bytes: 'aac-bytes' }, { cat: 'audio', voice: false }]);
+      const row = fdb._tables.messages.find((m) => m.id === 7913);
+      assert.strictEqual(row.status, 'sent');
+      assert.strictEqual(row.media_meta.sent_as_audio, true);
+      assert.strictEqual(row.media_meta.voice, null);
+      assert.strictEqual(row.media_meta.mime_type, 'audio/mp4');
+      assert.strictEqual(row.media_path, '201000000011/out/k7913.ogg.m4a');
+      assert.strictEqual(row.body, '🎵 Audio');
+    });
+
+    await test('a voice note that failed for any other reason is retried as a voice note', async () => {
+      const calls = [];
+      wa.uploadMedia = async (buf, mime) => { calls.push(mime); return { ok: true, mediaId: 'MEDIA_V' }; };
+      wa.sendMedia = async (to, cat, id, opts) => { calls.push(opts.voice); return { ok: true, waMessageId: 'wamid.VOICE2' }; };
+      fdb._tables.messages.push({
+        id: 7914, wa_id: '201000000011', direction: 'out', type: 'audio', body: '🎤 Voice message', status: 'failed',
+        error: 'Network error reaching WhatsApp: timeout', media_path: 'x/out/k7914.ogg', media_status: 'stored',
+        media_meta: { voice: true, mime_type: 'audio/ogg', filename: 'voice-note.ogg' },
+      });
+      assert.strictEqual((await authed('POST', '/api/retry/7914')).status, 200);
+      assert.deepStrictEqual(calls, ['audio/ogg', true]);
+      assert.strictEqual(fdb._tables.messages.find((m) => m.id === 7914).media_meta.voice, true);
+    });
+
+    await test('a photo sent from the inbox is stored with its pixel size', async () => {
+      wa.uploadMedia = async () => ({ ok: true, mediaId: 'MEDIA_PX' });
+      wa.sendMedia = async () => ({ ok: true, waMessageId: 'wamid.PX' });
+      const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]), Buffer.from('IHDR'), Buffer.from([0, 0, 3, 0x20, 0, 0, 2, 0x58, 8, 6, 0, 0, 0])]);
+      const r = await sendMedia({ client_key: 'px-1', file_base64: png.toString('base64') });
+      assert.strictEqual(r.status, 200);
+      const meta = rowsForKey('px-1')[0].media_meta;
+      assert.strictEqual(meta.w, 800);
+      assert.strictEqual(meta.h, 600);
+    });
+
+    await test('a forwarded button tap goes out as its text', async () => {
+      let sentText;
+      wa.sendText = async (to, text) => { sentText = text; return { ok: true, waMessageId: 'wamid.FWDTAP' }; };
+      fdb._tables.messages.push({ id: 7915, wa_id: '201000000011', direction: 'in', type: 'button', body: 'Yes, I will come', status: 'received', media_meta: { tapped: true } });
+      const r = await authed('POST', '/api/forward', { message_id: 7915, wa_ids: ['201000000012'] });
+      assert.strictEqual(JSON.parse(r.text).sent, 1);
+      assert.strictEqual(sentText, 'Yes, I will come');
+    });
+
     await test('voice notes go out with voice:true, uploaded OGG files as AAC', async () => {
       const calls = [];
       const uploads = [];
@@ -1846,12 +2035,59 @@ function sign(body) {
     });
 
     await test('names: membership reads in plain words', async () => {
-      assert.strictEqual(names.memberLabel(member), 'Member · Nawy Degla');
+      assert.strictEqual(names.memberLabel(member), 'Nawy Degla', 'everyone is a member, so the word is not shown');
       assert.strictEqual(names.memberLabel({ ...member, active: false, company: 'Oasis' }), 'Former member · Oasis');
       assert.strictEqual(names.memberLabel({ ...member, kind: 'hr' }), 'HR · Nawy Degla');
-      assert.strictEqual(names.memberLabel({ ...member, more: 1 }), 'Member · Nawy Degla +1');
+      assert.strictEqual(names.memberLabel({ ...member, kind: 'coordinator' }), 'Coordinator · Nawy Degla');
+      assert.strictEqual(names.memberLabel({ ...member, more: 1 }), 'Nawy Degla +1');
+      assert.strictEqual(names.memberLabel({ ...member, company: null }), '');
       assert.strictEqual(names.memberTag(member), 'Nawy Degla');
       assert.strictEqual(names.memberTag(null), '');
+    });
+
+    const cut = (from, to) => {
+      const a = src.indexOf(from);
+      const b = src.indexOf(to, a);
+      assert.ok(a > -1 && b > a, `web/app.js no longer has ${from}`);
+      return src.slice(a, b);
+    };
+
+    await test('a photo keeps its own shape in the bubble, and its space is known before it loads', async () => {
+      const { frameBox } = new Function(`${liftConst('MEDIA_MAX_W')}\n${liftConst('MEDIA_MAX_H')}\n${liftConst('STICKER_MAX')}\n${lift('frameBox')}\nreturn { frameBox };`)();
+      const shape = (w, h, sticker) => { const b = frameBox(w, h, sticker); return b && { width: b.width, height: Math.round(b.width / b.ratio) }; };
+      assert.deepStrictEqual(shape(1170, 2532), { width: 194, height: 420 }, 'a phone screenshot is shown whole');
+      assert.deepStrictEqual(shape(1600, 900), { width: 340, height: 191 });
+      assert.deepStrictEqual(shape(1080, 1080), { width: 340, height: 340 });
+      assert.deepStrictEqual(shape(200, 120), { width: 200, height: 120 }, 'a small picture is not blown up');
+      assert.deepStrictEqual(shape(512, 512, true), { width: 150, height: 150 }, 'a sticker stays small');
+      assert.strictEqual(frameBox(600, 6000).ratio, 0.45, 'a very long screenshot is cropped, not shrunk to a sliver');
+      assert.strictEqual(frameBox(6000, 600).ratio, 3);
+      assert.strictEqual(frameBox(0, 0), null);
+      assert.strictEqual(frameBox(undefined, 5), null);
+    });
+
+    await test('a refused message says why in plain words and keeps what WhatsApp said', async () => {
+      const { failureWords } = new Function(`${cut('const REFUSED_MEDIA =', 'function actionButton(')}\nreturn { failureWords };`)();
+      const voice = failureWords({ error: 'Media upload error (131053): Unsupported audio', media_meta: { voice: true } });
+      assert.ok(/could not process this file/.test(voice.text) && /audio file/.test(voice.text), voice.text);
+      assert.strictEqual(voice.said, 'Media upload error (131053): Unsupported audio');
+      assert.ok(/could not process/.test(failureWords({ error: 'Media upload error', media_meta: { voice: true } }).text), 'rows stored before the code was kept');
+      assert.ok(!/audio file instead/.test(failureWords({ error: 'Media upload error (131053)', media_meta: {} }).text), 'a photo is not offered as audio');
+      assert.ok(/24 hours/.test(failureWords({ error: 'Re-engagement message' }).text));
+      assert.ok(/24 hours/.test(failureWords({ error: 'Outside the 24-hour reply window — only approved templates can be sent now.' }).text));
+      assert.ok(/blocked|not be on WhatsApp/.test(failureWords({ error: 'Message undeliverable (131026)' }).text));
+      assert.deepStrictEqual(failureWords({ error: 'Something new from Meta' }), { text: 'Something new from Meta', said: '' });
+      assert.deepStrictEqual(failureWords({}), { text: 'Failed to send.', said: '' });
+    });
+
+    await test('a request that never reaches the server answers as a failure instead of throwing', async () => {
+      const make = (fetchImpl) => new Function('fetch', `${cut('async function api(', '// One idempotency key')}\nreturn api;`)(fetchImpl);
+      const down = await make(async () => { throw new TypeError('Failed to fetch'); })('/api/send', { method: 'POST' });
+      assert.strictEqual(down.ok, false);
+      assert.strictEqual(down.status, 0);
+      assert.ok(/No connection/.test(down.data.error));
+      const up = await make(async () => ({ status: 200, ok: true, json: async () => ({ a: 1 }) }))('/api/x');
+      assert.deepStrictEqual(up, { status: 200, ok: true, data: { a: 1 } });
     });
 
     await test('search: local numbers, saved names, member names and companies all find the chat', async () => {
@@ -1899,6 +2135,8 @@ function sign(body) {
       function formatPhone(w) { return '+' + w; }
       function escapeHtml(s) { return String(s); }
       ${lift('stripCaption')}
+      ${src.split('\n').find((l) => l.startsWith('const TEXT_TYPES ='))}
+      ${src.split('\n').find((l) => l.startsWith('const isTextLike ='))}
       const UNSUPPORTED_LABEL = "can't be shown";
       ${lift('labelForType')}
       ${lift('replyToOf')}
