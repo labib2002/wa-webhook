@@ -565,6 +565,22 @@ async function login(page, url) {
     && await d.evaluate(() => [...document.querySelectorAll('.bubble.out .meta-agent')].some((e) => e.textContent === 'Naglaa'))
     && await d.evaluate(() => document.querySelector('#me-name').textContent === 'Naglaa' && document.querySelector('#me-initials').textContent === 'N'));
 
+  // the message box never keeps a height measured while the chat was not laid out
+  {
+    const tall = await d.evaluate(() => document.querySelector('#composer-input').getBoundingClientRect().height);
+    check('the message box opens at its normal height', tall >= 36, String(tall));
+  }
+
+  // on a touch screen nothing outside a text box can be selected, the menu included
+  {
+    const sel = await d.evaluate(() => {
+      document.documentElement.classList.add('by-touch');
+      const card = document.querySelector('.sheet-card') || document.body;
+      return { body: getComputedStyle(document.body).userSelect, card: getComputedStyle(card).userSelect, box: getComputedStyle(document.querySelector('#composer-input')).userSelect };
+    });
+    check('a long press selects nothing, not even inside the menu, but the message box still takes text', sel.body === 'none' && sel.card === 'none' && sel.box !== 'none', JSON.stringify(sel));
+  }
+
   // the keyboard stays up after a send, as in WhatsApp
   await d.focus('#composer-input');
   await d.fill('#composer-input', 'one more line');
