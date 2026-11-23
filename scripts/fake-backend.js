@@ -34,7 +34,7 @@ function makeFakeBackend(accounts = ACCOUNTS()) {
         message: 'admin logged in',
         data: {
           accessToken: `tok-${acc.admin_id}`,
-          adminData: { admin_id: acc.admin_id, first_name: acc.first_name, last_name: acc.last_name, phone: '', email: body.email, role: 'viewer' },
+          adminData: { admin_id: acc.admin_id, first_name: acc.first_name, last_name: acc.last_name, phone: '', email: body.email, role: 'viewer', ...('image' in acc ? { image: acc.image } : {}) },
         },
       });
     }
@@ -49,7 +49,10 @@ function makeFakeBackend(accounts = ACCOUNTS()) {
 
   async function lookup(adminId) {
     const acc = Object.values(accounts).find((a) => a.admin_id === Number(adminId));
-    return acc ? { active: acc.active !== false, role: acc.opsRole || null } : null;
+    if (!acc) return null;
+    const row = { active: acc.active !== false, role: acc.opsRole || null };
+    if ('lookupImage' in acc) row.image = acc.lookupImage;
+    return row;
   }
 
   return { fetchImpl, lookup, calls, state, accounts };
