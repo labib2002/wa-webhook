@@ -27,8 +27,8 @@ agent's browser ──▶  /app (gated SPA)  ──▶  /api/*  ─────�
 | Server | **Express on Vercel** (kept, not migrated) | The verified webhook already runs here; the dashboard is a single view that needs no SSR/framework. |
 | Frontend | **Vanilla SPA** (`web/`), no build step | Easy to audit, zero tooling, served by the function. |
 | Database | **Supabase Postgres** (free, no card) | Built-in Postgres; service-role key used server-side only. |
-| Live updates | **Smart polling** (list 4s, open thread 2.5s, incremental) | Robust on serverless, no realtime-auth complexity, keeps all customer PII behind the passcode gate. Supabase Realtime is a documented future upgrade - see below. |
-| Access control | **Shared passcode** → signed httpOnly cookie, enforced on every `/api/*` route | Minimal but real server-side gate, not just hidden UI. |
+| Live updates | **Smart polling** (list 4s, open thread 2.5s, incremental) | Robust on serverless, no realtime-auth complexity, keeps all customer PII behind the sign-in. Supabase Realtime is a documented future upgrade - see below. |
+| Access control | **Byte+ staff account** (the backend's admin login, ops role `ops` or `super_admin`) → signed httpOnly cookie, enforced on every `/api/*` route | One account per person: the name on each message comes from it, and removing the person ends their access within a few minutes (`lib/staff.js`, migration 013). |
 | Webhook auth | **`X-Hub-Signature-256`** verified against the app secret | Rejects forged POSTs. Skipped (with a warning) only if `APP_SECRET` is unset. |
 
 ### Why polling, not Supabase Realtime?
@@ -53,9 +53,9 @@ subscription in `web/app.js` - the data model already supports it.
   `statuses`, upserts the conversation, inserts messages (idempotent on
   `wa_message_id`), updates delivery/read status, returns **200 fast**.
 
-**Dashboard API (passcode-gated, except login/session):**
-- `GET  /api/session` - is this browser logged in? (and is send/DB configured)
-- `POST /api/login` - `{ passcode }` → sets the session cookie.
+**Dashboard API (behind sign-in, except login/session):**
+- `GET  /api/session` - is this browser signed in, and as whom? (and is send/DB configured)
+- `POST /api/login` - `{ email, password }` of a Byte+ staff account, checked by the backend → sets the session cookie.
 - `POST /api/logout`
 - `GET  /api/conversations` - list for the left pane (most recent first), each
   row with its saved name and the member/company the number belongs to.
@@ -121,7 +121,8 @@ Copy `.env.example` → `.env` and fill in. In production this is an on-box
 | `MEDIA_BUCKET` | Private S3 bucket for media. `byteplus-wa-media-prod`. |
 | `AWS_REGION` | `eu-west-1`. Credentials come from the instance role. |
 | `MEDIA_MAX_BYTES` | Inbound download cap. Defaults to 25 MB. |
-| `DASHBOARD_PASSCODE` | You choose - the passcode agents type to log in. |
+| `BACKEND_URL` | The Byte+ backend that checks staff sign-ins. Default `http://127.0.0.1:8000` (the backend on the same box, called directly). |
+| `BACKEND_PROXY_HOPS` | The backend's `trust proxy` number. Default `2`. The inbox pads `x-forwarded-for` so the backend's login limit counts the agent's address, not the inbox. |
 | `SESSION_SECRET` | You choose - long random string. Generate: `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` |
 | `NODE_ENV` | Must be `production` on the box; it gates the Secure cookie flag. |
 | `PORT` | 8080 on `byteplus-prod-app`. |

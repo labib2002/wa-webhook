@@ -88,17 +88,17 @@ app.post('/', webhookJson, async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-//  Service API (token-gated, machine callers) — mounted BEFORE the passcode
+//  Service API (token-gated, machine callers) — mounted BEFORE the signed-in
 //  router so /api/service/* never hits the cookie gate.
 // ---------------------------------------------------------------------------
 app.use('/api/service', smallJson, serviceRouter);
 
-// Daily maintenance cron (retention + usage alert), also BEFORE the passcode
+// Daily maintenance cron (retention + usage alert), also BEFORE the signed-in
 // router. Own auth: CRON_SECRET bearer, else the service token (never open).
 app.get('/api/cron/maintenance', maintenance);
 
 // ---------------------------------------------------------------------------
-//  Dashboard API (passcode-gated inside the router) + static SPA.
+//  Dashboard API (behind sign-in inside the router) + static SPA.
 // ---------------------------------------------------------------------------
 // The composer's base64 upload is the only body that needs 30mb, and it sits
 // behind requireAuth inside the router.

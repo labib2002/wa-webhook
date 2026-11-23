@@ -7,7 +7,7 @@ const http = require('http');
 Object.assign(process.env, {
   WHATSAPP_TOKEN: '', PHONE_NUMBER_ID: '', APP_SECRET: '', DATABASE_URL: '',
   VERIFY_TOKEN: 'x', SESSION_SECRET: 'demo_session_secret_0123456789',
-  DASHBOARD_PASSCODE: 'demo', NODE_ENV: 'test',
+  NODE_ENV: 'test',
 });
 
 const { chromium } = require('playwright');
@@ -16,6 +16,7 @@ const db = require('../lib/db');
 const live = require('../lib/live');
 const fake = makeFakeDb();
 db.__setDbForTesting(fake);
+require('./fake-backend').install();
 
 const iso = (minAgo) => new Date(Date.now() - minAgo * 60000).toISOString();
 const A = '201001234567';
@@ -47,7 +48,6 @@ function check(name, ok, detail = '') {
 
   const browser = await chromium.launch();
   const page = await browser.newPage();
-  await page.addInitScript(() => { try { localStorage.setItem('wa_agent', 'Check'); } catch (_) {} }); // the name box is checked in phone-check
   const pageErrors = [];
   page.on('pageerror', (e) => pageErrors.push(e.message));
 
@@ -87,7 +87,8 @@ function check(name, ok, detail = '') {
   });
 
   await page.goto(base + '/app');
-  await page.fill('#passcode', 'demo');
+  await page.fill('#login-email', 'naglaa@byte.test');
+  await page.fill('#login-password', 'demo');
   await page.click('#login-btn');
   await page.waitForSelector('.conv-row');
   await page.click('.conv-row >> text=Ada Lovelace');
@@ -146,10 +147,10 @@ function check(name, ok, detail = '') {
 
   // Fallback: the stream is refused, so the tab must poll as before.
   const page2 = await browser.newPage();
-  await page2.addInitScript(() => { try { localStorage.setItem('wa_agent', 'Check'); } catch (_) {} });
   await page2.route('**/api/events', (route) => route.fulfill({ status: 503, body: '' }));
   await page2.goto(base + '/app');
-  await page2.fill('#passcode', 'demo');
+  await page2.fill('#login-email', 'naglaa@byte.test');
+  await page2.fill('#login-password', 'demo');
   await page2.click('#login-btn');
   await page2.waitForSelector('.conv-row');
   inbound(B, 'fallback works');
