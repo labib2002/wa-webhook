@@ -520,6 +520,7 @@ els.logoutBtn.addEventListener('click', async () => {
   stopListPolling();
   stopThreadPolling();
   state.activeWaId = null;
+  applyListPane();
   showLogin();
 });
 
@@ -1013,6 +1014,7 @@ async function openConversation(waId, jumpTo = null) {
   if (state.replyTo && state.replyTo.waId !== waId) clearReply();
 
   state.activeWaId = waId;
+  if (typeof applyListPane === 'function') applyListPane();
   const t = thread(waId);
 
   renderThreadHeader();
@@ -2495,12 +2497,132 @@ const phoneLayout = window.matchMedia('(max-width: 720px)');
 phoneLayout.addEventListener('change', () => tuckFilters(phoneLayout.matches));
 tuckFilters(phoneLayout.matches);
 
+/* ----------------------- the chat list on a wide screen ----------------------- */
+const LIST_W_KEY = 'wa_list_w';
+const LIST_HIDDEN_KEY = 'wa_list_hidden';
+const listPane = {
+  handle: $('#list-handle'),
+  toggle: $('#list-toggle'),
+  width: null,
+  hidden: false,
+  frame: 0,
+  drag: null,
+};
+try {
+  const w = Number(localStorage.getItem(LIST_W_KEY));
+  if (Number.isFinite(w) && w > 0) listPane.width = w;
+  listPane.hidden = localStorage.getItem(LIST_HIDDEN_KEY) === '1';
+} catch (_) {}
+
+function listBounds() {
+  return { min: 260, max: Math.max(260, Math.min(560, Math.round(window.innerWidth * 0.45))) };
+}
+function clampListWidth(w) {
+  const { min, max } = listBounds();
+  return Math.round(Math.min(max, Math.max(min, w)));
+}
+function currentListWidth() {
+  if (listPane.width !== null) return listPane.width;
+  return parseFloat(getComputedStyle(els.app).getPropertyValue('--list-w')) || 372;
+}
+function setListWidth(w, remember = true) {
+  if (w === null) {
+    listPane.width = null;
+    els.app.style.removeProperty('--list-w');
+    try { localStorage.removeItem(LIST_W_KEY); } catch (_) {}
+  } else {
+    listPane.width = clampListWidth(w);
+    els.app.style.setProperty('--list-w', `${listPane.width}px`);
+    if (remember) { try { localStorage.setItem(LIST_W_KEY, String(listPane.width)); } catch (_) {} }
+  }
+  listPane.handle.setAttribute('aria-valuenow', String(Math.round(listPane.width || currentListWidth())));
+  if (state.activeWaId) fitThreadHeader();
+}
+function applyListPane() {
+  const wide = !phoneLayout.matches;
+  if (wide && listPane.width !== null) els.app.style.setProperty('--list-w', `${clampListWidth(listPane.width)}px`);
+  else els.app.style.removeProperty('--list-w');
+  const hide = wide && listPane.hidden && Boolean(state.activeWaId);
+  els.app.classList.toggle('list-hidden', hide);
+  listPane.toggle.setAttribute('aria-pressed', String(hide));
+  const words = hide ? 'Show the chat list' : 'Hide the chat list';
+  listPane.toggle.setAttribute('aria-label', words);
+  listPane.toggle.title = `${words} (Ctrl+B)`;
+  const { min, max } = listBounds();
+  listPane.handle.setAttribute('aria-valuemin', String(min));
+  listPane.handle.setAttribute('aria-valuemax', String(max));
+}
+function toggleListPane(force) {
+  if (phoneLayout.matches) return;
+  const next = typeof force === 'boolean' ? force : !els.app.classList.contains('list-hidden');
+  if (next && !state.activeWaId) return;
+  listPane.hidden = next;
+  try { localStorage.setItem(LIST_HIDDEN_KEY, next ? '1' : '0'); } catch (_) {}
+  applyListPane();
+  setTimeout(() => { if (state.activeWaId) fitThreadHeader(); }, 220);
+}
+
+listPane.toggle.addEventListener('click', () => toggleListPane());
+document.addEventListener('keydown', (e) => {
+  if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || String(e.key).toLowerCase() !== 'b') return;
+  if (e.target.closest && e.target.closest('input, textarea, select, [contenteditable="true"]')) return;
+  if (phoneLayout.matches || !state.activeWaId) return;
+  e.preventDefault();
+  toggleListPane();
+});
+
+const rtl = () => getComputedStyle(els.app).direction === 'rtl';
+listPane.handle.addEventListener('pointerdown', (e) => {
+  if (e.button !== 0 || phoneLayout.matches) return;
+  e.preventDefault();
+  listPane.handle.setPointerCapture(e.pointerId);
+  listPane.drag = { x: e.clientX, w: currentListWidth(), next: null };
+  els.app.classList.add('list-dragging');
+});
+listPane.handle.addEventListener('pointermove', (e) => {
+  const d = listPane.drag;
+  if (!d) return;
+  const dx = (e.clientX - d.x) * (rtl() ? -1 : 1);
+  d.next = d.w + dx;
+  if (listPane.frame) return;
+  listPane.frame = requestAnimationFrame(() => {
+    listPane.frame = 0;
+    if (listPane.drag && listPane.drag.next !== null) setListWidth(listPane.drag.next, false);
+  });
+});
+const endListDrag = (e) => {
+  if (!listPane.drag) return;
+  const d = listPane.drag;
+  listPane.drag = null;
+  els.app.classList.remove('list-dragging');
+  try { listPane.handle.releasePointerCapture(e.pointerId); } catch (_) {}
+  if (d.next !== null) setListWidth(d.next);
+};
+listPane.handle.addEventListener('pointerup', endListDrag);
+listPane.handle.addEventListener('pointercancel', endListDrag);
+listPane.handle.addEventListener('dblclick', () => setListWidth(null));
+listPane.handle.addEventListener('keydown', (e) => {
+  const step = { ArrowLeft: -16, ArrowRight: 16 }[e.key];
+  if (e.key === 'Home') { e.preventDefault(); setListWidth(listBounds().min); return; }
+  if (e.key === 'End') { e.preventDefault(); setListWidth(listBounds().max); return; }
+  if (e.key === 'Enter') { e.preventDefault(); setListWidth(null); return; }
+  if (!step) return;
+  e.preventDefault();
+  setListWidth(currentListWidth() + step * (rtl() ? -1 : 1));
+});
+window.addEventListener('resize', () => {
+  if (listPane.width !== null && !phoneLayout.matches) els.app.style.setProperty('--list-w', `${clampListWidth(listPane.width)}px`);
+});
+phoneLayout.addEventListener('change', applyListPane);
+applyListPane();
+
 function closeThread() {
   saveDraft(); // keep the unsent text for when this chat is reopened
   clearReply();
   closePeerSheet();
   els.app.dataset.view = 'list';
   state.activeWaId = null;
+  applyListPane();
   stopThreadPolling();
   els.thread.hidden = true;
   els.placeholder.hidden = false;
