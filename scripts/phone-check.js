@@ -624,6 +624,25 @@ async function login(page, url) {
     check('a long press selects nothing, not even inside the menu, but the message box still takes text', sel.body === 'none' && sel.card === 'none' && sel.box !== 'none', JSON.stringify(sel));
   }
 
+  // a text box keeps its caret on a touch screen: the search and the message box
+  {
+    const kept = await d.evaluate(async () => {
+      document.documentElement.classList.add('by-touch');
+      const out = {};
+      for (const id of ['search', 'composer-input']) {
+        const el = document.getElementById(id);
+        el.focus();
+        el.value = 'abc';
+        el.setSelectionRange(1, 1);
+        await new Promise((r) => setTimeout(r, 150));
+        out[id] = document.activeElement === el && el.selectionStart === 1;
+        el.value = '';
+      }
+      return out;
+    });
+    check('tapping the search or the message box keeps the caret and the keyboard on a touch screen', kept.search && kept['composer-input'], JSON.stringify(kept));
+  }
+
   // the keyboard stays up after a send, as in WhatsApp
   await d.focus('#composer-input');
   await d.fill('#composer-input', 'one more line');
