@@ -227,6 +227,23 @@ const overlaps = (page) => page.evaluate(() => {
       check(`${label}: a video this browser cannot decode shows our "open with the phone's player" fallback`, vv.state === 'error' || vv.ready === 0, JSON.stringify(vv));
       console.log(`SKIP  ${label}: video playback and seeking (this ${label} build cannot decode H.264 here)`);
     }
+    {
+      const shared = await page.evaluate(async () => {
+        window.__shared = null; window.__downloads = 0;
+        navigator.canShare = (d) => Boolean(d && d.files && d.files.length && d.files[0].type && !/octet-stream/.test(d.files[0].type));
+        navigator.share = async (d) => { window.__shared = { name: d.files[0].name, type: d.files[0].type, size: d.files[0].size }; };
+        document.querySelector('#viewer-download').addEventListener('click', () => { window.__downloads += 1; }, { once: true });
+        const btn = document.querySelector('#viewer-share');
+        btn.hidden = false;
+        btn.click();
+        await new Promise((r) => setTimeout(r, 1500));
+        btn.click();
+        await new Promise((r) => setTimeout(r, 200));
+        return { shared: window.__shared, downloads: window.__downloads };
+      });
+      check(`${label}: Share opens the share sheet with the file and its real type, and never downloads instead`,
+        Boolean(shared.shared) && shared.shared.type === 'video/mp4' && shared.shared.size > 0 && shared.downloads === 0, JSON.stringify(shared));
+    }
     await page.click('#viewer-close');
     await page.waitForTimeout(300);
 
