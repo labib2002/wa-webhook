@@ -236,7 +236,7 @@ function sign(body) {
     assert.deepStrictEqual(backend.calls.map((c) => `${c.method} ${c.path}`), ['POST /api/auth/v1/admins/login', 'GET /api/ops/v1/me']);
     for (const c of backend.calls) {
       assert.strictEqual(c.headers['x-byteplus-client'], 'inbox');
-      assert.strictEqual(c.headers['x-forwarded-for'], '203.0.113.9, 127.0.0.1', 'the backend must count the agent, not the inbox');
+      assert.strictEqual(c.headers['x-forwarded-for'], '203.0.113.9', 'the backend must count the agent, not the inbox');
     }
     const cookie = setCookie.split(';')[0];
     const session = JSON.parse((await req(srv, 'GET', '/api/session', { headers: { cookie } })).text);
@@ -253,12 +253,23 @@ function sign(body) {
     assert.strictEqual(JSON.parse((await login({ email: 'twice@byte.test', password: 'demo' })).text).agent.name, 'Labib');
   });
   await test('the address sent to the backend sits where it reads it, whatever the hop count', async () => {
-    assert.strictEqual(staff.forwardedFor('203.0.113.9'), '203.0.113.9, 127.0.0.1');
-    assert.strictEqual(staff.forwardedFor('::ffff:10.0.0.1'), '::ffff:10.0.0.1, 127.0.0.1');
-    const odd = staff.forwardedFor('1.1.1.1, 9.9.9.9\r\nx: y').split(', ');
-    assert.ok(odd.length === 2 && !/[,\s]/.test(odd[0]), 'a header cannot be smuggled in');
-    process.env.BACKEND_PROXY_HOPS = '1';
-    try { assert.strictEqual(staff.forwardedFor('203.0.113.9'), '203.0.113.9'); } finally { delete process.env.BACKEND_PROXY_HOPS; }
+    assert.strictEqual(staff.forwardedFor('203.0.113.9'), '203.0.113.9', 'one value: read as the caller by a backend trusting one hop or two');
+    assert.strictEqual(staff.forwardedFor('::ffff:10.0.0.1'), '::ffff:10.0.0.1');
+    assert.strictEqual(staff.forwardedFor(''), '127.0.0.1');
+    assert.ok(!/[,\s]/.test(staff.forwardedFor('1.1.1.1, 9.9.9.9\r\nx: y')), 'a second address or a header cannot be smuggled in');
+    process.env.BACKEND_PROXY_HOPS = '3';
+    try { assert.strictEqual(staff.forwardedFor('203.0.113.9'), '203.0.113.9, 127.0.0.1, 127.0.0.1'); } finally { delete process.env.BACKEND_PROXY_HOPS; }
+    // What a backend called directly on this box makes of it, as Express reads it.
+    for (const trusted of [1, 2]) {
+      const backendLike = require('express')();
+      backendLike.set('trust proxy', trusted);
+      backendLike.get('/ip', (q, s) => s.json({ ip: q.ip }));
+      const listening = await new Promise((resolve) => { const l = http.createServer(backendLike).listen(0, '127.0.0.1', () => resolve(l)); });
+      try {
+        const r = await fetch(`http://127.0.0.1:${listening.address().port}/ip`, { headers: { 'x-forwarded-for': staff.forwardedFor('203.0.113.9') } });
+        assert.strictEqual((await r.json()).ip, '203.0.113.9', `a backend trusting ${trusted} hop(s)`);
+      } finally { listening.close(); }
+    }
   });
 
   srv.close();
