@@ -598,6 +598,50 @@ async function login(page, url) {
     fake._tables.push_subscriptions.length === 0 && await page.isVisible('#login-screen'));
   await phone.close();
 
+  // ---- the buzz under Chrome's own rule: no buzz before the page has had a
+  // tap. Everything here is read without lending the page a tap of its own.
+  {
+    const ctx = await browser.newContext({ viewport: { width: 390, height: 780 }, deviceScaleFactor: 2, hasTouch: true, isMobile: true });
+    await ctx.addInitScript(() => {
+      window.__vib = [];
+      const real = navigator.vibrate.bind(navigator);
+      navigator.vibrate = (p) => {
+        const ua = navigator.userActivation;
+        const ok = real(p);
+        window.__vib.push({ p, tapped: ua.hasBeenActive, ok, sheet: Boolean(document.querySelector('#sheet') && !document.querySelector('#sheet').hidden) });
+        return ok;
+      };
+    });
+    const signIn = await ctx.newPage();
+    await login(signIn, `${base}/app`);
+    await signIn.close();
+    const pg = await ctx.newPage();
+    const cdp = await ctx.newCDPSession(pg);
+    const q = async (expression) => (await cdp.send('Runtime.evaluate', { expression, returnByValue: true, userGesture: false })).result.value;
+    const touch = (type, x, y) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: type === 'touchEnd' ? [] : [{ x, y }] });
+    const hold = async () => {
+      const at = await q(`(() => { const b = [...document.querySelectorAll('.bubble.in')].pop().getBoundingClientRect(); return { x: Math.round(b.left + Math.min(b.width / 2, 60)), y: Math.round(b.top + b.height / 2) }; })()`);
+      await touch('touchStart', at.x, at.y);
+      await new Promise((r) => setTimeout(r, 650));
+      const held = await q('window.__vib.slice()');
+      await touch('touchEnd');
+      await new Promise((r) => setTimeout(r, 150));
+      const all = await q(`(() => { const v = window.__vib.splice(0); document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); return v; })()`);
+      return { held, all };
+    };
+    await pg.goto(`${base}/app#chat=${A}`, { waitUntil: 'load' });
+    for (let i = 0; i < 40 && !(await q(`document.querySelectorAll('.bubble.in').length`)); i++) await new Promise((r) => setTimeout(r, 100));
+    const untapped = await q('navigator.userActivation.hasBeenActive');
+    const first = await hold();
+    const second = await hold();
+    const felt = (v) => v.filter((c) => c.ok);
+    check('opened from a notification, the first long press still buzzes: Chrome refuses it while the finger is down, so it buzzes as the finger lifts',
+      !untapped && first.held.length === 1 && !first.held[0].ok && first.held[0].sheet && felt(first.all).length === 1 && felt(first.all)[0].p >= 20, JSON.stringify(first));
+    check('after that the long press buzzes once, as the menu opens, long enough to feel on a Samsung (at least 20ms)',
+      second.held.length === 1 && second.held[0].ok && second.held[0].tapped && second.held[0].sheet && second.held[0].p >= 20 && second.all.length === 1, JSON.stringify(second));
+    await ctx.close();
+  }
+
   // ----------------------------------------------------------- desktop
   const desk = await browser.newContext({ viewport: { width: 1280, height: 832 }, permissions: ['microphone'] });
   const d = await desk.newPage();
