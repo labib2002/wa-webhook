@@ -17,6 +17,13 @@ const db = require('../lib/db');
 const fake = makeFakeDb();
 db.__setDbForTesting(fake);
 require('./fake-backend').install();
+// A send through the composer that WhatsApp accepts, so a sent bubble can be
+// compared with the same message drawn fresh.
+const waApi = require('../lib/whatsapp');
+const realSendText = waApi.sendText;
+let sentOk = 0;
+const okTexts = new Set();
+waApi.sendText = async (to, text, ...rest) => (okTexts.has(text) ? { ok: true, waMessageId: `wamid.ok${++sentOk}` } : realSendText(to, text, ...rest));
 
 const iso = (minAgo) => new Date(Date.now() - minAgo * 60000).toISOString();
 const C = '201555464744';
@@ -497,6 +504,42 @@ const sameHeights = (h) => {
     if (tapped === 'touch') check(`${label}: two quick taps on a message start a reply to it`, reply.bar && reply.text.includes('Hdhdhdhdhd'), JSON.stringify(reply));
     await page.click('#reply-cancel').catch(() => {});
     if (shots) await page.screenshot({ path: `${shots}/${label}-after-player.png` });
+
+    // a message sent from the composer is laid out exactly like the same message drawn fresh
+    {
+      const n = label === 'webkit' ? '١' : '٢';
+      const texts = [`ok ${label}`, `تمام ${n}`, `a longer line from ${label} that has to wrap onto a second line here`, `تمام يا فندم هبعتلك الملف دلوقتي على الواتساب ${n}`];
+      texts.forEach((t) => okTexts.add(t));
+      const box = (t) => page.evaluate((x) => {
+        const b = [...document.querySelectorAll('#messages > .bubble.out')].find((n) => n.textContent.startsWith(x));
+        if (!b) return null;
+        const meta = b.querySelector(':scope > .meta, :scope > .bline > .meta');
+        const r = b.getBoundingClientRect();
+        const m = meta.getBoundingClientRect();
+        return { cls: b.className.replace(/\s*cont-out/, ''), h: Math.round(r.height), w: Math.round(r.width), right: Math.round(r.right - m.right), bottom: Math.round(r.bottom - m.bottom), meta: meta.textContent };
+      }, t);
+      const sent = {};
+      for (const t of texts) {
+        await page.fill('#composer-input', t);
+        if (await page.$('.send-btn-tick .tick-switch')) await page.tap('.send-btn-tick .tick-switch').catch(() => page.click('.send-btn-tick .tick-switch'));
+        else await page.click('#send-btn');
+        await page.waitForFunction((x) => [...document.querySelectorAll('#messages > .bubble.out')].some((n) => n.textContent.startsWith(x) && !n.classList.contains('pending') && n.dataset.mid > 0), t, { timeout: 5000 }).catch(() => {});
+        await page.waitForTimeout(400);
+        sent[t] = await box(t);
+      }
+      await page.reload({ waitUntil: 'load' });
+      await page.waitForSelector('.conv-row', { state: 'visible', timeout: 10000 });
+      await page.click('.conv-row');
+      await page.waitForSelector('#messages > .bubble.out');
+      await page.waitForTimeout(700);
+      const diffs = [];
+      for (const t of texts) {
+        const fresh = await box(t);
+        const a = sent[t];
+        if (!a || !fresh || JSON.stringify(a) !== JSON.stringify(fresh) || a.right > 14 || a.bottom > 12) diffs.push({ t: t.slice(0, 14), sent: a, fresh });
+      }
+      check(`${label}: a message sent from the composer, English or Arabic, short or long, sits exactly like the same message drawn fresh, time at the bottom right`, diffs.length === 0, JSON.stringify(diffs.length ? diffs : sent[texts[1]]));
+    }
     await ctx.close();
     await browser.close();
   }
