@@ -64,6 +64,14 @@ fake._tables.messages.push(
   { id: 305, wa_message_id: 'f1', wa_id: C, direction: 'out', type: 'text', body: 'This one failed', status: 'failed', agent: 'Labib', error: 'Message undeliverable', wa_timestamp: iso(0.3), created_at: iso(0.3), media_meta: null, media_status: null, media_path: null, forwarded: false },
   { id: 306, wa_message_id: 'f2', wa_id: C, direction: 'out', type: 'text', body: 'دي ما وصلتش', status: 'failed', agent: 'Naglaa Mohamed', error: 'Message undeliverable', wa_timestamp: iso(0.2), created_at: iso(0.2), media_meta: null, media_status: null, media_path: null, forwarded: false },
 );
+// For the held-message menu: a reply with a reaction (as on Labib's iPhone, 24
+// Nov), a message taller than the screen, and a short one with the member's
+// reaction. Oldest, so they sit at the top of the chat.
+fake._tables.messages.push(
+  { id: 400, wa_message_id: 'q0', wa_id: C, direction: 'in', type: 'text', body: 'شكرا يا فندم على الرد', status: 'received', wa_timestamp: iso(80), created_at: iso(80), media_meta: null, media_status: null, media_path: null, error: null, forwarded: false, reaction: '👍' },
+  { id: 401, wa_message_id: 'q1', wa_id: C, direction: 'out', type: 'text', body: 'I', status: 'read', agent: 'Labib', wa_timestamp: iso(79), created_at: iso(79), media_meta: { reply_to: 'q0', our_reaction: '😢' }, media_status: null, media_path: null, error: null, forwarded: false },
+  { id: 402, wa_message_id: 'q2', wa_id: C, direction: 'out', type: 'text', body: Array.from({ length: 45 }, (_, i) => `سطر رقم ${i + 1} line ${i + 1}`).join('\n'), status: 'read', agent: 'Naglaa Mohamed', wa_timestamp: iso(78), created_at: iso(78), media_meta: { our_reaction: '❤️' }, media_status: null, media_path: null, error: null, forwarded: false },
+);
 const storage = fake.storage.from();
 let mediaBase = '';
 const mediaFiles = {};
@@ -355,7 +363,8 @@ const sameHeights = (h) => {
         b.scrollIntoView({ block: 'center', behavior: 'instant' });
         await new Promise((r) => setTimeout(r, 200));
         b.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
-        await new Promise((r) => setTimeout(r, 350));
+        await new Promise((r) => setTimeout(r, 600));
+        for (let i = 0; i < 40 && document.getAnimations().some((x) => x.playState !== 'finished' && x.playState !== 'idle' && x.effect && x.effect.target && x.effect.target.closest && x.effect.target.closest('#sheet')); i++) await new Promise((r) => setTimeout(r, 50));
         const ov = document.querySelector('#sheet');
         const box = (q) => { const n = document.querySelector(q); if (!n) return null; const r = n.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, left: r.left, right: r.right }; };
         const hs = document.querySelector('.haptic-switch');
@@ -403,6 +412,93 @@ const sameHeights = (h) => {
       if (shots) await page.screenshot({ path: `${shots}/${label}-menu.png` });
       await page.evaluate(() => { if (!document.querySelector('#sheet').hidden) document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
       await page.waitForTimeout(200);
+    }
+
+    // the held message is never cut: the whole bubble and its reaction show, near the top or the
+    // bottom of the screen, and a message taller than the screen scrolls in the menu instead
+    for (const [mid, place, what] of [[401, 'end', 'a reply with a reaction near the bottom'], [401, 'start', 'a reply with a reaction near the top'], [400, 'end', 'a short message with the member\'s reaction'], [402, 'center', 'a message taller than the screen']]) {
+      const got = await page.evaluate(async ({ mid, place }) => {
+        document.documentElement.classList.add('by-touch');
+        const b = document.querySelector(`#messages > .bubble[data-mid="${mid}"]`);
+        if (!b) return { missing: true };
+        b.scrollIntoView({ block: place, behavior: 'instant' });
+        await new Promise((r) => setTimeout(r, 250));
+        const orig = b.getBoundingClientRect().height;
+        document.querySelector('#messages').dispatchEvent(new Event('touchcancel', { bubbles: true }));
+        b.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+        await new Promise((r) => setTimeout(r, 350));
+        const ov = document.querySelector('#sheet');
+        const lift = ov.querySelector('.menu-lift');
+        const box = (n) => { if (!n || n.hidden) return null; const r = n.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, left: r.left, right: r.right, h: r.height }; };
+        const v = window.visualViewport ? { top: visualViewport.offsetTop, h: visualViewport.height } : { top: 0, h: innerHeight };
+        const out = {
+          open: !ov.hidden, orig, scroll: ov.classList.contains('menu-scroll'), v, w: innerWidth,
+          lift: box(lift), pill: box(lift && lift.querySelector('.reaction-pill')), quote: box(lift && lift.querySelector('.bubble-quote')),
+          clipped: lift ? (getComputedStyle(lift).overflow !== 'visible' && lift.scrollHeight > lift.clientHeight + 1) : true,
+          bar: box(document.querySelector('#sheet-reactions')), list: box(document.querySelector('#sheet-actions')),
+        };
+        if (out.scroll) {
+          out.room = ov.scrollHeight - ov.clientHeight;
+          ov.scrollTop = ov.scrollHeight;
+          await new Promise((r) => setTimeout(r, 50));
+          out.listAtEnd = box(document.querySelector('#sheet-actions'));
+          ov.scrollTop = 0;
+        }
+        return out;
+      }, { mid, place });
+      const within = (r) => r && r.top >= got.v.top - 1 && r.bottom <= got.v.top + got.v.h + 1 && r.left >= -1 && r.right <= got.w + 1;
+      const low = got.pill ? Math.max(got.lift.bottom, got.pill.bottom) : (got.lift || {}).bottom;
+      const whole = got.open && got.lift && !got.clipped && Math.abs(got.lift.h / 1.02 - got.orig) < 2
+        && (!got.bar || got.bar.bottom <= got.lift.top + 1) && got.list.top >= low - 1
+        && (!got.pill || !got.bar || got.pill.top >= got.bar.bottom - 1);
+      const tall = mid === 402;
+      const onScreen = tall
+        ? got.scroll && got.room > 0 && got.lift.top >= got.v.top - 1 && within(got.listAtEnd)
+        : !got.scroll && ['lift', 'pill', 'bar', 'list'].every((k) => !got[k] || within(got[k]));
+      check(`${label}: held, ${what} shows whole (bubble, quote and reaction badge), with the reactions above and the actions below${tall ? ', the menu scrolling to reach them' : ', all on screen'}`,
+        whole && onScreen && (mid !== 401 || (got.quote && got.pill)), JSON.stringify(got));
+      if (shots) await page.screenshot({ path: `${shots}/${label}-menu-${mid}-${place}.png` });
+      await page.evaluate(() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+      await page.waitForTimeout(200);
+    }
+
+    // a finger still down after the long press moves: nothing behind the menu scrolls
+    {
+      const moved = await page.evaluate(async () => {
+        const fakeMove = (target, y) => {
+          const ev = new Event('touchmove', { bubbles: true, cancelable: true });
+          const t = { clientX: 60, clientY: y, target, identifier: 1 };
+          Object.defineProperty(ev, 'touches', { value: [t] });
+          Object.defineProperty(ev, 'changedTouches', { value: [t] });
+          target.dispatchEvent(ev);
+          return ev.defaultPrevented;
+        };
+        const b = document.querySelector('#messages > .bubble[data-mid="401"]');
+        b.scrollIntoView({ block: 'center', behavior: 'instant' });
+        await new Promise((r) => setTimeout(r, 200));
+        const closedFree = !fakeMove(b, 300);
+        document.querySelector('#messages').dispatchEvent(new Event('touchcancel', { bubbles: true }));
+        b.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+        await new Promise((r) => setTimeout(r, 300));
+        const chatBlocked = fakeMove(b, 340) && fakeMove(document.querySelector('#messages'), 380);
+        const pageBlocked = fakeMove(document.querySelector('#sheet'), 380);
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        await new Promise((r) => setTimeout(r, 200));
+        const tall = document.querySelector('#messages > .bubble[data-mid="402"]');
+        tall.scrollIntoView({ block: 'center', behavior: 'instant' });
+        await new Promise((r) => setTimeout(r, 200));
+        document.querySelector('#messages').dispatchEvent(new Event('touchcancel', { bubbles: true }));
+        tall.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+        await new Promise((r) => setTimeout(r, 300));
+        const tallChatBlocked = fakeMove(tall, 340);
+        const tallMenuFree = !fakeMove(document.querySelector('#sheet'), 380);
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        await new Promise((r) => setTimeout(r, 200));
+        const reopenedFree = !fakeMove(b, 300);
+        return { closedFree, chatBlocked, pageBlocked, tallChatBlocked, tallMenuFree, reopenedFree };
+      });
+      check(`${label}: while the message menu is open a moving finger cannot scroll the chat behind it (only a tall menu scrolls itself), and the chat scrolls again once it closes`,
+        Object.values(moved).every(Boolean), JSON.stringify(moved));
     }
 
     // every text box takes typing and keeps its caret, with nothing above it switched off for selection
@@ -563,10 +659,11 @@ const sameHeights = (h) => {
     check('desktop: a double click on a message starts a reply and selects no text', r.bar && r.text.includes('Hdhdhdhdhd') && !r.selected, JSON.stringify(r));
     await page.click('#reply-cancel');
     await page.waitForTimeout(800);
-    await page.evaluate(() => [...document.querySelectorAll('.bubble.out')].find((x) => x.textContent.includes('This is a long message')).scrollIntoView({ block: 'center' }));
+    await page.evaluate(() => [...document.querySelectorAll('.bubble.out')].find((x) => x.textContent.includes('This is a long message')).scrollIntoView({ block: 'center', behavior: 'instant' }));
     await page.waitForTimeout(300);
     const beside = await page.evaluate(() => {
       const b = [...document.querySelectorAll('.bubble.out')].find((x) => x.textContent.includes('This is a long message'));
+      b.scrollIntoView({ block: 'center', behavior: 'instant' });
       const rb = b.getBoundingClientRect();
       const box = document.querySelector('#messages').getBoundingClientRect();
       return { x: box.left + 30, y: rb.top + rb.height / 2 };

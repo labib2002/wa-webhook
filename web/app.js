@@ -4033,8 +4033,13 @@ viewer.stage.addEventListener('wheel', (e) => {
 // The page never zooms: no pinch, no double tap, nothing on iPhone either.
 document.addEventListener('gesturestart', (e) => { e.preventDefault(); }, { passive: false });
 document.addEventListener('gesturechange', (e) => { e.preventDefault(); }, { passive: false });
+// While the message menu is open nothing behind it moves, including the chat
+// under a finger still down from the long press. Only a menu too tall for the
+// screen scrolls, under a finger that started on it.
 document.addEventListener('touchmove', (e) => {
-  if (e.touches.length > 1 && !(e.target.classList && e.target.classList.contains('viewer-img')) && e.cancelable) e.preventDefault();
+  if (!e.cancelable) return;
+  if (e.touches.length > 1 && !(e.target.classList && e.target.classList.contains('viewer-img'))) { e.preventDefault(); return; }
+  if (!els.sheet.hidden && !(els.sheet.classList.contains('menu-scroll') && els.sheet.contains(e.target))) e.preventDefault();
 }, { passive: false });
 
 document.addEventListener('keydown', (e) => {
@@ -4375,9 +4380,13 @@ function screenBox() {
 
 // Held on a phone: the message lifts in place over a soft blur, reactions just
 // above it and the actions just below, moved as one block to stay on screen.
+// The whole message and its reaction always show: a message too tall for the
+// screen is laid out from the top and the menu scrolls, as in WhatsApp.
 function layoutFocus(m, bubble) {
   const ov = els.sheet;
   const r = bubble.getBoundingClientRect();
+  const pill = bubble.querySelector(':scope > .reaction-pill');
+  const hang = pill ? Math.max(0, Math.ceil(pill.getBoundingClientRect().bottom - r.bottom)) : 0;
   const lift = bubble.cloneNode(true);
   lift.classList.add('menu-lift');
   lift.classList.remove('swiping', 'swipe-armed');
@@ -4395,15 +4404,21 @@ function layoutFocus(m, bubble) {
   const gap = 8;
   const bh = bar.hidden ? 0 : bar.offsetHeight;
   const lh = list.offsetHeight;
-  const h = Math.min(r.height, box.h * 0.42);
-  const above = bh ? bh + gap : 0;
-  const total = above + h + gap + lh;
-  let top = r.top - above;
-  top = Math.max(box.top + pad, Math.min(top, box.top + box.h - total - pad));
+  const h = r.height;
+  // the lifted copy grows 2% about its centre: room for that above and below
+  const grow = Math.ceil(h * 0.01);
+  const above = (bh ? bh + gap : 0) + grow;
+  const below = hang + gap + grow;
+  const total = above + h + below + lh;
+  const fits = total <= box.h - 2 * pad;
+  ov.classList.toggle('menu-scroll', !fits);
+  ov.scrollTop = 0;
+  const top = fits
+    ? Math.max(box.top + pad, Math.min(r.top - above, box.top + box.h - total - pad))
+    : box.top + pad;
   const bubbleTop = top + above;
   lift.style.top = `${bubbleTop}px`;
   lift.style.left = `${r.left}px`;
-  lift.style.maxHeight = `${h}px`;
   lift.style.setProperty('--lift-from', `${Math.round(r.top - bubbleTop)}px`);
   const side = (w) => {
     const x = m.direction === 'out' ? r.right - w : r.left;
@@ -4411,7 +4426,14 @@ function layoutFocus(m, bubble) {
   };
   if (bh) { bar.style.left = `${side(bar.offsetWidth)}px`; bar.style.top = `${top}px`; }
   list.style.left = `${side(list.offsetWidth)}px`;
-  list.style.top = `${bubbleTop + h + gap}px`;
+  list.style.top = `${bubbleTop + h + below}px`;
+  if (!fits) {
+    const end = document.createElement('div');
+    end.className = 'menu-end';
+    end.style.top = `${bubbleTop + h + below + lh}px`;
+    end.style.height = `${pad}px`;
+    ov.appendChild(end);
+  }
 }
 
 // Right click on a computer: a small card at the pointer, kept inside the window.
@@ -4462,7 +4484,7 @@ function openSheet(m, at) {
 }
 function closeSheet() {
   els.sheet.hidden = true;
-  els.sheet.querySelectorAll('.menu-lift').forEach((n) => n.remove());
+  els.sheet.querySelectorAll('.menu-lift, .menu-end').forEach((n) => n.remove());
   if (sheet.lifted) { sheet.lifted.classList.remove('is-lifted'); sheet.lifted = null; }
   sheet.msg = null;
   const back = sheet.returnFocus;
@@ -4631,7 +4653,7 @@ els.messages.addEventListener('touchstart', (e) => {
 }, { passive: true });
 
 els.messages.addEventListener('touchmove', (e) => {
-  if (!press.bubble) return;
+  if (!press.bubble || press.fired) return;
   const dx = e.touches[0].clientX - press.x0;
   const dy = e.touches[0].clientY - press.y0;
   if (!press.swiping) {
