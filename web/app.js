@@ -1467,6 +1467,13 @@ function renderBubble(m, continued) {
       retry.addEventListener('click', (e) => { e.stopPropagation(); retrySend(m); });
       div.appendChild(retry);
     }
+    const metaEl = div.querySelector(':scope > .meta');
+    if (metaEl) {
+      const pad = div.querySelector(':scope > .meta-pad');
+      if (pad) pad.remove();
+      div.appendChild(metaEl);
+      div.classList.add('meta-last');
+    }
   }
 
   // Reaction emoji (customer reacted to one of our messages) — a small pill

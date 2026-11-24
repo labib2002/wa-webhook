@@ -61,6 +61,8 @@ fake._tables.messages.push(
   { id: 302, wa_message_id: 'v3', wa_id: C, direction: 'in', type: 'text', body: 'تمت', status: 'received', wa_timestamp: iso(1), created_at: iso(1), media_meta: null, media_status: null, media_path: null, error: null, forwarded: false },
   { id: 303, wa_message_id: 'v4', wa_id: C, direction: 'in', type: 'video', body: '🎬 Video', status: 'received', wa_timestamp: iso(0.5), created_at: iso(0.5), media_meta: { mime_type: 'video/mp4', w: 320, h: 240, duration: 2, poster: true }, media_status: 'stored', media_path: 'clip.mp4', error: null, forwarded: false },
   { id: 304, wa_message_id: 'v5', wa_id: C, direction: 'in', type: 'image', body: '📷 Image', status: 'received', wa_timestamp: iso(0.4), created_at: iso(0.4), media_meta: { mime_type: 'image/jpeg', w: 320, h: 240 }, media_status: 'stored', media_path: 'photo.jpg', error: null, forwarded: false },
+  { id: 305, wa_message_id: 'f1', wa_id: C, direction: 'out', type: 'text', body: 'This one failed', status: 'failed', agent: 'Labib', error: 'Message undeliverable', wa_timestamp: iso(0.3), created_at: iso(0.3), media_meta: null, media_status: null, media_path: null, forwarded: false },
+  { id: 306, wa_message_id: 'f2', wa_id: C, direction: 'out', type: 'text', body: 'دي ما وصلتش', status: 'failed', agent: 'Naglaa Mohamed', error: 'Message undeliverable', wa_timestamp: iso(0.2), created_at: iso(0.2), media_meta: null, media_status: null, media_path: null, forwarded: false },
 );
 const storage = fake.storage.from();
 let mediaBase = '';
@@ -222,6 +224,7 @@ const sameHeights = (h) => {
       return { text: b.textContent.trim().slice(0, 14), right: Math.round(r.right - m.right), bottom: Math.round(r.bottom - m.bottom) };
     }).filter(Boolean));
     const off = corner.filter((c) => c.right > 14 || c.bottom > 12);
+    check(`${label}: a failed message shows its reason and Retry first, then the time at the bottom right`, await page.evaluate(() => { const fs = [...document.querySelectorAll('.bubble.failed')]; return fs.length >= 2 && fs.every((b) => { const meta = b.querySelector(':scope > .meta'); const retry = b.querySelector(':scope > .bubble-retry, :scope > .fail-reason'); if (!meta || !retry) return false; const m = meta.getBoundingClientRect(); const r = b.getBoundingClientRect(); return m.top >= retry.getBoundingClientRect().bottom - 1 && r.right - m.right <= 14 && r.bottom - m.bottom <= 12; }); }));
     check(`${label}: the name, time and ticks sit at the bottom right of every message, Arabic and English alike`, corner.length > 10 && off.length === 0, JSON.stringify(off.length ? off : corner.slice(0, 3)));
     const heights = await oneLineHeights(page);
     console.log(`HEIGHTS ${label} ${JSON.stringify(heights)}`);

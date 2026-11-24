@@ -570,6 +570,8 @@ button.thread-name {
 .bubble .tick.read { color: var(--read-tick); }
 .bubble.failed { background: var(--danger-soft); color: #6e2417; }
 .bubble.failed .meta { color: var(--danger); }
+.bubble.meta-last .meta { position: static; float: none; display: flex; justify-content: flex-end; margin: 6px 0 -2px; }
+.bubble.meta-last .bubble-retry { margin-bottom: 2px; }
 .bubble .fail-reason {
   display: block; margin-top: 4px;
   font-size: 12px; color: var(--danger); font-weight: 500;
