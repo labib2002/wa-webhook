@@ -1473,8 +1473,10 @@ html, body { touch-action: pan-x pan-y; }
 .sheet-action { display: flex; align-items: center; gap: 12px; }
 .menu-ico { width: 20px; height: 20px; flex: none; color: var(--ink-2); }
 .sheet-react:focus-visible, .sheet-action:focus-visible { outline: 2px solid var(--pine); outline-offset: -2px; }
+.sheet-overlay.menu-focus.menu-scroll { overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+.menu-end { position: absolute; left: 0; width: 1px; pointer-events: none; }
 .menu-lift {
-  position: fixed; margin: 0 !important; z-index: 2; overflow: hidden; pointer-events: none;
+  position: absolute; margin: 0 !important; z-index: 2; pointer-events: none; max-width: none;
   box-shadow: 0 14px 40px rgba(20, 28, 26, 0.28);
   transform: scale(1.02); transform-origin: center;
   animation: menu-lift 0.2s cubic-bezier(0.22, 1, 0.36, 1) both;

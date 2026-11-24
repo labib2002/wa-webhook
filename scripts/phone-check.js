@@ -455,6 +455,47 @@ async function login(page, url) {
     await page.waitForTimeout(150);
   }
 
+  // the finger still down after the long press moves: the chat behind the menu stays put
+  {
+    const start = await page.evaluate(() => {
+      const list = document.querySelector('#messages');
+      const all = [...list.querySelectorAll(':scope > .bubble')].filter((n) => !n.querySelector('audio, .vplayer, .media-frame, .bubble-retry'));
+      const b = all[Math.floor(all.length / 2)];
+      b.scrollIntoView({ block: 'center', behavior: 'instant' });
+      const r = b.getBoundingClientRect();
+      return { x: Math.round(r.left + Math.min(r.width / 2, 40)), y: Math.round(r.top + r.height / 2), room: list.scrollHeight - list.clientHeight };
+    });
+    await page.waitForTimeout(400);
+    const free0 = await page.evaluate(() => document.querySelector('#messages').scrollTop);
+    await touch('touchStart', start.x, start.y);
+    for (let dy = 20; dy <= 160; dy += 20) { await touch('touchMove', start.x, start.y + dy); await page.waitForTimeout(16); }
+    await touch('touchEnd');
+    await page.waitForTimeout(400);
+    const free1 = await page.evaluate(() => document.querySelector('#messages').scrollTop);
+    check('a plain drag still scrolls the chat', !(await page.isVisible('#sheet')) && Math.abs(free1 - free0) > 60, JSON.stringify({ free0, free1 }));
+    const before = free1;
+    Object.assign(start, await page.evaluate(() => {
+      const b = [...document.querySelectorAll('#messages > .bubble')].filter((n) => !n.querySelector('audio, .vplayer, .media-frame, .bubble-retry'))
+        .find((n) => { const r = n.getBoundingClientRect(); return r.top > 120 && r.bottom < innerHeight - 200; });
+      const r = b.getBoundingClientRect();
+      return { x: Math.round(r.left + Math.min(r.width / 2, 40)), y: Math.round(r.top + r.height / 2) };
+    }));
+    await touch('touchStart', start.x, start.y);
+    await page.waitForTimeout(650);
+    for (let dy = 20; dy <= 240; dy += 20) { await touch('touchMove', start.x, start.y + dy); await page.waitForTimeout(16); }
+    await page.waitForTimeout(250);
+    const mid = await page.evaluate(() => ({ top: document.querySelector('#messages').scrollTop, open: !document.querySelector('#sheet').hidden, swiping: Boolean(document.querySelector('.bubble.swiping')) }));
+    await touch('touchEnd');
+    await page.waitForTimeout(300);
+    const after = await page.evaluate(() => ({ top: document.querySelector('#messages').scrollTop, open: !document.querySelector('#sheet').hidden }));
+    check('a finger still down after the long press cannot scroll the chat behind the menu, and the menu stays open',
+      start.room > 300 && mid.open && !mid.swiping && Math.abs(mid.top - before) < 2 && Math.abs(after.top - before) < 2 && after.open,
+      JSON.stringify({ before, mid, after, room: start.room }));
+    await page.keyboard.press('Escape');
+    await page.evaluate(() => { const list = document.querySelector('#messages'); list.scrollTo({ top: list.scrollHeight, behavior: 'instant' }); });
+    await page.waitForTimeout(400);
+  }
+
   at = await centre('.bubble.in');
   await touch('touchStart', at.x, at.y);
   for (let dx = 12; dx <= 96; dx += 12) { await touch('touchMove', at.x + dx, at.y); await page.waitForTimeout(16); }
