@@ -879,12 +879,59 @@ async function setConversationRead(waId, read) {
 }
 
 // Swipe a chat to the left to mark it done, or to flag it as needing a reply.
-const rowSwipe = { row: null, x0: 0, y0: 0, dx: 0, on: false, justSwiped: false };
+// A short tap of the phone's motor, once per gesture. Android Chrome has it;
+// Safari on iPhone has no vibration a page can use.
+// On an iPhone, where there is no vibration a page can use, toggling a hidden
+// switch inside the gesture plays the system tap (Safari 17.4 and later).
+let hapticLabel = null;
+function hapticSwitch() {
+  if (hapticLabel) return hapticLabel;
+  hapticLabel = document.createElement('label');
+  hapticLabel.className = 'haptic-switch';
+  hapticLabel.setAttribute('aria-hidden', 'true');
+  hapticLabel.innerHTML = '<input type="checkbox" switch tabindex="-1">';
+  hapticLabel.addEventListener('click', (e) => e.stopPropagation());
+  document.body.appendChild(hapticLabel);
+  return hapticLabel;
+}
+// From iOS 26.5 only a real finger landing on a switch ticks, so the buttons
+// where a tick helps carry a see-through switch over them on an iPhone.
+const tapTicks = !navigator.vibrate && /iP(hone|ad|od)/.test(navigator.userAgent);
+function addTapTick(btn) {
+  if (!tapTicks || !btn || (btn.parentElement && btn.parentElement.classList.contains('tick-wrap'))) return;
+  const wrap = document.createElement('span');
+  wrap.className = `tick-wrap ${btn.className.split(' ')[0]}-tick`;
+  btn.replaceWith(wrap);
+  wrap.appendChild(btn);
+  const label = document.createElement('label');
+  label.className = 'tick-switch';
+  label.setAttribute('aria-hidden', 'true');
+  label.innerHTML = '<input type="checkbox" switch tabindex="-1">';
+  let keep = null;
+  label.addEventListener('pointerdown', () => { keep = document.activeElement; });
+  label.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (e.target.tagName !== 'INPUT') return;
+    if (keep && keep !== document.activeElement && keep.focus && keep !== document.body) keep.focus({ preventScroll: true });
+    keep = null;
+    btn.click();
+  });
+  wrap.appendChild(label);
+}
+function haptic(gesture) {
+  if (!byTouch) return;
+  if (gesture) { if (gesture.buzzed) return; gesture.buzzed = true; }
+  if (navigator.vibrate) { try { navigator.vibrate(12); } catch (_) {} return; }
+  const active = document.activeElement;
+  hapticSwitch().click();
+  if (active && active !== document.activeElement && active.focus) active.focus({ preventScroll: true });
+}
+const rowSwipe = { row: null, x0: 0, y0: 0, dx: 0, on: false, justSwiped: false, buzzed: false };
 const SWIPE_ROW_AT = 84;
 els.convList.addEventListener('touchstart', (e) => {
   const row = e.target.closest('.conv-row');
   if (!row || e.touches.length !== 1 || row.dataset.hit) return;
-  Object.assign(rowSwipe, { row, x0: e.touches[0].clientX, y0: e.touches[0].clientY, dx: 0, on: false });
+  Object.assign(rowSwipe, { row, x0: e.touches[0].clientX, y0: e.touches[0].clientY, dx: 0, on: false, buzzed: false });
 }, { passive: true });
 els.convList.addEventListener('touchmove', (e) => {
   const s = rowSwipe;
@@ -899,7 +946,9 @@ els.convList.addEventListener('touchmove', (e) => {
   }
   s.dx = Math.max(-140, Math.min(0, dx));
   s.row.style.setProperty('--swipe', `${s.dx}px`);
-  s.row.classList.toggle('swipe-armed', s.dx <= -SWIPE_ROW_AT);
+  const armed = s.dx <= -SWIPE_ROW_AT;
+  if (armed && !s.row.classList.contains('swipe-armed')) haptic(s);
+  s.row.classList.toggle('swipe-armed', armed);
 }, { passive: true });
 for (const type of ['touchend', 'touchcancel']) {
   els.convList.addEventListener(type, () => {
@@ -1439,7 +1488,7 @@ function renderBubble(m, continued) {
       actions.appendChild(actionButton('Reply', '<polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/>', () => startReply(m)));
     }
     actions.appendChild(actionButton('Forward', '<polyline points="15 17 20 12 15 7"/><path d="M4 18v-2a4 4 0 0 1 4-4h12"/>', () => openForwardModal(m)));
-    actions.appendChild(actionButton('More for this', '<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>', () => openSheet(m)));
+    actions.appendChild(actionButton('More for this', '<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>', (e) => { const r = e && e.currentTarget && e.currentTarget.getBoundingClientRect ? e.currentTarget.getBoundingClientRect() : null; openSheet(m, r ? { x: r.left, y: r.bottom + 4 } : null); }));
     div.appendChild(actions);
   }
   if (tail && !div.querySelector(':scope > .fail-reason, :scope > .bubble-retry')) {
@@ -2380,6 +2429,7 @@ function settleOptimistic(waId, opt, patch, persisted) {
   if (waId === state.activeWaId) renderMessages();
 }
 
+addTapTick(els.sendBtn);
 ['pointerdown', 'mousedown'].forEach((type) => els.sendBtn.addEventListener(type, (e) => {
   if (document.activeElement === els.composerInput) e.preventDefault();
 }));
@@ -4282,26 +4332,120 @@ function sheetActionsFor(m) {
   return out;
 }
 
-function openSheet(m) {
+const MENU_ICONS = {
+  Reply: '<path d="M9 14 4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 6 6v3"/>',
+  Copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/>',
+  Forward: '<path d="m15 14 5-5-5-5"/><path d="M20 9H10a6 6 0 0 0-6 6v3"/>',
+  Open: '<path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="m21 3-7 7"/><path d="m3 21 7-7"/>',
+  Download: '<path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/>',
+  'Send again': '<path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 4v5h-5"/>',
+};
+function menuIcon(label) {
+  const d = MENU_ICONS[label];
+  return d ? `<svg class="menu-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>` : '';
+}
+
+// The part of the screen the keyboard leaves free.
+function screenBox() {
+  const v = window.visualViewport;
+  return v ? { top: v.offsetTop, h: v.height, w: v.width } : { top: 0, h: window.innerHeight, w: window.innerWidth };
+}
+
+// Held on a phone: the message lifts in place over a soft blur, reactions just
+// above it and the actions just below, moved as one block to stay on screen.
+function layoutFocus(m, bubble) {
+  const ov = els.sheet;
+  const r = bubble.getBoundingClientRect();
+  const lift = bubble.cloneNode(true);
+  lift.classList.add('menu-lift');
+  lift.classList.remove('swiping', 'swipe-armed');
+  lift.setAttribute('aria-hidden', 'true');
+  lift.querySelectorAll('[id]').forEach((n) => n.removeAttribute('id'));
+  lift.removeAttribute('id');
+  lift.style.width = `${r.width}px`;
+  ov.appendChild(lift);
+  bubble.classList.add('is-lifted');
+  sheet.lifted = bubble;
+  const bar = els.sheetReactions;
+  const list = els.sheetActions;
+  const box = screenBox();
+  const pad = 10;
+  const gap = 8;
+  const bh = bar.hidden ? 0 : bar.offsetHeight;
+  const lh = list.offsetHeight;
+  const h = Math.min(r.height, box.h * 0.42);
+  const above = bh ? bh + gap : 0;
+  const total = above + h + gap + lh;
+  let top = r.top - above;
+  top = Math.max(box.top + pad, Math.min(top, box.top + box.h - total - pad));
+  const bubbleTop = top + above;
+  lift.style.top = `${bubbleTop}px`;
+  lift.style.left = `${r.left}px`;
+  lift.style.maxHeight = `${h}px`;
+  lift.style.setProperty('--lift-from', `${Math.round(r.top - bubbleTop)}px`);
+  const side = (w) => {
+    const x = m.direction === 'out' ? r.right - w : r.left;
+    return Math.max(pad, Math.min(x, box.w - w - pad));
+  };
+  if (bh) { bar.style.left = `${side(bar.offsetWidth)}px`; bar.style.top = `${top}px`; }
+  list.style.left = `${side(list.offsetWidth)}px`;
+  list.style.top = `${bubbleTop + h + gap}px`;
+}
+
+// Right click on a computer: a small card at the pointer, kept inside the window.
+function layoutCard(at) {
+  const card = els.sheet.querySelector('.sheet-card');
+  const pad = 8;
+  const cw = card.offsetWidth;
+  const ch = card.offsetHeight;
+  const x = at.x + cw + pad > window.innerWidth ? at.x - cw : at.x;
+  const y = at.y + ch + pad > window.innerHeight ? at.y - ch : at.y;
+  card.style.left = `${Math.max(pad, Math.min(x, window.innerWidth - cw - pad))}px`;
+  card.style.top = `${Math.max(pad, Math.min(y, window.innerHeight - ch - pad))}px`;
+}
+
+function openSheet(m, at) {
   if (!m || !els.sheet.hidden) return;
   const actions = sheetActionsFor(m);
   const canReact = Boolean(m.wa_message_id) && typeof m.id === 'number' && m.status !== 'failed';
   if (!actions.length && !canReact) return;
   if (byTouch && window.getSelection) window.getSelection().removeAllRanges();
+  const bubble = els.messages.querySelector(`.bubble[data-mid="${m.id}"]`);
+  const asCard = Boolean(at) && !byTouch;
   sheet.msg = m;
   sheet.actions = actions;
+  sheet.returnFocus = document.activeElement;
   els.sheetReactions.hidden = !canReact;
   els.sheetReactions.innerHTML = canReact
-    ? QUICK_REACTIONS.map((e) => `<button type="button" class="sheet-react${ourReaction(m) === e ? ' active' : ''}" data-emoji="${e}" aria-label="React ${e}">${e}</button>`).join('')
+    ? QUICK_REACTIONS.map((e) => `<button type="button" class="sheet-react${ourReaction(m) === e ? ' active' : ''}" data-emoji="${e}" role="menuitem" aria-label="React ${e}${ourReaction(m) === e ? ', chosen' : ''}">${e}</button>`).join('')
     : '';
-  els.sheetActions.innerHTML = actions.map((a, i) => `<button type="button" class="sheet-action" role="menuitem" data-i="${i}">${escapeHtml(a.label)}</button>`).join('');
+  els.sheetActions.innerHTML = actions.map((a, i) => `<button type="button" class="sheet-action" role="menuitem" data-i="${i}">${menuIcon(a.label)}<span>${escapeHtml(a.label)}</span></button>`).join('');
+  const card = els.sheet.querySelector('.sheet-card');
+  [card, els.sheetReactions, els.sheetActions].forEach((n) => { n.style.left = ''; n.style.top = ''; });
+  els.sheet.className = `sheet-overlay ${asCard ? 'menu-card' : bubble ? 'menu-focus' : 'menu-card menu-plain'}`;
+  if (tapTicks) els.sheet.querySelectorAll('.sheet-react, .sheet-action').forEach(addTapTick);
   els.sheet.hidden = false;
+  if (asCard) layoutCard(at);
+  else if (bubble) layoutFocus(m, bubble);
+  else {
+    const box = screenBox();
+    layoutCard({ x: (box.w - card.offsetWidth) / 2, y: box.top + (box.h - card.offsetHeight) / 2 });
+  }
   sheet.openedAt = performance.now();
-  if (navigator.vibrate) { try { navigator.vibrate(8); } catch (_) {} }
+  haptic();
+  if (!byTouch) {
+    const first = els.sheet.querySelector('.sheet-react:not([hidden]), .sheet-action');
+    if (first) first.focus({ preventScroll: true, focusVisible: false });
+  }
 }
 function closeSheet() {
   els.sheet.hidden = true;
+  els.sheet.querySelectorAll('.menu-lift').forEach((n) => n.remove());
+  if (sheet.lifted) { sheet.lifted.classList.remove('is-lifted'); sheet.lifted = null; }
   sheet.msg = null;
+  const back = sheet.returnFocus;
+  sheet.returnFocus = null;
+  if (!byTouch && back && back.focus && document.contains(back) && back !== document.body) back.focus({ preventScroll: true });
 }
 
 // Our own reaction: on a member's message it is the message's reaction; on
@@ -4336,12 +4480,29 @@ els.sheet.addEventListener('click', (e) => {
   const action = e.target.closest('.sheet-action');
   const m = sheet.msg;
   const actions = sheet.actions || [];
-  if (react && m) { closeSheet(); reactTo(m, react.dataset.emoji); return; }
+  if (react && m) { if (!tapTicks) haptic(); closeSheet(); reactTo(m, react.dataset.emoji); return; }
   if (action && m) { const a = actions[Number(action.dataset.i)]; closeSheet(); if (a) a.run(); return; }
   // The finger that opened it by a long press lifts over the backdrop a moment
   // later; that must not close it again.
   if (e.target === els.sheet && performance.now() - sheet.openedAt > 400) closeSheet();
 });
+els.sheet.addEventListener('keydown', (e) => {
+  const items = [...els.sheet.querySelectorAll('.sheet-react, .sheet-action')].filter((n) => !n.closest('[hidden]'));
+  if (!items.length) return;
+  const at = items.indexOf(document.activeElement);
+  const reacts = items.filter((n) => n.classList.contains('sheet-react'));
+  const r = reacts.indexOf(document.activeElement);
+  let next = null;
+  if (e.key === 'ArrowDown') next = r >= 0 ? items[reacts.length] || items[0] : items[(at + 1) % items.length];
+  else if (e.key === 'ArrowUp') next = r >= 0 ? items[items.length - 1] : items[(at - 1 + items.length) % items.length];
+  else if (e.key === 'ArrowRight' && r >= 0) next = reacts[(r + 1) % reacts.length];
+  else if (e.key === 'ArrowLeft' && r >= 0) next = reacts[(r - 1 + reacts.length) % reacts.length];
+  else if (e.key === 'Home') next = items[0];
+  else if (e.key === 'End') next = items[items.length - 1];
+  else if (e.key === 'Tab') next = items[(at + (e.shiftKey ? -1 : 1) + items.length) % items.length];
+  if (next) { e.preventDefault(); next.focus(); }
+});
+window.addEventListener('resize', () => { if (!els.sheet.hidden && !byTouch) closeSheet(); });
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   if (!els.sheet.hidden) closeSheet();
@@ -4369,7 +4530,7 @@ els.messages.addEventListener('contextmenu', (e) => {
   // Someone who selected a few words wants the browser's own menu to copy them.
   if (String(window.getSelection ? window.getSelection() : '')) return;
   e.preventDefault();
-  openSheet(m);
+  openSheet(m, { x: e.clientX, y: e.clientY });
 });
 
 /* ----------------------- touch: long press and swipe to reply ----------------------- */
@@ -4431,6 +4592,7 @@ function endPress() {
   }
   press.bubble = null;
   press.swiping = false;
+  press.fired = false;
 }
 
 els.messages.addEventListener('touchstart', (e) => {
@@ -4438,7 +4600,7 @@ els.messages.addEventListener('touchstart', (e) => {
   if (e.touches.length !== 1) return;
   const bubble = e.target.closest('.bubble') || (e.target === els.messages ? bubbleAtY(e.touches[0].clientY) : null);
   if (!bubble || e.target.closest('audio, .bubble-retry, .vplayer')) return;
-  Object.assign(press, { bubble, x0: e.touches[0].clientX, y0: e.touches[0].clientY, dx: 0, fired: false, tapOk: !e.target.closest('a, button, .media-frame, video, .contact-card') });
+  Object.assign(press, { bubble, buzzed: false, x0: e.touches[0].clientX, y0: e.touches[0].clientY, dx: 0, fired: false, tapOk: !e.target.closest('a, button, .media-frame, video, .contact-card') });
   press.timer = setTimeout(() => {
     if (!press.bubble || press.swiping) return;
     press.fired = true;
@@ -4460,6 +4622,7 @@ els.messages.addEventListener('touchmove', (e) => {
   }
   press.dx = Math.max(0, Math.min(96, dx));
   press.bubble.style.setProperty('--swipe', `${press.dx}px`);
+  if (press.dx >= SWIPE_REPLY_AT && !press.bubble.classList.contains('swipe-armed')) haptic(press);
   press.bubble.classList.toggle('swipe-armed', press.dx >= SWIPE_REPLY_AT);
 }, { passive: true });
 
@@ -4471,7 +4634,6 @@ for (const type of ['touchend', 'touchcancel']) {
     // The finger lifting after a long press must not also open the photo under it.
     if (fired && e.cancelable) e.preventDefault();
     if (type === 'touchend' && swiping && dx >= SWIPE_REPLY_AT && m) {
-      if (navigator.vibrate) { try { navigator.vibrate(8); } catch (_) {} }
       startReply(m);
       return;
     }

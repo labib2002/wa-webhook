@@ -333,6 +333,68 @@ const sameHeights = (h) => {
     await page.click('#viewer-close');
     await page.waitForTimeout(300);
 
+    // the held message: lifted in place, and the phone's tick where the phone allows one
+    {
+      const opened = await page.evaluate(async () => {
+        window.__ticks = 0; window.__hidden = 0; window.__buzz = 0;
+        document.addEventListener('change', (e) => { if (e.target.closest && e.target.closest('.tick-switch')) window.__ticks += 1; }, true);
+        document.addEventListener('click', (e) => { if (e.target.classList && e.target.classList.contains('haptic-switch')) window.__hidden += 1; }, true);
+        if (navigator.vibrate) navigator.vibrate = () => { window.__buzz += 1; return true; };
+        document.documentElement.classList.add('by-touch');
+        const b = [...document.querySelectorAll('#messages > .bubble')].filter((n) => !n.querySelector('audio, .vplayer, .media-frame, .bubble-retry')).pop();
+        b.scrollIntoView({ block: 'center', behavior: 'instant' });
+        await new Promise((r) => setTimeout(r, 200));
+        b.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+        await new Promise((r) => setTimeout(r, 350));
+        const ov = document.querySelector('#sheet');
+        const box = (q) => { const n = document.querySelector(q); if (!n) return null; const r = n.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, left: r.left, right: r.right }; };
+        const hs = document.querySelector('.haptic-switch');
+        return {
+          open: !ov.hidden, focus: ov.classList.contains('menu-focus'), lift: box('#sheet .menu-lift'), bar: box('#sheet-reactions'), list: box('#sheet-actions'),
+          w: innerWidth, h: innerHeight,
+          tickReacts: document.querySelectorAll('#sheet .sheet-react-tick .tick-switch input[switch]').length,
+          tickActions: document.querySelectorAll('#sheet .sheet-action-tick .tick-switch').length,
+          sendTick: Boolean(document.querySelector('.send-btn-tick .tick-switch')),
+          hidden: hs ? { aria: hs.getAttribute('aria-hidden'), tab: hs.querySelector('input').tabIndex, w: hs.getBoundingClientRect().width } : null,
+          hiddenClicks: window.__hidden, buzz: window.__buzz, vibrate: typeof navigator.vibrate === 'function',
+          highlight: getComputedStyle(document.documentElement).webkitTapHighlightColor || '',
+        };
+      });
+      const inside = ['lift', 'bar', 'list'].every((k) => opened[k] && opened[k].top >= -1 && opened[k].bottom <= opened.h + 1 && opened[k].left >= -1 && opened[k].right <= opened.w + 1);
+      check(`${label}: a held message lifts in place with reactions above and actions below, all on screen`,
+        opened.open && opened.focus && inside && opened.bar.bottom <= opened.lift.top + 1 && opened.list.top >= opened.lift.bottom - 1, JSON.stringify(opened));
+      check(`${label}: no blue flash on a tap`, /rgba\(0, 0, 0, 0\)|transparent/.test(opened.highlight || 'transparent'), opened.highlight);
+      if (!opened.vibrate) {
+        check(`${label}: no vibration here, so every reaction, menu action and the send button carry a see-through switch that ticks under a real finger`,
+          opened.tickReacts === 6 && opened.tickActions >= 3 && opened.sendTick, JSON.stringify(opened));
+        check(`${label}: the long press tried the older-iPhone tick once, through a hidden switch nobody can see, reach or hear`,
+          opened.hiddenClicks === 1 && opened.hidden && opened.hidden.aria === 'true' && opened.hidden.tab === -1 && opened.hidden.w <= 1, JSON.stringify(opened));
+        const reacted = page.waitForRequest((r) => r.url().endsWith('/api/react'), { timeout: 4000 }).catch(() => null);
+        await page.tap('#sheet .sheet-react-tick .tick-switch').catch(() => page.click('#sheet .sheet-react-tick .tick-switch'));
+        const req = await reacted;
+        const after = await page.evaluate(() => ({ ticks: window.__ticks, hidden: window.__hidden, open: !document.querySelector('#sheet').hidden }));
+        check(`${label}: a finger on a reaction ticks once and still sends the reaction`,
+          Boolean(req) && after.ticks === 1 && after.hidden === 1 && !after.open, JSON.stringify(after));
+        await page.tap('#composer-input').catch(() => page.click('#composer-input'));
+        await page.keyboard.type('tick');
+        await page.route('**/api/send', (route) => route.abort());
+        const sent = page.waitForRequest((r) => r.url().endsWith('/api/send') && r.method() === 'POST', { timeout: 4000 }).catch(() => null);
+        await page.tap('.send-btn-tick .tick-switch').catch(() => page.click('.send-btn-tick .tick-switch'));
+        const sendReq = await sent;
+        await page.unroute('**/api/send');
+        const typing = await page.evaluate(() => ({ ticks: window.__ticks, focus: document.activeElement && document.activeElement.id }));
+        check(`${label}: a finger on send ticks once, sends, and the message box keeps the keyboard`,
+          Boolean(sendReq) && typing.ticks === 2 && typing.focus === 'composer-input', JSON.stringify(typing));
+      } else {
+        check(`${label}: Android vibrates instead: no switches added, one buzz for the long press`,
+          opened.tickReacts === 0 && !opened.sendTick && opened.buzz === 1, JSON.stringify(opened));
+        await page.keyboard.press('Escape');
+      }
+      if (shots) await page.screenshot({ path: `${shots}/${label}-menu.png` });
+      await page.evaluate(() => { if (!document.querySelector('#sheet').hidden) document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+      await page.waitForTimeout(200);
+    }
+
     // every text box takes typing and keeps its caret, with nothing above it switched off for selection
     const fields = [
       ['#composer-input', null],
