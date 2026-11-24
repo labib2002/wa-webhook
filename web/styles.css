@@ -1437,3 +1437,84 @@ html, body { touch-action: pan-x pan-y; }
 #forward-modal { z-index: 90; }
 
 .toast { z-index: 95; }
+
+/* ---- the message menu ----
+   Phone: the held message lifts in place over a soft blur, reactions above it
+   and the actions below it. Computer: a small card at the pointer, no dim. */
+.sheet-overlay.menu-focus, .sheet-overlay.menu-card { display: block; padding: 0; overflow: hidden; }
+.sheet-overlay.menu-focus {
+  background: rgba(20, 28, 26, 0.28);
+  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+  animation: fade 0.16s ease both;
+}
+.sheet-overlay.menu-card { background: transparent; animation: none; }
+.sheet-overlay.menu-card.menu-plain { background: rgba(20, 28, 26, 0.18); }
+.menu-focus .sheet-card { display: contents; }
+.menu-focus .sheet-reactions {
+  position: absolute; z-index: 3; display: flex; gap: 2px; margin: 0; padding: 6px 8px; border: none;
+  background: var(--card); border-radius: 999px; box-shadow: 0 18px 50px rgba(33, 48, 44, 0.24);
+  animation: menu-in 0.2s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.menu-focus .sheet-actions {
+  position: absolute; z-index: 3; width: 228px; padding: 6px; background: var(--card);
+  border-radius: 16px; box-shadow: 0 18px 50px rgba(33, 48, 44, 0.24);
+  animation: menu-in 0.22s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.menu-focus .sheet-action { min-height: 46px; font-size: 16px; }
+.menu-card .sheet-card {
+  position: absolute; width: 264px; padding: 6px; border-radius: 14px; border: 1px solid var(--card-edge);
+  box-shadow: 0 14px 40px rgba(20, 28, 26, 0.22); animation: menu-in 0.12s ease both;
+}
+.menu-card .sheet-reactions { padding: 2px 2px 8px; margin-bottom: 4px; }
+.menu-card .sheet-react { width: 38px; height: 38px; font-size: 22px; }
+.menu-card .sheet-action { min-height: 38px; font-size: 14.5px; padding: 0 10px; }
+.sheet-action { display: flex; align-items: center; gap: 12px; }
+.menu-ico { width: 20px; height: 20px; flex: none; color: var(--ink-2); }
+.sheet-react:focus-visible, .sheet-action:focus-visible { outline: 2px solid var(--pine); outline-offset: -2px; }
+.menu-lift {
+  position: fixed; margin: 0 !important; z-index: 2; overflow: hidden; pointer-events: none;
+  box-shadow: 0 14px 40px rgba(20, 28, 26, 0.28);
+  transform: scale(1.02); transform-origin: center;
+  animation: menu-lift 0.2s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.bubble.is-lifted { visibility: hidden; }
+@keyframes menu-lift { from { transform: translateY(var(--lift-from, 0)) scale(1); } to { transform: scale(1.02); } }
+@keyframes menu-in { from { transform: translateY(6px) scale(0.96); opacity: 0; } to { transform: none; opacity: 1; } }
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .sheet-overlay.menu-focus { background: rgba(20, 28, 26, 0.46); }
+}
+@media (max-width: 720px) {
+  .sheet-overlay.menu-focus .sheet-card, .sheet-overlay.menu-card .sheet-card { padding-bottom: 6px; border-radius: 14px; }
+  .sheet-overlay.menu-focus .sheet-card { display: contents; }
+}
+
+/* A tap says so without the browser's blue flash, and a focus ring only shows
+   for the keyboard. */
+html { -webkit-tap-highlight-color: transparent; }
+html.by-touch :focus:not(:focus-visible) { outline: none; }
+.icon-btn, .me-btn, .filter-chip, .sheet-react, .sheet-action, .bubble-retry, .viewer-btn,
+.composer-form button, .thread-peer, .conv-row, .media-frame, .vplayer button {
+  transition: transform 0.12s ease, filter 0.12s ease, background-color 0.12s ease;
+}
+html.by-touch .icon-btn:active, html.by-touch .me-btn:active, html.by-touch .filter-chip:active,
+html.by-touch .sheet-react:active, html.by-touch .viewer-btn:active, html.by-touch .composer-form button:active,
+html.by-touch .vplayer button:active, html.by-touch .bubble-retry:active { transform: scale(0.92); }
+html.by-touch .sheet-action:active, html.by-touch .conv-row:active { background-color: var(--paper-2); }
+html.by-touch .thread-peer:active, html.by-touch .media-frame:active { filter: brightness(0.92); }
+
+/* the iPhone tick: a see-through switch over a button, and a hidden one */
+.tick-wrap { position: relative; display: inline-flex; }
+.sheet-action-tick { display: flex; width: 100%; }
+.sheet-action-tick > .sheet-action { width: 100%; }
+.tick-switch { position: absolute; inset: 0; opacity: 0.011; overflow: hidden; z-index: 1; cursor: pointer; }
+.tick-switch input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; }
+.haptic-switch {
+  position: fixed; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0);
+  clip-path: inset(50%); white-space: nowrap; opacity: 0; pointer-events: none; left: 0; top: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .menu-lift, .menu-focus .sheet-reactions, .menu-focus .sheet-actions, .menu-card .sheet-card,
+  .sheet-overlay.menu-focus { animation: none; }
+  .menu-lift { transform: none; }
+}
