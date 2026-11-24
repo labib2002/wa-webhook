@@ -918,10 +918,25 @@ function addTapTick(btn) {
   });
   wrap.appendChild(label);
 }
+// Samsung phones hardly move for less than about 20ms. Chrome refuses to buzz
+// until the page has had a tap, and a held finger is not one yet, so the
+// first press after the app opens buzzes as the finger lifts.
+const BUZZ_MS = 25;
+let buzzOnLift = false;
+document.addEventListener('touchend', () => {
+  if (!buzzOnLift) return;
+  buzzOnLift = false;
+  try { navigator.vibrate(BUZZ_MS); } catch (_) {}
+}, true);
 function haptic(gesture) {
   if (!byTouch) return;
   if (gesture) { if (gesture.buzzed) return; gesture.buzzed = true; }
-  if (navigator.vibrate) { try { navigator.vibrate(12); } catch (_) {} return; }
+  if (navigator.vibrate) {
+    let ok = false;
+    try { ok = navigator.vibrate(BUZZ_MS); } catch (_) {}
+    buzzOnLift = !ok && Boolean(navigator.userActivation) && !navigator.userActivation.hasBeenActive;
+    return;
+  }
   const active = document.activeElement;
   hapticSwitch().click();
   if (active && active !== document.activeElement && active.focus) active.focus({ preventScroll: true });
@@ -4530,7 +4545,7 @@ els.messages.addEventListener('contextmenu', (e) => {
   if (byTouch) {
     if (e.target.closest('audio, input, textarea')) return;
     e.preventDefault();
-    if (m && !press.swiping) { clearTimeout(press.timer); press.fired = true; openSheet(m); }
+    if (m && !press.swiping && !press.fired) { clearTimeout(press.timer); press.fired = true; openSheet(m); }
     return;
   }
   if (!m || e.target.closest('a, audio, video')) return;
