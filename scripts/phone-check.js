@@ -368,11 +368,30 @@ async function login(page, url) {
     return { x: Math.round(b.left + Math.min(b.width / 2, 60)), y: Math.round(b.top + b.height / 2) };
   }, selector);
 
+  await page.evaluate(() => { window.__buzz = 0; navigator.vibrate = () => { window.__buzz += 1; return true; }; });
   let at = await centre('.bubble.in');
   await touch('touchStart', at.x, at.y);
   await page.waitForTimeout(650);
   await touch('touchEnd');
   check('a long press on a message opens its actions', await page.isVisible('#sheet'));
+  await page.waitForTimeout(300);
+  const lifted = await page.evaluate(() => {
+    const box = (n) => { const r = n.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, left: r.left, right: r.right }; };
+    const lift = document.querySelector('#sheet .menu-lift');
+    const bar = document.querySelector('#sheet-reactions');
+    const list = document.querySelector('#sheet-actions');
+    const held = document.querySelector('.bubble.is-lifted');
+    const ov = document.querySelector('#sheet');
+    return {
+      focus: ov.classList.contains('menu-focus'), lift: lift ? box(lift) : null, bar: box(bar), list: box(list),
+      heldHidden: held ? getComputedStyle(held).visibility === 'hidden' : false,
+      blur: getComputedStyle(ov).backdropFilter || getComputedStyle(ov).webkitBackdropFilter || '', w: innerWidth, h: innerHeight,
+      buzz: window.__buzz,
+    };
+  });
+  check('the held message lifts in place, reactions just above it and the actions just below, over a blur',
+    lifted.focus && lifted.lift && lifted.heldHidden && lifted.bar.bottom <= lifted.lift.top + 1 && lifted.list.top >= lifted.lift.bottom - 1 && /blur/.test(lifted.blur), JSON.stringify(lifted));
+  check('opening the menu taps the phone once', lifted.buzz === 1, String(lifted.buzz));
   const held = await page.evaluate(() => {
     const bubble = [...document.querySelectorAll('.bubble.in')].pop();
     const ev = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
@@ -383,6 +402,7 @@ async function login(page, url) {
   });
   check('and nothing else: no text selection, no menu from the phone, on a message or a chat row',
     held.select === 'none' && held.selected === '' && held.ownMenu && held.rowMenu, JSON.stringify(held));
+  await page.waitForTimeout(300);
   const menu = await page.evaluate(() => ({
     actions: [...document.querySelectorAll('#sheet .sheet-action')].map((b) => b.textContent),
     reactions: document.querySelectorAll('.sheet-react').length,
@@ -395,6 +415,45 @@ async function login(page, url) {
   const reactReq = await reacted;
   check('tapping a reaction sends it and closes the menu',
     Boolean(reactReq) && reactReq.postDataJSON().emoji === '👍' && !(await page.isVisible('#sheet')));
+  check('and taps the phone once more for the reaction', (await page.evaluate(() => window.__buzz)) === 2, String(await page.evaluate(() => window.__buzz)));
+  check('the held message is back in its place, nothing left over',
+    await page.evaluate(() => !document.querySelector('.bubble.is-lifted') && !document.querySelector('.menu-lift')));
+
+  // the menu stays on the screen for a message at the top, the middle and the bottom
+  for (const where of ['top', 'middle', 'bottom']) {
+    const spot = { mid: 0 };
+    spot.mid = await page.evaluate((w) => {
+      const list = document.querySelector('#messages');
+      const all = [...list.querySelectorAll(':scope > .bubble')].filter((n) => !n.querySelector('audio, .vplayer, .media-frame, .bubble-retry'));
+      const b = w === 'top' ? all[0] : w === 'bottom' ? all[all.length - 1] : all[Math.floor(all.length / 2)];
+      b.scrollIntoView({ block: w === 'top' ? 'start' : w === 'bottom' ? 'end' : 'center', behavior: 'instant' });
+      return Number(b.dataset.mid);
+    }, where);
+    await page.waitForTimeout(700);
+    Object.assign(spot, await page.evaluate(({ mid, w }) => {
+      const pickNow = () => {
+        const all = [...document.querySelectorAll('#messages > .bubble')].filter((n) => !n.querySelector('audio, .vplayer, .media-frame, .bubble-retry'));
+        const v = all.filter((n) => { const r = n.getBoundingClientRect(); return r.bottom > 80 && r.top < innerHeight - 80; });
+        const pool = v.length ? v : all;
+        return w === 'top' ? pool[0] : w === 'bottom' ? pool[pool.length - 1] : pool[Math.floor(pool.length / 2)];
+      };
+      const el = document.querySelector(`#messages > .bubble[data-mid="${mid}"]`) || pickNow();
+      const r = el.getBoundingClientRect();
+      return { x: Math.round(r.left + Math.min(r.width / 2, 40)), y: Math.round(Math.max(r.top + 8, Math.min(r.bottom - 8, r.top + r.height / 2))) };
+    }, { mid: spot.mid, w: where }));
+    await touch('touchStart', spot.x, spot.y);
+    await page.waitForTimeout(650);
+    await touch('touchEnd');
+    await page.waitForTimeout(300);
+    const placed = await page.evaluate(() => {
+      const parts = ['#sheet-actions', '#sheet .menu-lift', '#sheet-reactions'].map((q) => document.querySelector(q)).filter((n) => n && !n.hidden);
+      const v = window.visualViewport ? { top: visualViewport.offsetTop, h: visualViewport.height } : { top: 0, h: innerHeight };
+      return { open: !document.querySelector('#sheet').hidden, inside: parts.every((n) => { const r = n.getBoundingClientRect(); return r.top >= v.top - 1 && r.bottom <= v.top + v.h + 1 && r.left >= -1 && r.right <= innerWidth + 1; }) };
+    });
+    check(`a held message near the ${where} gets its menu fully on screen`, placed.open && placed.inside, JSON.stringify(placed));
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(150);
+  }
 
   at = await centre('.bubble.in');
   await touch('touchStart', at.x, at.y);
@@ -544,6 +603,46 @@ async function login(page, url) {
   const d = await desk.newPage();
   d.on('pageerror', (e) => pageErrors.push(e.message));
   await login(d, `${base}/app`);
+  {
+    await d.click('.conv-row >> nth=0');
+    await d.waitForSelector('.bubble');
+    await d.evaluate(() => { window.__buzz = 0; navigator.vibrate = () => { window.__buzz += 1; return true; }; });
+    for (const [label, pick] of [['near the bottom right corner', (w, h) => [w - 6, h - 6]], ['in the middle', (w, h) => [w / 2, h / 2]]]) {
+      const target = await d.evaluate(() => { const b = [...document.querySelectorAll('#messages > .bubble')].pop(); b.scrollIntoView({ block: 'center' }); const r = b.getBoundingClientRect(); return { x: r.left + 20, y: r.top + 10 }; });
+      const [cx, cy] = pick(1280, 832);
+      await d.evaluate(({ tx, ty, cx, cy }) => {
+        const b = document.elementFromPoint(tx, ty).closest('.bubble');
+        b.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
+      }, { tx: target.x, ty: target.y, cx, cy });
+      await d.waitForTimeout(250);
+      const card = await d.evaluate(() => {
+        const ov = document.querySelector('#sheet');
+        const c = document.querySelector('#sheet .sheet-card').getBoundingClientRect();
+        return { open: !ov.hidden, card: ov.classList.contains('menu-card'), dim: getComputedStyle(ov).backgroundColor, left: c.left, top: c.top, right: c.right, bottom: c.bottom, focus: document.activeElement && document.activeElement.className };
+      });
+      const near = Math.min(Math.abs(card.left - cx), Math.abs(card.right - cx)) <= 10 && Math.min(Math.abs(card.top - cy), Math.abs(card.bottom - cy)) <= 10;
+      check(`a right click ${label} opens the small card at the pointer, inside the window, with no dim`,
+        card.open && card.card && /rgba\(0, 0, 0, 0\)|transparent/.test(card.dim) && card.left >= 0 && card.top >= 0 && card.right <= 1280 && card.bottom <= 832 && near, JSON.stringify({ ...card, cx, cy }));
+      check(`and the keyboard starts on its first item (${label})`, /sheet-react|sheet-action/.test(card.focus || ''), String(card.focus));
+      await d.keyboard.press('ArrowDown');
+      const moved = await d.evaluate(() => document.activeElement && document.activeElement.className);
+      check(`the arrow keys move through it (${label})`, /sheet-action/.test(moved || ''), String(moved));
+      await d.keyboard.press('Escape');
+      check(`Escape closes it (${label})`, await d.evaluate(() => document.querySelector('#sheet').hidden));
+    }
+    const ownMenu = await d.evaluate(() => {
+      const b = [...document.querySelectorAll('#messages > .bubble.out')].pop();
+      if (!b) return null;
+      const r = b.getBoundingClientRect();
+      b.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 10, clientY: r.top + 10 }));
+      const n = document.querySelectorAll('#sheet .sheet-react').length;
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      return n;
+    });
+    check('our own message offers the reactions too', ownMenu === null || ownMenu === 6, String(ownMenu));
+    check('a mouse never taps the phone', (await d.evaluate(() => window.__buzz)) === 0);
+    check('no blue flash on a tap anywhere', await d.evaluate(() => /rgba\(0, 0, 0, 0\)|transparent/.test(getComputedStyle(document.documentElement).webkitTapHighlightColor || 'transparent')));
+  }
   const dland = await openAndWatch(d, async () => {
     await d.click('.conv-row >> nth=1');
     await d.waitForFunction(() => document.querySelector('#thread-name').textContent.includes('Marcus'));

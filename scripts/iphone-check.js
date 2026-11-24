@@ -17,6 +17,13 @@ const db = require('../lib/db');
 const fake = makeFakeDb();
 db.__setDbForTesting(fake);
 require('./fake-backend').install();
+// A send through the composer that WhatsApp accepts, so a sent bubble can be
+// compared with the same message drawn fresh.
+const waApi = require('../lib/whatsapp');
+const realSendText = waApi.sendText;
+let sentOk = 0;
+const okTexts = new Set();
+waApi.sendText = async (to, text, ...rest) => (okTexts.has(text) ? { ok: true, waMessageId: `wamid.ok${++sentOk}` } : realSendText(to, text, ...rest));
 
 const iso = (minAgo) => new Date(Date.now() - minAgo * 60000).toISOString();
 const C = '201555464744';
@@ -333,6 +340,68 @@ const sameHeights = (h) => {
     await page.click('#viewer-close');
     await page.waitForTimeout(300);
 
+    // the held message: lifted in place, and the phone's tick where the phone allows one
+    {
+      const opened = await page.evaluate(async () => {
+        window.__ticks = 0; window.__hidden = 0; window.__buzz = 0;
+        document.addEventListener('change', (e) => { if (e.target.closest && e.target.closest('.tick-switch')) window.__ticks += 1; }, true);
+        document.addEventListener('click', (e) => { if (e.target.classList && e.target.classList.contains('haptic-switch')) window.__hidden += 1; }, true);
+        if (navigator.vibrate) navigator.vibrate = () => { window.__buzz += 1; return true; };
+        document.documentElement.classList.add('by-touch');
+        const b = [...document.querySelectorAll('#messages > .bubble')].filter((n) => !n.querySelector('audio, .vplayer, .media-frame, .bubble-retry')).pop();
+        b.scrollIntoView({ block: 'center', behavior: 'instant' });
+        await new Promise((r) => setTimeout(r, 200));
+        b.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+        await new Promise((r) => setTimeout(r, 350));
+        const ov = document.querySelector('#sheet');
+        const box = (q) => { const n = document.querySelector(q); if (!n) return null; const r = n.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, left: r.left, right: r.right }; };
+        const hs = document.querySelector('.haptic-switch');
+        return {
+          open: !ov.hidden, focus: ov.classList.contains('menu-focus'), lift: box('#sheet .menu-lift'), bar: box('#sheet-reactions'), list: box('#sheet-actions'),
+          w: innerWidth, h: innerHeight,
+          tickReacts: document.querySelectorAll('#sheet .sheet-react-tick .tick-switch input[switch]').length,
+          tickActions: document.querySelectorAll('#sheet .sheet-action-tick .tick-switch').length,
+          sendTick: Boolean(document.querySelector('.send-btn-tick .tick-switch')),
+          hidden: hs ? { aria: hs.getAttribute('aria-hidden'), tab: hs.querySelector('input').tabIndex, w: hs.getBoundingClientRect().width } : null,
+          hiddenClicks: window.__hidden, buzz: window.__buzz, vibrate: typeof navigator.vibrate === 'function',
+          highlight: getComputedStyle(document.documentElement).webkitTapHighlightColor || '',
+        };
+      });
+      const inside = ['lift', 'bar', 'list'].every((k) => opened[k] && opened[k].top >= -1 && opened[k].bottom <= opened.h + 1 && opened[k].left >= -1 && opened[k].right <= opened.w + 1);
+      check(`${label}: a held message lifts in place with reactions above and actions below, all on screen`,
+        opened.open && opened.focus && inside && opened.bar.bottom <= opened.lift.top + 1 && opened.list.top >= opened.lift.bottom - 1, JSON.stringify(opened));
+      check(`${label}: no blue flash on a tap`, /rgba\(0, 0, 0, 0\)|transparent/.test(opened.highlight || 'transparent'), opened.highlight);
+      if (!opened.vibrate) {
+        check(`${label}: no vibration here, so every reaction, menu action and the send button carry a see-through switch that ticks under a real finger`,
+          opened.tickReacts === 6 && opened.tickActions >= 3 && opened.sendTick, JSON.stringify(opened));
+        check(`${label}: the long press tried the older-iPhone tick once, through a hidden switch nobody can see, reach or hear`,
+          opened.hiddenClicks === 1 && opened.hidden && opened.hidden.aria === 'true' && opened.hidden.tab === -1 && opened.hidden.w <= 1, JSON.stringify(opened));
+        const reacted = page.waitForRequest((r) => r.url().endsWith('/api/react'), { timeout: 4000 }).catch(() => null);
+        await page.tap('#sheet .sheet-react-tick .tick-switch').catch(() => page.click('#sheet .sheet-react-tick .tick-switch'));
+        const req = await reacted;
+        const after = await page.evaluate(() => ({ ticks: window.__ticks, hidden: window.__hidden, open: !document.querySelector('#sheet').hidden }));
+        check(`${label}: a finger on a reaction ticks once and still sends the reaction`,
+          Boolean(req) && after.ticks === 1 && after.hidden === 1 && !after.open, JSON.stringify(after));
+        await page.tap('#composer-input').catch(() => page.click('#composer-input'));
+        await page.keyboard.type('tick');
+        await page.route('**/api/send', (route) => route.abort());
+        const sent = page.waitForRequest((r) => r.url().endsWith('/api/send') && r.method() === 'POST', { timeout: 4000 }).catch(() => null);
+        await page.tap('.send-btn-tick .tick-switch').catch(() => page.click('.send-btn-tick .tick-switch'));
+        const sendReq = await sent;
+        await page.unroute('**/api/send');
+        const typing = await page.evaluate(() => ({ ticks: window.__ticks, focus: document.activeElement && document.activeElement.id }));
+        check(`${label}: a finger on send ticks once, sends, and the message box keeps the keyboard`,
+          Boolean(sendReq) && typing.ticks === 2 && typing.focus === 'composer-input', JSON.stringify(typing));
+      } else {
+        check(`${label}: Android vibrates instead: no switches added, one buzz for the long press`,
+          opened.tickReacts === 0 && !opened.sendTick && opened.buzz === 1, JSON.stringify(opened));
+        await page.keyboard.press('Escape');
+      }
+      if (shots) await page.screenshot({ path: `${shots}/${label}-menu.png` });
+      await page.evaluate(() => { if (!document.querySelector('#sheet').hidden) document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+      await page.waitForTimeout(200);
+    }
+
     // every text box takes typing and keeps its caret, with nothing above it switched off for selection
     const fields = [
       ['#composer-input', null],
@@ -435,6 +504,42 @@ const sameHeights = (h) => {
     if (tapped === 'touch') check(`${label}: two quick taps on a message start a reply to it`, reply.bar && reply.text.includes('Hdhdhdhdhd'), JSON.stringify(reply));
     await page.click('#reply-cancel').catch(() => {});
     if (shots) await page.screenshot({ path: `${shots}/${label}-after-player.png` });
+
+    // a message sent from the composer is laid out exactly like the same message drawn fresh
+    {
+      const n = label === 'webkit' ? '١' : '٢';
+      const texts = [`ok ${label}`, `تمام ${n}`, `a longer line from ${label} that has to wrap onto a second line here`, `تمام يا فندم هبعتلك الملف دلوقتي على الواتساب ${n}`];
+      texts.forEach((t) => okTexts.add(t));
+      const box = (t) => page.evaluate((x) => {
+        const b = [...document.querySelectorAll('#messages > .bubble.out')].find((n) => n.textContent.startsWith(x));
+        if (!b) return null;
+        const meta = b.querySelector(':scope > .meta, :scope > .bline > .meta');
+        const r = b.getBoundingClientRect();
+        const m = meta.getBoundingClientRect();
+        return { cls: b.className.replace(/\s*cont-out/, ''), h: Math.round(r.height), w: Math.round(r.width), right: Math.round(r.right - m.right), bottom: Math.round(r.bottom - m.bottom), meta: meta.textContent };
+      }, t);
+      const sent = {};
+      for (const t of texts) {
+        await page.fill('#composer-input', t);
+        if (await page.$('.send-btn-tick .tick-switch')) await page.tap('.send-btn-tick .tick-switch').catch(() => page.click('.send-btn-tick .tick-switch'));
+        else await page.click('#send-btn');
+        await page.waitForFunction((x) => [...document.querySelectorAll('#messages > .bubble.out')].some((n) => n.textContent.startsWith(x) && !n.classList.contains('pending') && n.dataset.mid > 0), t, { timeout: 5000 }).catch(() => {});
+        await page.waitForTimeout(400);
+        sent[t] = await box(t);
+      }
+      await page.reload({ waitUntil: 'load' });
+      await page.waitForSelector('.conv-row', { state: 'visible', timeout: 10000 });
+      await page.click('.conv-row');
+      await page.waitForSelector('#messages > .bubble.out');
+      await page.waitForTimeout(700);
+      const diffs = [];
+      for (const t of texts) {
+        const fresh = await box(t);
+        const a = sent[t];
+        if (!a || !fresh || JSON.stringify(a) !== JSON.stringify(fresh) || a.right > 14 || a.bottom > 12) diffs.push({ t: t.slice(0, 14), sent: a, fresh });
+      }
+      check(`${label}: a message sent from the composer, English or Arabic, short or long, sits exactly like the same message drawn fresh, time at the bottom right`, diffs.length === 0, JSON.stringify(diffs.length ? diffs : sent[texts[1]]));
+    }
     await ctx.close();
     await browser.close();
   }
